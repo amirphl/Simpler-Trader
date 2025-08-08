@@ -1,0 +1,7 @@
+# Core dependencies (optional - most functionality works without these)
+plotly>=5.18.0  # For interactive plotting
+kaleido>=0.2.1  # For exporting plots to PNG/SVG/PDF (optional)
+
+# Note: The core backtest and candle downloader modules use only Python standard library
+# Plotly is only required if you want to generate visualizations
+
