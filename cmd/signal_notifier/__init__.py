@@ -1,0 +1,2 @@
+"""Signal notifier CLI package."""
+
