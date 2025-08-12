@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -68,8 +69,14 @@ class SignalNotifier:
             wait_seconds,
         )
 
+        next_poll = self._next_poll_time()
         try:
             while True:
+                now_epoch = datetime.now(timezone.utc).timestamp()
+                sleep_for = next_poll - now_epoch
+                if sleep_for > 0:
+                    time.sleep(sleep_for)
+
                 sent = 0
                 self._log.info("Starting new polling cycle...")
                 for symbol in symbols:
@@ -80,10 +87,7 @@ class SignalNotifier:
 
                 if sent:
                     self._log.info("Dispatched %s signal(s) this cycle.", sent)
-                next_poll = time.monotonic() + wait_seconds
-                sleep_for = next_poll - time.monotonic()
-                if sleep_for > 0:
-                    time.sleep(sleep_for)
+                next_poll = self._next_poll_time()
         except KeyboardInterrupt:
             self._log.info("Signal notifier stopped by user.")
 
@@ -123,6 +127,17 @@ class SignalNotifier:
             limit=lookback,
         )
         return candles[-lookback:]
+
+    def _next_poll_time(self) -> float:
+        """Return the next UTC timestamp (epoch seconds) to poll."""
+        now_epoch = datetime.now(timezone.utc).timestamp()
+        interval = self._interval_seconds
+        epsilon = self._epsilon_seconds
+        base = math.floor(now_epoch / interval) * interval
+        candidate = base + epsilon
+        if candidate <= now_epoch:
+            candidate += interval
+        return candidate
 
     # ------------------------------------------------------------------ #
     # State handling
