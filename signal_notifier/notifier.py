@@ -68,13 +68,8 @@ class SignalNotifier:
             wait_seconds,
         )
 
-        next_poll = time.monotonic() + wait_seconds
         try:
             while True:
-                sleep_for = next_poll - time.monotonic()
-                if sleep_for > 0:
-                    time.sleep(sleep_for)
-
                 sent = 0
                 self._log.info("Starting new polling cycle...")
                 for symbol in symbols:
@@ -86,6 +81,9 @@ class SignalNotifier:
                 if sent:
                     self._log.info("Dispatched %s signal(s) this cycle.", sent)
                 next_poll = time.monotonic() + wait_seconds
+                sleep_for = next_poll - time.monotonic()
+                if sleep_for > 0:
+                    time.sleep(sleep_for)
         except KeyboardInterrupt:
             self._log.info("Signal notifier stopped by user.")
 
