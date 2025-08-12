@@ -65,6 +65,16 @@ class EngulfingSignalDetector:
 
         entry_price = entry_candle.open
 
+        print(f"Candles spec used for this signal: {candles[start_idx:idx+1]}")
+        print(f"Entry candle: {entry_candle}")
+        print(f"Engulf candle: {engulf_candle}")
+        print(f"Reference candle: {reference_candle}")
+        print(f"Start index: {start_idx}")
+        print(f"End index: {idx}")
+        print(f"Window size: {self._config.window_size}")
+        print(f"Volume window: {self._config.volume_window}")
+        print(f"Max volume pressure score: {self._config.max_volume_pressure_score}")
+
         return EngulfingSignal(
             symbol=symbol,
             timeframe=self._config.timeframe,

@@ -20,14 +20,14 @@ class SignalNotifierSettings:
     timeframe: str
     symbols: Optional[List[str]] = None
     top_symbols: int = 100
-    history_limit: int = 100
+    lookback_candles: int = 10
     poll_epsilon_minutes: float = 0.1
     state_file: Optional[Path] = None
     dry_run: bool = False
 
     def __post_init__(self) -> None:
-        if not (10 <= self.history_limit <= 100):
-            raise ValueError("history_limit must stay within 10..100 to limit memory usage.")
+        if self.lookback_candles < 5:
+            raise ValueError("lookback_candles must be at least 5.")
         if self.poll_epsilon_minutes < 0:
             raise ValueError("poll_epsilon_minutes cannot be negative.")
 
@@ -50,7 +50,6 @@ class SignalNotifier:
         self._settings = settings
         self._log = logger or logging.getLogger(__name__)
 
-        self._history: Dict[str, List[Candle]] = {}
         self._interval_ms = interval_to_milliseconds(self._settings.timeframe)
         self._interval_seconds = self._interval_ms / 1000.0
         self._epsilon_seconds = self._settings.poll_epsilon_minutes * 60.0
@@ -61,13 +60,6 @@ class SignalNotifier:
         if not symbols:
             raise RuntimeError("No symbols available to monitor.")
 
-        self._log.info(
-            "Monitoring %s symbols on %s timeframe...",
-            len(symbols),
-            self._settings.timeframe,
-        )
-
-        self._bootstrap_histories(symbols)
         wait_seconds = self._interval_seconds + self._epsilon_seconds
         self._log.info(
             "Monitoring %s symbols on %s timeframe (poll every %.1fs)",
@@ -106,86 +98,33 @@ class SignalNotifier:
             return [symbol.strip().upper() for symbol in self._settings.symbols if symbol.strip()]
         return self._binance.fetch_top_symbols(self._settings.top_symbols)
 
-    def _bootstrap_histories(self, symbols: List[str]) -> None:
-        for symbol in symbols:
-            try:
-                candles = self._load_initial_candles(symbol)
-            except Exception:
-                self._log.exception("Unable to load initial candles for %s", symbol)
-                self._history[symbol] = []
-                continue
-
-            if not candles:
-                self._log.warning("No historical candles available for %s.", symbol)
-                self._history[symbol] = []
-                continue
-            
-            self._log.info("Loaded %s historical candles for %s.", len(candles), symbol)
-
-            self._history[symbol] = candles[-self._settings.history_limit :]
-
-    def _load_initial_candles(self, symbol: str) -> List[Candle]:
-        if self._settings.history_limit <= 0:
-            return []
-        end_ms = to_milliseconds(datetime.now(timezone.utc))
-        span = self._interval_ms * self._settings.history_limit
-        start_ms = max(0, end_ms - span)
-        if start_ms >= end_ms:
-            return []
-        return self._binance.fetch_klines(
-            symbol=symbol,
-            interval=self._settings.timeframe,
-            start_ms=start_ms,
-            end_ms=end_ms,
-            limit=self._settings.history_limit,
-        )
-
     def _process_symbol(self, symbol: str) -> int:
-        history = self._history.setdefault(symbol, [])
-        if not history:
-            # Try to backfill if bootstrap failed earlier.
-            history.extend(self._load_initial_candles(symbol))
-            history[:] = history[-self._settings.history_limit :]
-
-        last_open_ms = history[-1].open_time_ms if history else None
-        new_candles = self._fetch_new_candles(symbol, last_open_ms)
-        if not new_candles:
+        candles = self._fetch_recent_candles(symbol)
+        if not candles:
             return 0
 
-        sent = 0
-        self._log.info("Processing %s new candle(s) for %s", len(new_candles), symbol)
-        for candle in new_candles:
-            history.append(candle)
-            signal = self._detector.evaluate(symbol, history)
-            if signal and self._should_send(symbol, signal.entry_time):
-                self._dispatch(signal)
-                sent += 1
-            self._trim_history(history)
-        return sent
+        signal = self._detector.evaluate(symbol, candles)
+        if not signal:
+            return 0
 
-    def _fetch_new_candles(self, symbol: str, last_open_ms: Optional[int]) -> List[Candle]:
-        if last_open_ms is None:
-            return []
-        start_ms = last_open_ms + self._interval_ms
-        now_ms = to_milliseconds(datetime.now(timezone.utc))
-        if start_ms >= now_ms:
-            return []
+        if not self._should_send(symbol, signal.entry_time):
+            return 0
 
-        # Allow catching up on at most two missed candles per poll.
-        end_ms = now_ms
-        limit = 3
+        self._dispatch(signal)
+        return 1
+
+    def _fetch_recent_candles(self, symbol: str) -> List[Candle]:
+        lookback = self._settings.lookback_candles
+        end_ms = to_milliseconds(datetime.now(timezone.utc))
+        start_ms = max(0, end_ms - lookback * self._interval_ms)
         candles = self._binance.fetch_klines(
             symbol=symbol,
             interval=self._settings.timeframe,
             start_ms=start_ms,
             end_ms=end_ms,
-            limit=limit,
+            limit=lookback,
         )
-        return [candle for candle in candles if candle.open_time_ms > last_open_ms]
-
-    def _trim_history(self, history: List[Candle]) -> None:
-        if len(history) > self._settings.history_limit:
-            del history[0 : len(history) - self._settings.history_limit]
+        return candles[-lookback:]
 
     # ------------------------------------------------------------------ #
     # State handling
@@ -246,6 +185,7 @@ class SignalNotifier:
             f"Direction: LONG",
             f"Entry Time: {signal.entry_time.isoformat()}",
             f"Entry: {signal.entry_price:.6g}",
+            f"Window size: {self._detector._config.window_size}",
         ]
         if signal.notes:
             lines.append(f"Notes: {signal.notes}")

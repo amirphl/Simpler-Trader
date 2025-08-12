@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=100,
         help="If --symbols is not provided, automatically monitor the top N Binance USDT pairs.",
     )
-    parser.add_argument("--history-limit", type=int, default=100, help="Maximum candles to keep per symbol.")
+    parser.add_argument("--lookback", type=int, default=10, help="Number of candles to fetch per evaluation cycle.")
     parser.add_argument(
         "--epsilon-minutes",
         type=float,
@@ -75,7 +75,7 @@ def load_env_config() -> Dict[str, str]:
         "timeframe": env("TIMEFRAME", ""),
         "symbols": env("SYMBOLS", ""),
         "top_n": env("TOP_N", ""),
-        "history_limit": env("HISTORY_LIMIT", ""),
+        "lookback": env("LOOKBACK", ""),
         "epsilon_minutes": env("EPSILON_MINUTES", ""),
         "state_file": env("SIGNAL_STATE_FILE", ""),
         "telegram_token": env("TELEGRAM_BOT_TOKEN", ""),
@@ -94,8 +94,8 @@ def apply_env_defaults(args: argparse.Namespace, config: Dict[str, str]) -> argp
         args.symbols = config["symbols"]
     if config["top_n"]:
         args.top_n = int(config["top_n"])
-    if config["history_limit"]:
-        args.history_limit = int(config["history_limit"])
+    if config["lookback"]:
+        args.lookback = int(config["lookback"])
     if config["epsilon_minutes"]:
         args.epsilon_minutes = float(config["epsilon_minutes"])
     if config["telegram_token"]:
@@ -181,7 +181,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         timeframe=args.timeframe,
         symbols=resolve_symbols_argument(args.symbols),
         top_symbols=args.top_n,
-        history_limit=args.history_limit,
+        lookback_candles=args.lookback,
         poll_epsilon_minutes=args.epsilon_minutes,
         state_file=None if args.no_state else args.state_file,
         dry_run=args.dry_run,
