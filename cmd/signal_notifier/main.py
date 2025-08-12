@@ -45,9 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dry-run", action="store_true", help="Log signals without sending to Telegram.")
 
     # Strategy-specific knobs
-    parser.add_argument("--leverage", type=float, default=5.0, help="Strategy leverage.")
     parser.add_argument("--window-size", type=int, default=5, help="Number of bearish candles required before the engulfing bar.")
-    parser.add_argument("--take-profit-pct", type=float, default=0.02, help="Take-profit distance expressed as fraction (0.02 = 2 percent).")
     parser.add_argument("--volume-window", type=int, default=20, help="Candles considered when computing volume pressure.")
     parser.add_argument(
         "--max-volume-score",
@@ -84,8 +82,6 @@ def load_env_config() -> Dict[str, str]:
         "telegram_chat_id": env("TELEGRAM_CHAT_ID", ""),
         "telegram_proxy": env("TELEGRAM_PROXY", ""),
         "window_size": env("STRATEGY_WINDOW_SIZE", ""),
-        "take_profit_pct": env("STRATEGY_TAKE_PROFIT_PCT", ""),
-        "leverage": env("STRATEGY_LEVERAGE", ""),
         "volume_window": env("VOLUME_WINDOW", ""),
         "max_volume_score": env("MAX_VOLUME_SCORE", ""),
     }
@@ -112,10 +108,6 @@ def apply_env_defaults(args: argparse.Namespace, config: Dict[str, str]) -> argp
         args.state_file = Path(config["state_file"])
     if config["window_size"]:
         args.window_size = int(config["window_size"])
-    if config["take_profit_pct"]:
-        args.take_profit_pct = float(config["take_profit_pct"])
-    if config["leverage"]:
-        args.leverage = float(config["leverage"])
     if config["volume_window"]:
         args.volume_window = int(config["volume_window"])
     if config["max_volume_score"]:
@@ -180,8 +172,6 @@ def main(argv: Optional[List[str]] = None) -> int:
     detector_config = EngulfingSignalConfig(
         timeframe=args.timeframe,
         window_size=args.window_size,
-        leverage=args.leverage,
-        take_profit_pct=args.take_profit_pct,
         volume_window=args.volume_window,
         max_volume_pressure_score=args.max_volume_score,
     )
