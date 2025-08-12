@@ -61,6 +61,12 @@ class SignalNotifier:
         if not symbols:
             raise RuntimeError("No symbols available to monitor.")
 
+        self._log.info(
+            "Monitoring %s symbols on %s timeframe...",
+            len(symbols),
+            self._settings.timeframe,
+        )
+
         self._bootstrap_histories(symbols)
         wait_seconds = self._interval_seconds + self._epsilon_seconds
         self._log.info(
@@ -78,6 +84,7 @@ class SignalNotifier:
                     time.sleep(sleep_for)
 
                 sent = 0
+                self._log.info("Starting new polling cycle...")
                 for symbol in symbols:
                     try:
                         sent += self._process_symbol(symbol)
@@ -112,6 +119,8 @@ class SignalNotifier:
                 self._log.warning("No historical candles available for %s.", symbol)
                 self._history[symbol] = []
                 continue
+            
+            self._log.info("Loaded %s historical candles for %s.", len(candles), symbol)
 
             self._history[symbol] = candles[-self._settings.history_limit :]
 
@@ -144,6 +153,7 @@ class SignalNotifier:
             return 0
 
         sent = 0
+        self._log.info("Processing %s new candle(s) for %s", len(new_candles), symbol)
         for candle in new_candles:
             history.append(candle)
             signal = self._detector.evaluate(symbol, history)
@@ -236,11 +246,7 @@ class SignalNotifier:
             f"Direction: LONG",
             f"Entry Time: {signal.entry_time.isoformat()}",
             f"Entry: {signal.entry_price:.6g}",
-            f"Stop Loss: {signal.stop_loss:.6g}",
-            f"Take Profit: {signal.take_profit:.6g}",
-            f"Leverage: {signal.leverage}",
         ]
         if signal.notes:
             lines.append(f"Notes: {signal.notes}")
         return "\n".join(lines)
-
