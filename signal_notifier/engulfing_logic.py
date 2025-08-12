@@ -13,18 +13,12 @@ class EngulfingSignalConfig:
 
     timeframe: str
     window_size: int = 5
-    leverage: float = 5.0
-    take_profit_pct: float = 0.02  # e.g. 0.02 == 2%
     volume_window: int = 20
     max_volume_pressure_score: float = 3.0
 
     def __post_init__(self) -> None:
         if self.window_size <= 0:
             raise ValueError("window_size must be positive")
-        if self.leverage <= 0:
-            raise ValueError("leverage must be positive")
-        if not (0 < self.take_profit_pct < 1):
-            raise ValueError("take_profit_pct must be between 0 and 1 (fractional)")
         if self.volume_window < 2:
             raise ValueError("volume_window must be at least 2")
         if self.max_volume_pressure_score <= 0:
@@ -39,9 +33,6 @@ class EngulfingSignal:
     timeframe: str
     entry_time: datetime
     entry_price: float
-    stop_loss: float
-    take_profit: float
-    leverage: float
     notes: Optional[str] = None
 
 
@@ -53,9 +44,6 @@ class EngulfingSignalDetector:
 
     def evaluate(self, symbol: str, candles: Sequence[Candle]) -> Optional[EngulfingSignal]:
         """Return a signal if the newest candle completes the strategy conditions."""
-        if len(candles) < max(self._config.window_size + 2, 101):
-            return None
-
         idx = len(candles) - 1
         if idx < 2:
             return None
@@ -70,35 +58,18 @@ class EngulfingSignalDetector:
         start_idx = idx - 1 - self._config.window_size
         if start_idx < 0 or not are_bearish(candles, start_idx, self._config.window_size):
             return None
-
-        stoch_k20 = calculate_stochastic_k(candles, 20, idx - 1)
-        stoch_k100 = calculate_stochastic_k(candles, 100, idx - 1)
-        if stoch_k20 is None or stoch_k100 is None or stoch_k20 <= stoch_k100:
-            return None
-
+        
         # score = calculate_volume_pressure_score(candles, idx - 1, self._config.volume_window)
         # if score is not None and score > self._config.max_volume_pressure_score:
         #     return None
 
         entry_price = entry_candle.open
-        stop_loss = engulf_candle.open
-        if stop_loss >= entry_price:
-            return None
-
-        take_profit = entry_price * (1.0 + self._config.take_profit_pct)
-        notes = f"Stoch20 {stoch_k20:.2f} > Stoch100 {stoch_k100:.2f}"
-        # if score is not None:
-        #     notes = f"{notes}; vol-pressure {score:.2f}"
 
         return EngulfingSignal(
             symbol=symbol,
             timeframe=self._config.timeframe,
             entry_time=entry_candle.open_time,
             entry_price=entry_price,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            leverage=self._config.leverage,
-            notes=notes,
         )
 
 
