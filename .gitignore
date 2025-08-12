@@ -1,0 +1,33 @@
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.swp
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE / tooling
+.idea/
+.vscode/
+.mypy_cache/
+.pytest_cache/
+
+# Local data/output
+data/
+results/
+logs/
+
+# Environment/config files
+.env
+.env.*
+signal_state.json
+
+# Generated artifacts
+*.log
+*.html
+*.csv
+*.db
+
