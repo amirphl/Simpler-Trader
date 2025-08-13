@@ -3,10 +3,10 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import List, Sequence, Set, Tuple
+from typing import Dict, List, Sequence, Set, Tuple
 
 from .binance import BinanceClient, interval_to_milliseconds, MAX_BATCH
-from .models import normalize_symbol, to_milliseconds
+from .models import Candle, normalize_symbol, to_milliseconds
 from .storage import CandleStore
 
 
@@ -34,6 +34,12 @@ class DownloadStats:
     batches: int = 0
 
 
+@dataclass
+class DownloadResult:
+    stats: DownloadStats
+    candles: List[Candle]
+
+
 class CandleDownloader:
     """Coordinates retrieving candles from Binance and persisting them."""
 
@@ -48,60 +54,73 @@ class CandleDownloader:
         self._store = store
         self._log = logger or logging.getLogger(__name__)
 
-    def sync(self, request: DownloadRequest) -> DownloadStats:
+    def sync(self, request: DownloadRequest) -> DownloadResult:
+        start_trimmed = request.start.replace(minute=0, second=0, microsecond=0)
+        end_trimmed = request.end.replace(minute=0, second=0, microsecond=0)
+
         symbol = normalize_symbol(request.symbol)
         interval_ms = interval_to_milliseconds(request.interval)
-        start_ms = to_milliseconds(_ensure_utc(request.start))
-        end_ms = to_milliseconds(_ensure_utc(request.end))
+        start_dt = _ensure_utc(start_trimmed)
+        end_dt = _ensure_utc(end_trimmed)
         stats = DownloadStats()
 
-        existing = set()
+        candles_by_time: Dict[int, Candle] = {}
+        existing_times: Set[int] = set()
         if not request.override:
-            existing = self._store.list_open_times(
+            existing_candles = self._store.load(
                 symbol=symbol,
                 interval=request.interval,
-                start=request.start,
-                end=request.end,
+                start=start_dt,
+                end=end_dt,
+            )
+            for candle in existing_candles:
+                ts = candle.open_time_ms
+                candles_by_time[ts] = candle
+                existing_times.add(ts)
+        else:
+            existing_candles = []
+
+        pending = _build_missing_times(
+            start_ms=to_milliseconds(start_dt),
+            end_ms=to_milliseconds(end_dt),
+            step_ms=interval_ms,
+            existing=existing_times if not request.override else set(),
+        )
+        stats.requested = len(pending)
+        if not pending and existing_candles:
+            self._log.info(
+                "Range already populated",
+                extra={"symbol": symbol, "interval": request.interval},
+            )
+            return DownloadResult(stats=stats, candles=existing_candles)
+
+        _fetch_pending_windows(
+            pending=pending,
+            symbol=symbol,
+            interval=request.interval,
+            interval_ms=interval_ms,
+            request=request,
+            client=self._client,
+            store=self._store,
+            stats=stats,
+            sink=candles_by_time,
+            logger=self._log,
+        )
+
+        final_candles = self._store.load(
+            symbol=symbol,
+            interval=request.interval,
+            start=start_dt,
+            end=end_dt,
+        )
+        final_times = {candle.open_time_ms for candle in final_candles}
+        remaining = _build_missing_times(to_milliseconds(start_dt), to_milliseconds(end_dt), interval_ms, final_times)
+        if remaining:
+            raise RuntimeError(
+                f"Unable to download full range for {symbol} {request.interval}, missing {len(remaining)} candles"
             )
 
-        pending = _build_missing_times(start_ms, end_ms, interval_ms, existing if not request.override else set())
-        stats.requested = len(pending)
-        if not pending:
-            self._log.info("No missing candles detected", extra={"symbol": symbol, "interval": request.interval})
-            return stats
-
-        windows = _coalesce_windows(sorted(pending), interval_ms)
-        for window_start, window_end in windows:
-            cursor = window_start
-            while cursor < window_end:
-                chunk_end = min(window_end, cursor + request.max_batch * interval_ms)
-                candles = self._client.fetch_klines(
-                    symbol=symbol,
-                    interval=request.interval,
-                    start_ms=cursor,
-                    end_ms=chunk_end,
-                    limit=min(request.max_batch, (chunk_end - cursor) // interval_ms or 1),
-                )
-                stats.batches += 1
-                stats.fetched_candles += len(candles)
-                if not candles:
-                    self._log.warning(
-                        "Binance returned no candles",
-                        extra={"symbol": symbol, "interval": request.interval, "start": cursor, "end": chunk_end},
-                    )
-                    cursor = chunk_end
-                    continue
-                filtered = [c for c in candles if c.open_time_ms in pending]
-                inserted = self._store.save(filtered)
-                stats.saved_candles += inserted
-                for candle in filtered:
-                    pending.discard(candle.open_time_ms)
-                last_open_ms = candles[-1].open_time_ms
-                cursor = last_open_ms + interval_ms
-
-        if pending:
-            self._log.warning("Some candles remained missing after sync", extra={"missing": len(pending)})
-        return stats
+        return DownloadResult(stats=stats, candles=final_candles)
 
 
 def _ensure_utc(moment: datetime) -> datetime:
@@ -138,4 +157,63 @@ def _coalesce_windows(open_times: Sequence[int], step_ms: int) -> List[Tuple[int
         start = prev = ts
     windows.append((start, prev + step_ms))
     return windows
+
+
+def _fetch_pending_windows(
+    *,
+    pending: Set[int],
+    symbol: str,
+    interval: str,
+    interval_ms: int,
+    request: DownloadRequest,
+    client: BinanceClient,
+    store: CandleStore,
+    stats: DownloadStats,
+    sink: Dict[int, Candle],
+    logger: logging.Logger | None = None,
+) -> None:
+    windows = _coalesce_windows(sorted(pending), interval_ms)
+    for window_start, window_end in windows:
+        cursor = window_start
+        while cursor < window_end:
+            remaining_candles = (window_end - cursor) // interval_ms
+            limit = min(request.max_batch, max(remaining_candles, 1))
+            chunk_end = cursor + limit * interval_ms
+            if logger:
+                logger.info(
+                    "Fetching candles",
+                    extra={
+                        "symbol": symbol,
+                        "interval": interval,
+                        "start_ms": cursor,
+                        "end_ms": chunk_end,
+                        "start_time": _ms_to_iso(cursor),
+                        "end_time": _ms_to_iso(chunk_end),
+                        "limit": limit,
+                    },
+                )
+            candles = client.fetch_klines(
+                symbol=symbol,
+                interval=interval,
+                start_ms=cursor,
+                end_ms=chunk_end,
+                limit=limit,
+            )
+            stats.batches += 1
+            stats.fetched_candles += len(candles)
+            if not candles:
+                cursor = chunk_end
+                continue
+            filtered = [candle for candle in candles if candle.open_time_ms in pending]
+            if filtered:
+                inserted = store.save(filtered)
+                stats.saved_candles += inserted
+                for candle in filtered:
+                    pending.discard(candle.open_time_ms)
+                    sink[candle.open_time_ms] = candle
+            cursor = candles[-1].open_time_ms + interval_ms if candles else chunk_end
+
+
+def _ms_to_iso(timestamp_ms: int) -> str:
+    return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).isoformat()
 
