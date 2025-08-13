@@ -92,6 +92,7 @@ def main(argv: list[str] | None = None) -> int:
     client_logger = logging.getLogger("candle_downloader.binance")
     client = BinanceClient(BinanceClientConfig(proxies=proxies or None), logger=client_logger)
     downloader = CandleDownloader(client=client, store=store)
+
     request = DownloadRequest(
         symbol=args.symbol,
         interval=args.interval,
@@ -101,8 +102,8 @@ def main(argv: list[str] | None = None) -> int:
         max_batch=args.batch,
     )
     try:
-        stats = downloader.sync(request)
-        print(json.dumps(stats.__dict__, indent=2))
+        result = downloader.sync(request)
+        print(json.dumps(result.stats.__dict__, indent=2))
     finally:
         store.close()
         client.close()
