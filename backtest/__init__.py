@@ -7,7 +7,7 @@ from .base import (
     BaseBacktester,
     TradePerformance,
 )
-from .engulfing_strategy import EngulfingStrategy, EngulfingStrategyConfig
+from .engulfing_strategy import EngulfingStrategy, EngulfingStrategyConfig, StopLossMode
 from .patterns import CandlePatternSignals, detect_candle_patterns
 from .plotter import plot_backtest, plot_backtest_from_store, save_plot, show_plot
 
@@ -23,6 +23,7 @@ __all__ = [
     "detect_candle_patterns",
     "EngulfingStrategy",
     "EngulfingStrategyConfig",
+    "StopLossMode",
     "plot_backtest",
     "plot_backtest_from_store",
     "save_plot",
