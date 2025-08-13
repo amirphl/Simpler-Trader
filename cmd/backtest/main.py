@@ -7,13 +7,14 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict
+from typing import Any, Dict
 
 from backtest import (
     BacktestRunConfig,
     BaseBacktester,
     EngulfingStrategy,
     EngulfingStrategyConfig,
+    StopLossMode,
     plot_backtest_from_store,
     save_plot,
     show_plot,
@@ -21,9 +22,6 @@ from backtest import (
 from candle_downloader.binance import BinanceClient, BinanceClientConfig
 from candle_downloader.downloader import CandleDownloader
 from candle_downloader.storage import build_store
-
-from backtest.scalping_FVG_strategy import ScalpingFVGStrategy, ScalpingFVGStrategyConfig
-
 
 def parse_datetime(value: str) -> datetime:
     """Parse ISO8601 datetime string to UTC datetime."""
@@ -47,6 +45,22 @@ def load_env_config() -> Dict[str, str]:
         "leverage": os.getenv("STRATEGY_LEVERAGE", ""),
         "take_profit_pct": os.getenv("STRATEGY_TAKE_PROFIT_PCT", ""),
         "doji_size": os.getenv("STRATEGY_DOJI_SIZE", "0.05"),
+        "stop_loss_mode": os.getenv("STRATEGY_STOP_LOSS_MODE", "percent"),
+        "stop_loss_pct": os.getenv("STRATEGY_STOP_LOSS_PCT", "0.005"),
+        "skip_wick_filter": os.getenv("STRATEGY_SKIP_WICK_FILTER", "false"),
+        "skip_bollinger_cross": os.getenv("STRATEGY_SKIP_BB_FILTER", "false"),
+        "bollinger_period": os.getenv("STRATEGY_BB_PERIOD", "20"),
+        "bollinger_stddev": os.getenv("STRATEGY_BB_STDDEV", "2.0"),
+        "volume_filter_enabled": os.getenv("STRATEGY_VOLUME_FILTER_ENABLED", "true"),
+        "stoch_enabled": os.getenv("STRATEGY_STOCH_ENABLED", "true"),
+        "stoch_first_line": os.getenv("STRATEGY_STOCH_FIRST_LINE", "k"),
+        "stoch_first_period": os.getenv("STRATEGY_STOCH_FIRST_PERIOD", "20"),
+        "stoch_first_threshold": os.getenv("STRATEGY_STOCH_FIRST_THRESHOLD", ""),
+        "stoch_second_line": os.getenv("STRATEGY_STOCH_SECOND_LINE", "k"),
+        "stoch_second_period": os.getenv("STRATEGY_STOCH_SECOND_PERIOD", "100"),
+        "stoch_second_threshold": os.getenv("STRATEGY_STOCH_SECOND_THRESHOLD", ""),
+        "stoch_comparison": os.getenv("STRATEGY_STOCH_COMPARISON", "gt"),
+        "stoch_d_smoothing": os.getenv("STRATEGY_STOCH_D_SMOOTHING", "3"),
 
         "start": os.getenv("BACKTEST_START", ""),
         "end": os.getenv("BACKTEST_END", ""),
@@ -70,6 +84,12 @@ def load_env_config() -> Dict[str, str]:
     }
 
 
+def str_to_bool(value: str | None, default: bool = False) -> bool:
+    if value is None or value == "":
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build command-line argument parser."""
     parser = argparse.ArgumentParser(
@@ -83,6 +103,22 @@ Environment variables (can be overridden by CLI args):
   STRATEGY_LEVERAGE           Leverage multiplier
   STRATEGY_TAKE_PROFIT_PCT    Take profit percentage (e.g., 0.02 for 2%%)
   STRATEGY_DOJI_SIZE          Doji size for pattern detection (default: 0.05)
+  STRATEGY_STOP_LOSS_MODE     Stop-loss placement: percent, close, or low
+  STRATEGY_STOP_LOSS_PCT      Fraction for percent-based stop loss (default: 0.005)
+  STRATEGY_SKIP_WICK_FILTER   true/false to skip long upper-wick engulfing candles
+  STRATEGY_SKIP_BB_FILTER     true/false to skip when engulfing candle pierces Bollinger upper band
+  STRATEGY_BB_PERIOD          Period used for Bollinger filter (default: 20)
+  STRATEGY_BB_STDDEV          Stddev multiplier for Bollinger filter (default: 2.0)
+  STRATEGY_VOLUME_FILTER_ENABLED  true/false to enable volume pressure filter
+  STRATEGY_STOCH_ENABLED      true/false to enable stochastic comparison
+  STRATEGY_STOCH_FIRST_LINE   "k" or "d" for first stochastic leg
+  STRATEGY_STOCH_FIRST_PERIOD Period for first stochastic leg
+  STRATEGY_STOCH_FIRST_THRESHOLD Minimum value required for first leg (optional)
+  STRATEGY_STOCH_SECOND_LINE  "k" or "d" for second stochastic leg
+  STRATEGY_STOCH_SECOND_PERIOD Period for second stochastic leg
+  STRATEGY_STOCH_SECOND_THRESHOLD Minimum value required for second leg (optional)
+  STRATEGY_STOCH_COMPARISON   "gt" or "lt" to define comparison between legs
+  STRATEGY_STOCH_D_SMOOTHING  %D smoothing length (default: 3)
   BACKTEST_START              Start datetime (ISO8601, UTC)
   BACKTEST_END                End datetime (ISO8601, UTC)
   BACKTEST_INITIAL_CAPITAL    Starting capital
@@ -104,6 +140,72 @@ Environment variables (can be overridden by CLI args):
     parser.add_argument("--leverage", type=float, help="Leverage multiplier")
     parser.add_argument("--take-profit-pct", type=float, help="Take profit percentage (e.g., 0.02 for 2%%)")
     parser.add_argument("--doji-size", type=float, default=0.05, help="Doji size for pattern detection")
+    parser.add_argument(
+        "--stop-loss-mode",
+        choices=("percent", "close", "low"),
+        help="Stop-loss placement strategy",
+    )
+    parser.add_argument(
+        "--stop-loss-pct",
+        type=float,
+        help="Fraction for percent-based stop loss (e.g., 0.005 = 0.5%%)",
+    )
+    parser.add_argument(
+        "--skip-wick-filter",
+        action=argparse.BooleanOptionalAction,
+        help="Skip signals when engulfing candle upper wick outweighs the body",
+    )
+    parser.add_argument(
+        "--skip-bollinger-cross",
+        action=argparse.BooleanOptionalAction,
+        help="Skip signals when engulfing candle pierces the Bollinger upper band",
+    )
+    parser.add_argument("--bollinger-period", type=int, help="Period for Bollinger band filter")
+    parser.add_argument("--bollinger-stddev", type=float, help="Stddev multiplier for Bollinger filter")
+    parser.add_argument(
+        "--volume-filter",
+        dest="volume_filter",
+        action=argparse.BooleanOptionalAction,
+        help="Enable or disable volume pressure filter",
+    )
+    parser.add_argument(
+        "--stoch-enabled",
+        dest="stoch_enabled",
+        action=argparse.BooleanOptionalAction,
+        help="Enable or disable stochastic comparison filter",
+    )
+    parser.add_argument(
+        "--stoch-first-line",
+        choices=("k", "d"),
+        help="Line type for first stochastic leg (k or d)",
+    )
+    parser.add_argument("--stoch-first-period", type=int, help="Period for first stochastic leg")
+    parser.add_argument(
+        "--stoch-first-threshold",
+        type=float,
+        help="Minimum value for first stochastic leg (optional)",
+    )
+    parser.add_argument(
+        "--stoch-second-line",
+        choices=("k", "d"),
+        help="Line type for second stochastic leg (k or d)",
+    )
+    parser.add_argument("--stoch-second-period", type=int, help="Period for second stochastic leg")
+    parser.add_argument(
+        "--stoch-second-threshold",
+        type=float,
+        help="Minimum value for second stochastic leg (optional)",
+    )
+    parser.add_argument(
+        "--stoch-comparison",
+        choices=("gt", "lt"),
+        help="Comparison operator between stochastic legs",
+    )
+    parser.add_argument(
+        "--stoch-d-smoothing",
+        type=int,
+        help="Smoothing length for %D (applies when using D line)",
+    )
 
     # Backtest parameters
     parser.add_argument("--start", type=parse_datetime, help="Start datetime (ISO8601, UTC)")
@@ -132,9 +234,9 @@ Environment variables (can be overridden by CLI args):
     return parser
 
 
-def resolve_config(args: argparse.Namespace, env_config: Dict[str, str]) -> Dict[str, object]:
+def resolve_config(args: argparse.Namespace, env_config: Dict[str, str]) -> Dict[str, Any]:
     """Resolve configuration from CLI args and environment, with CLI taking precedence."""
-    config: Dict[str, object] = {}
+    config: Dict[str, Any] = {}
 
     # Strategy config
     config["symbol"] = args.symbol or env_config["symbol"] or None
@@ -145,6 +247,44 @@ def resolve_config(args: argparse.Namespace, env_config: Dict[str, str]) -> Dict
         float(env_config["take_profit_pct"]) if env_config["take_profit_pct"] else None
     )
     config["doji_size"] = args.doji_size or float(env_config.get("doji_size", "0.05"))
+    config["stop_loss_mode"] = args.stop_loss_mode or env_config.get("stop_loss_mode", "percent")
+    config["stop_loss_pct"] = (
+        args.stop_loss_pct if args.stop_loss_pct is not None else float(env_config.get("stop_loss_pct", "0.005"))
+    )
+    if args.skip_wick_filter is not None:
+        config["skip_wick_filter"] = args.skip_wick_filter
+    else:
+        config["skip_wick_filter"] = str_to_bool(env_config.get("skip_wick_filter"), False)
+    if args.skip_bollinger_cross is not None:
+        config["skip_bollinger_cross"] = args.skip_bollinger_cross
+    else:
+        config["skip_bollinger_cross"] = str_to_bool(env_config.get("skip_bollinger_cross"), False)
+    config["bollinger_period"] = args.bollinger_period or int(env_config.get("bollinger_period", "20"))
+    config["bollinger_stddev"] = args.bollinger_stddev or float(env_config.get("bollinger_stddev", "2.0"))
+    if args.volume_filter is not None:
+        config["volume_filter_enabled"] = args.volume_filter
+    else:
+        config["volume_filter_enabled"] = str_to_bool(env_config.get("volume_filter_enabled"), True)
+    if args.stoch_enabled is not None:
+        config["stoch_enabled"] = args.stoch_enabled
+    else:
+        config["stoch_enabled"] = str_to_bool(env_config.get("stoch_enabled"), True)
+    config["stoch_first_line"] = args.stoch_first_line or env_config.get("stoch_first_line", "k")
+    config["stoch_first_period"] = args.stoch_first_period or int(env_config.get("stoch_first_period", "20"))
+    config["stoch_first_threshold"] = (
+        args.stoch_first_threshold
+        if args.stoch_first_threshold is not None
+        else (float(env_config["stoch_first_threshold"]) if env_config.get("stoch_first_threshold") else None)
+    )
+    config["stoch_second_line"] = args.stoch_second_line or env_config.get("stoch_second_line", "k")
+    config["stoch_second_period"] = args.stoch_second_period or int(env_config.get("stoch_second_period", "100"))
+    config["stoch_second_threshold"] = (
+        args.stoch_second_threshold
+        if args.stoch_second_threshold is not None
+        else (float(env_config["stoch_second_threshold"]) if env_config.get("stoch_second_threshold") else None)
+    )
+    config["stoch_comparison"] = args.stoch_comparison or env_config.get("stoch_comparison", "gt")
+    config["stoch_d_smoothing"] = args.stoch_d_smoothing or int(env_config.get("stoch_d_smoothing", "3"))
 
     # Backtest config
     config["start"] = args.start or (
@@ -243,6 +383,26 @@ def main(argv: list[str] | None = None) -> int:
             leverage=float(config["leverage"]),
             take_profit_pct=float(config["take_profit_pct"]),
             doji_size=float(config["doji_size"]),
+            stop_loss_mode=StopLossMode(str(config["stop_loss_mode"])),
+            stop_loss_pct=float(config["stop_loss_pct"]),
+            skip_large_upper_wick=bool(config["skip_wick_filter"]),
+            skip_bollinger_cross=bool(config["skip_bollinger_cross"]),
+            bollinger_period=int(config["bollinger_period"]),
+            bollinger_stddev=float(config["bollinger_stddev"]),
+            enable_volume_pressure_filter=bool(config["volume_filter_enabled"]),
+            enable_stochastic_filter=bool(config["stoch_enabled"]),
+            stochastic_first_line=str(config["stoch_first_line"]),
+            stochastic_first_period=int(config["stoch_first_period"]),
+            stochastic_first_threshold=(
+                float(config["stoch_first_threshold"]) if config["stoch_first_threshold"] is not None else None
+            ),
+            stochastic_second_line=str(config["stoch_second_line"]),
+            stochastic_second_period=int(config["stoch_second_period"]),
+            stochastic_second_threshold=(
+                float(config["stoch_second_threshold"]) if config["stoch_second_threshold"] is not None else None
+            ),
+            stochastic_comparison=str(config["stoch_comparison"]),
+            stochastic_d_smoothing=int(config["stoch_d_smoothing"]),
         )
     )
 
