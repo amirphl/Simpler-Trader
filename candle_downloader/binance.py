@@ -12,7 +12,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from .models import Candle, normalize_symbol
 
 BINANCE_BASE_URL = "https://api.binance.com"
-MAX_BATCH = 1000
+MAX_BATCH = 10000
 
 
 def interval_to_milliseconds(interval: str) -> int:
