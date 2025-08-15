@@ -1,0 +1,2 @@
+"""Plot command-line interface."""
+
