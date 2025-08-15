@@ -12,6 +12,11 @@ This directory contains scenario-specific configuration files.
 - Window Size: 2
 - Leverage: 1.0
 - Take Profit: 0.3 (30%)
+- Stop Loss: Percent mode (0.5% below entry)
+- Wick Filter: disabled
+- Bollinger Filter: disabled (period 20, stddev 2.0)
+- Volume Filter: enabled
+- Stochastic Filter: enabled (K20 > K100)
 - Start: 2025-01-01T00:00:00Z
 - End: Current time (updated dynamically)
 - Proxy: http://127.0.0.1:12334
@@ -46,6 +51,17 @@ This directory contains scenario-specific configuration files.
      --window-size 2 \
      --leverage 1.0 \
      --take-profit-pct 0.3 \
+    --stop-loss-mode percent \
+    --stop-loss-pct 0.005 \
+    --volume-filter \
+    --stoch-enabled \
+    --stoch-first-line k \
+    --stoch-first-period 20 \
+    --stoch-second-line k \
+    --stoch-second-period 100 \
+    --stoch-comparison gt \
+    --bollinger-period 20 \
+    --bollinger-stddev 2.0 \
      --start 2025-01-01T00:00:00Z \
      --end $(date -u +"%Y-%m-%dT%H:%M:%SZ") \
      --initial-capital 10000.0 \
