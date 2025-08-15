@@ -1,0 +1,19 @@
+from __future__ import annotations
+
+from typing import Any, Callable, Dict, TypeVar
+
+T = TypeVar("T")
+BM = TypeVar("BM", bound="BaseModel")
+
+class BaseModel:
+    model_config: Dict[str, Any]
+    def __init__(self, **kwargs: Any) -> None: ...
+    def model_dump(self, *args: Any, **kwargs: Any) -> Dict[str, Any]: ...
+    def model_copy(self: BM, *args: Any, **kwargs: Any) -> BM: ...
+
+class ConfigDict(dict[str, Any]): ...
+
+def Field(*, default: Any = ..., description: str | None = ..., ge: float | None = ..., gt: float | None = ...) -> Any: ...
+
+def field_validator(*fields: str) -> Callable[[Callable[[Any, T], T]], Callable[[Any, T], T]]: ...
+
