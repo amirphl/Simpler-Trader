@@ -62,6 +62,7 @@ def run_backtest_job(job_id: str, submission: BacktestSubmission, *, cache_dir: 
             stochastic_second_threshold=params.stochastic_second_threshold,
             stochastic_comparison=params.stochastic_comparison,
             stochastic_d_smoothing=params.stochastic_d_smoothing,
+            exchange_fee_pct=params.exchange_fee_pct,
         )
     )
 

@@ -13,6 +13,7 @@ python -m cmd.backtest.main \
   --window-size 5 \
   --leverage 2.0 \
   --take-profit-pct 0.02 \
+  --exchange-fee-pct 0.0004 \
   --start 2024-01-01T00:00:00Z \
   --end 2024-02-01T00:00:00Z \
   --initial-capital 10000.0 \
@@ -31,6 +32,7 @@ export STRATEGY_TIMEFRAME=1h
 export STRATEGY_WINDOW_SIZE=5
 export STRATEGY_LEVERAGE=2.0
 export STRATEGY_TAKE_PROFIT_PCT=0.02
+export STRATEGY_EXCHANGE_FEE_PCT=0.0004
 export BACKTEST_START=2024-01-01T00:00:00Z
 export BACKTEST_END=2024-02-01T00:00:00Z
 export BACKTEST_INITIAL_CAPITAL=10000.0
@@ -69,6 +71,9 @@ python -m cmd.backtest.main --symbol ETHUSDT --leverage 3.0
 - `--leverage` / `STRATEGY_LEVERAGE`: Leverage multiplier (e.g., 2.0 for 2x)
 - `--take-profit-pct` / `STRATEGY_TAKE_PROFIT_PCT`: Take profit as decimal (0.02 = 2%)
 - `--doji-size` / `STRATEGY_DOJI_SIZE`: Doji detection threshold (default: 0.05)
+- `--stop-loss-mode` / `STRATEGY_STOP_LOSS_MODE`: Stop placement (`percent`, `close`, `low`, `open`, or `body`)
+- `--stop-loss-pct` / `STRATEGY_STOP_LOSS_PCT`: Fraction for percent/body stop modes (e.g., 0.005 = 0.5%)
+- `--exchange-fee-pct` / `STRATEGY_EXCHANGE_FEE_PCT`: Exchange fee per side as decimal (default: 0.0004)
 
 ### Backtest Parameters
 

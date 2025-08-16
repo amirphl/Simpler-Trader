@@ -26,6 +26,7 @@ function serializeForm(formEl) {
       take_profit_pct: tp ? parseFloat(tp) : 0.02,
       stop_loss_mode: data.get("stop_loss_mode"),
       stop_loss_pct: stopLossPct ? parseFloat(stopLossPct) : 0.005,
+      exchange_fee_pct: parseFloat(data.get("exchange_fee_pct") || "0.0004"),
       skip_large_upper_wick: data.get("skip_large_upper_wick") === "true",
       skip_bollinger_cross: data.get("skip_bollinger_cross") === "true",
       enable_volume_pressure_filter: data.get("enable_volume_pressure_filter") === "true",

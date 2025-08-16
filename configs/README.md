@@ -13,6 +13,7 @@ This directory contains scenario-specific configuration files.
 - Leverage: 1.0
 - Take Profit: 0.3 (30%)
 - Stop Loss: Percent mode (0.5% below entry)
+- Exchange Fee: 0.04% per side (0.0004)
 - Wick Filter: disabled
 - Bollinger Filter: disabled (period 20, stddev 2.0)
 - Volume Filter: enabled
@@ -62,6 +63,7 @@ This directory contains scenario-specific configuration files.
     --stoch-comparison gt \
     --bollinger-period 20 \
     --bollinger-stddev 2.0 \
+    --exchange-fee-pct 0.0004 \
      --start 2025-01-01T00:00:00Z \
      --end $(date -u +"%Y-%m-%dT%H:%M:%SZ") \
      --initial-capital 10000.0 \

@@ -44,6 +44,7 @@ class EngulfingStrategyParams(BaseModel):
     http_proxy: str | None = None
     https_proxy: str | None = None
     risk_free_rate: float = 0.0
+    exchange_fee_pct: float = Field(default=0.0004, ge=0.0)
 
     @field_validator("stochastic_first_line", "stochastic_second_line")
     @classmethod

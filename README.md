@@ -12,7 +12,8 @@ A comprehensive, production-ready backtesting framework for cryptocurrency tradi
 - **Proxy Support**: Built-in HTTP/HTTPS proxy configuration for network flexibility
 - **Multiple Storage Backends**: SQLite (recommended) or CSV for candle data
 - **Type Safety**: Full type hints with Pyright configuration
-- **Zero External Dependencies**: Core functionality uses only Python standard library
+- **Web Control Panel**: FastAPI-powered UI with REST + WebSocket endpoints
+- **Lean Core**: Backtesting/downloader modules rely on the Python standard library; optional UI/plotting layers add FastAPI and Plotly only when needed
 
 ## 📋 Requirements
 
@@ -75,6 +76,7 @@ python -m cmd.backtest.main \
   --start 2025-01-01T00:00:00Z \
   --end $(date -u +"%Y-%m-%dT%H:%M:%SZ") \
   --initial-capital 10000.0 \
+  --exchange-fee-pct 0.0004 \
   --proxy http://127.0.0.1:12334 \
   --stats-output ./results/eth_15m_stats.json \
   --plot-output ./results/eth_15m_plot.html \
@@ -114,10 +116,32 @@ All job artifacts are stored under `results/web_backtests`, so runs continue eve
 ### Production Deployment
 
 1. Start the FastAPI service on a loopback port (e.g., `python -m cmd.web.main --host 127.0.0.1 --port 9000`).
-2. Install the nginx file `deploy/nginx/trade.jaazebeh.ir.conf`, update the upstream if needed, then symlink it into `/etc/nginx/sites-enabled/`.
+2. Install the nginx file `deploy/nginx/balut.jaazebeh.ir.conf` (or adapt it to your domain), update the upstream if needed, then symlink it into `/etc/nginx/sites-enabled/`.
 3. Obtain certificates under `/etc/letsencrypt/live/jaazebeh.ir/` (as referenced in the config).
 4. Reload nginx and ensure port `9092/tcp` is open on the firewall.
 5. Set `WEB_TRUSTED_HOSTS="trade.jaazebeh.ir"` and `WEB_FORCE_HTTPS=true` on the server (defaults already enforce these).
+
+#### Systemd Service (Recommended)
+
+1. Copy the provided unit file:
+   ```bash
+   sudo install -m 644 deploy/systemd/backtest-web.service /etc/systemd/system/backtest-web.service
+   ```
+2. Adjust the file to match your deployment paths/user (`WorkingDirectory`, `ExecStart`, `User`/`Group`).
+3. Create an environment file for secrets and overrides (optional):
+   ```bash
+   sudo install -d /etc/scalp-test
+   sudo nano /etc/scalp-test/web.env    # export WEB_TRUSTED_HOSTS=..., etc.
+   ```
+4. Reload systemd and enable the service:
+   ```bash
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now backtest-web.service
+   ```
+5. Tail logs:
+   ```bash
+   journalctl -fu backtest-web.service
+   ```
 
 ### Example: Send Live Signals to Telegram
 
@@ -162,8 +186,9 @@ python -m cmd.backtest.main [OPTIONS]
 - `--window-size N` - Number of candles to check for bearish pattern
 - `--leverage LEVERAGE` - Leverage multiplier (e.g., 2.0 for 2x)
 - `--take-profit-pct PCT` - Take profit as decimal (0.02 = 2%)
-- `--stop-loss-mode {percent,close,low}` - Stop-loss placement strategy
+- `--stop-loss-mode {percent,close,low,open,body}` - Stop-loss placement strategy
 - `--stop-loss-pct PCT` - Fractional stop loss when mode is `percent`
+- `--exchange-fee-pct PCT` - Exchange fee per side (decimal, default 0.0004)
 - `--[no-]skip-wick-filter` - Toggle rejection of long upper-wick engulfing candles
 - `--[no-]skip-bollinger-cross` - Toggle rejection of Bollinger upper-band pierces
 - `--bollinger-period N` - Period for Bollinger band filter
@@ -204,6 +229,7 @@ export STRATEGY_LEVERAGE=2.0
 export STRATEGY_TAKE_PROFIT_PCT=0.02
 export STRATEGY_STOP_LOSS_MODE=percent
 export STRATEGY_STOP_LOSS_PCT=0.005
+export STRATEGY_EXCHANGE_FEE_PCT=0.0004
 export STRATEGY_SKIP_WICK_FILTER=false
 export STRATEGY_SKIP_BB_FILTER=false
 export STRATEGY_BB_PERIOD=20
@@ -348,7 +374,8 @@ The included `EngulfingStrategy` implements a long-only strategy:
 
 **Exit Conditions:**
 - **Take Profit**: Price reaches entry × (1 + take_profit_pct)
-- **Stop Loss**: Configurable per trade — percent drop from entry (default 0.5%), engulfing candle close, or engulfing candle low.
+- **Stop Loss**: Configurable per trade — percent drop from entry (default 0.5%), engulfing candle close, engulfing candle low, engulfing candle open, or a fraction of the engulfing candle body.
+- **Fees**: PnL automatically subtracts a configurable per-side exchange fee (default 0.04%) on both entry and exit.
 
 **Optional Filters:**
 - Skip signals where the engulfing candle's upper wick is larger than its body.
@@ -361,8 +388,9 @@ The included `EngulfingStrategy` implements a long-only strategy:
 - `window_size`: Number of bearish candles to check
 - `leverage`: Position leverage multiplier
 - `take_profit_pct`: Take profit percentage (decimal)
-- `stop_loss_mode`: `percent`, `close`, or `low`
-- `stop_loss_pct`: Fraction used when `stop_loss_mode=percent`
+- `stop_loss_mode`: `percent`, `close`, `low`, `open`, or `body`
+- `stop_loss_pct`: Fraction used when `stop_loss_mode=percent` and as the body fraction when `stop_loss_mode=body`
+- `exchange_fee_pct`: Maker/taker fee per side expressed as a decimal (default 0.0004)
 - `skip_large_upper_wick`: Toggle wick-exhaustion filter
 - `skip_bollinger_cross`: Toggle Bollinger upper-band filter
 - `bollinger_period`: Period for Bollinger calculation

@@ -44,6 +44,7 @@ class EngulfingStrategyConfig:
     # --- Stop-loss behaviour ---
     stop_loss_mode: StopLossMode = StopLossMode.PERCENT
     stop_loss_pct: float = 0.005  # 0.5% default, only used when mode == PERCENT
+    exchange_fee_pct: float = 0.0004  # default 4 bps per side
 
     # --- Optional filters ---
     skip_large_upper_wick: bool = False
@@ -75,6 +76,8 @@ class EngulfingStrategyConfig:
             raise ValueError("max_volume_pressure_score must be positive")
         if self.stop_loss_mode is StopLossMode.PERCENT and self.stop_loss_pct <= 0:
             raise ValueError("stop_loss_pct must be positive for percent mode")
+        if self.exchange_fee_pct < 0:
+            raise ValueError("exchange_fee_pct must be non-negative")
         if self.bollinger_period < 2:
             raise ValueError("bollinger_period must be at least 2")
         if self.bollinger_stddev <= 0:
@@ -296,6 +299,7 @@ class EngulfingStrategy(BacktestStrategy):
                 "stochastic_comparison": self._config.stochastic_comparison,
                 "stochastic_d_smoothing": self._config.stochastic_d_smoothing,
                 "doji_size": self._config.doji_size,
+                "exchange_fee_pct": self._config.exchange_fee_pct,
             },
         )
         symbol = self._config.symbol
@@ -406,26 +410,17 @@ class EngulfingStrategy(BacktestStrategy):
         if position is not None and candles:
             last_candle = candles[-1]
             exit_price = last_candle.close
-            price_change = exit_price - position.entry_price
-            pnl = (price_change / position.entry_price) * position.size * position.leverage
-            return_pct = (price_change / position.entry_price) * 100.0 * position.leverage
-
-            trades.append(
-                TradePerformance(
-                    entry_time=position.entry_time,
-                    exit_time=last_candle.close_time,
-                    pnl=pnl,
-                    return_pct=return_pct,
-                    notes="End of backtest",
-                    metadata={
-                        "entry_price": position.entry_price,
-                        "exit_price": exit_price,
-                        "stop_loss": position.stop_loss,
-                        "take_profit": position.take_profit,
-                        "leverage": position.leverage,
-                    },
-                )
+            pnl = self._record_exit(
+                candle=last_candle,
+                exit_price=exit_price,
+                exit_reason="End of backtest",
+                position=position,
+                trades=trades,
+                exit_time=last_candle.close_time,
+                note_override="End of backtest",
             )
+            current_capital += pnl
+            position = None
 
         return trades
 
@@ -444,28 +439,50 @@ class EngulfingStrategy(BacktestStrategy):
         exit_reason: str,
         position: Position,
         trades: List[TradePerformance],
+        exit_time: datetime | None = None,
+        note_override: str | None = None,
     ) -> float:
-        price_change = exit_price - position.entry_price
-        pnl = (price_change / position.entry_price) * position.size * position.leverage
-        return_pct = (price_change / position.entry_price) * 100.0 * position.leverage
+        pnl, fees_paid, return_pct = self._compute_trade_financials(exit_price, position)
+        note = note_override or f"{exit_reason} at {exit_price:.2f}"
 
         trades.append(
             TradePerformance(
                 entry_time=position.entry_time,
-                exit_time=candle.open_time,
+                exit_time=exit_time or candle.open_time,
                 pnl=pnl,
                 return_pct=return_pct,
-                notes=f"{exit_reason} at {exit_price:.2f}",
+                notes=note,
                 metadata={
                     "entry_price": position.entry_price,
                     "exit_price": exit_price,
                     "stop_loss": position.stop_loss,
                     "take_profit": position.take_profit,
                     "leverage": position.leverage,
+                    "fees": fees_paid,
                 },
             )
         )
         return pnl
+
+    def _compute_trade_financials(self, exit_price: float, position: Position) -> tuple[float, float, float]:
+        price_change = exit_price - position.entry_price
+        gross_pnl = (price_change / position.entry_price) * position.size * position.leverage
+        fees_paid = self._calculate_fees(exit_price, position)
+        pnl = gross_pnl - fees_paid
+        return_pct = (pnl / position.size) * 100.0 if position.size else 0.0
+        return pnl, fees_paid, return_pct
+
+    def _calculate_fees(self, exit_price: float, position: Position) -> float:
+        fee_pct = self._config.exchange_fee_pct
+        if fee_pct <= 0:
+            return 0.0
+        notional_entry = position.size * position.leverage
+        if notional_entry <= 0 or position.entry_price <= 0:
+            return 0.0
+        quantity = notional_entry / position.entry_price
+        entry_fee = notional_entry * fee_pct
+        exit_fee = quantity * exit_price * fee_pct
+        return entry_fee + exit_fee
 
     def _compute_stop_loss(self, entry_price: float, engulf_candle: Candle) -> float:
         mode = self._config.stop_loss_mode

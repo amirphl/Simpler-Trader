@@ -47,6 +47,7 @@ def load_env_config() -> Dict[str, str]:
         "doji_size": os.getenv("STRATEGY_DOJI_SIZE", "0.05"),
         "stop_loss_mode": os.getenv("STRATEGY_STOP_LOSS_MODE", "percent"),
         "stop_loss_pct": os.getenv("STRATEGY_STOP_LOSS_PCT", "0.005"),
+        "exchange_fee_pct": os.getenv("STRATEGY_EXCHANGE_FEE_PCT", "0.0004"),
         "skip_wick_filter": os.getenv("STRATEGY_SKIP_WICK_FILTER", "false"),
         "skip_bollinger_cross": os.getenv("STRATEGY_SKIP_BB_FILTER", "false"),
         "bollinger_period": os.getenv("STRATEGY_BB_PERIOD", "20"),
@@ -103,8 +104,9 @@ Environment variables (can be overridden by CLI args):
   STRATEGY_LEVERAGE           Leverage multiplier
   STRATEGY_TAKE_PROFIT_PCT    Take profit percentage (e.g., 0.02 for 2%%)
   STRATEGY_DOJI_SIZE          Doji size for pattern detection (default: 0.05)
-  STRATEGY_STOP_LOSS_MODE     Stop-loss placement: percent, close, or low
+  STRATEGY_STOP_LOSS_MODE     Stop-loss placement: percent, close, low, open, or body
   STRATEGY_STOP_LOSS_PCT      Fraction for percent-based stop loss (default: 0.005)
+  STRATEGY_EXCHANGE_FEE_PCT   Exchange fee per side (decimal, default: 0.0004)
   STRATEGY_SKIP_WICK_FILTER   true/false to skip long upper-wick engulfing candles
   STRATEGY_SKIP_BB_FILTER     true/false to skip when engulfing candle pierces Bollinger upper band
   STRATEGY_BB_PERIOD          Period used for Bollinger filter (default: 20)
@@ -142,13 +144,18 @@ Environment variables (can be overridden by CLI args):
     parser.add_argument("--doji-size", type=float, default=0.05, help="Doji size for pattern detection")
     parser.add_argument(
         "--stop-loss-mode",
-        choices=("percent", "close", "low"),
+        choices=("percent", "close", "low", "open", "body"),
         help="Stop-loss placement strategy",
     )
     parser.add_argument(
         "--stop-loss-pct",
         type=float,
         help="Fraction for percent-based stop loss (e.g., 0.005 = 0.5%%)",
+    )
+    parser.add_argument(
+        "--exchange-fee-pct",
+        type=float,
+        help="Exchange fee per side as a decimal (e.g., 0.0004 = 4 bps)",
     )
     parser.add_argument(
         "--skip-wick-filter",
@@ -250,6 +257,11 @@ def resolve_config(args: argparse.Namespace, env_config: Dict[str, str]) -> Dict
     config["stop_loss_mode"] = args.stop_loss_mode or env_config.get("stop_loss_mode", "percent")
     config["stop_loss_pct"] = (
         args.stop_loss_pct if args.stop_loss_pct is not None else float(env_config.get("stop_loss_pct", "0.005"))
+    )
+    config["exchange_fee_pct"] = (
+        args.exchange_fee_pct
+        if args.exchange_fee_pct is not None
+        else float(env_config.get("exchange_fee_pct", "0.0004"))
     )
     if args.skip_wick_filter is not None:
         config["skip_wick_filter"] = args.skip_wick_filter
@@ -403,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
             stochastic_comparison=str(config["stoch_comparison"]),
             stochastic_d_smoothing=int(config["stoch_d_smoothing"]),
+            exchange_fee_pct=float(config["exchange_fee_pct"]),
         )
     )
 
