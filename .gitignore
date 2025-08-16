@@ -27,7 +27,7 @@ signal_state.json
 
 # Generated artifacts
 *.log
-*.html
+# *.html
 *.csv
 *.db
 
