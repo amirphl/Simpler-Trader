@@ -1,0 +1,20 @@
+[Unit]
+Description=Scalp Test Backtest Web Control Panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=amirphl
+Group=amirphl
+WorkingDirectory=/home/amirphl/Simpler-Trader
+EnvironmentFile=-/home/amirphl/Simpler-Trader/web.env
+ExecStart=/home/amirphl/.pyenv/shims/python -m cmd.web.main --host 127.0.0.1 --port 9092
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target
+
