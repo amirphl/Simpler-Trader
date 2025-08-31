@@ -408,18 +408,18 @@ class EngulfingStrategy(BacktestStrategy):
 
         # Close any remaining position at the end
         if position is not None and candles:
-            last_candle = candles[-1]
-            exit_price = last_candle.close
-            pnl = self._record_exit(
-                candle=last_candle,
-                exit_price=exit_price,
-                exit_reason="End of backtest",
-                position=position,
-                trades=trades,
-                exit_time=last_candle.close_time,
-                note_override="End of backtest",
-            )
-            current_capital += pnl
+            # last_candle = candles[-1]
+            # exit_price = last_candle.close
+            # pnl = self._record_exit(
+            #     candle=last_candle,
+            #     exit_price=exit_price,
+            #     exit_reason="End of backtest",
+            #     position=position,
+            #     trades=trades,
+            #     exit_time=last_candle.close_time,
+            #     note_override="End of backtest",
+            # )
+            # current_capital += pnl
             position = None
 
         return trades
