@@ -7,6 +7,28 @@ from backtest.engulfing_strategy import StopLossMode
 from pydantic import BaseModel, ConfigDict, Field, field_validator  # type: ignore[import-not-found]
 
 
+class PinbarStrategyParams(BaseModel):
+    """User-provided parameters for the Bullish Pinbar strategy."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    symbol: str = Field(default="ETHUSDT")
+    timeframe: str = Field(default="15m")
+    leverage: float = Field(default=1.0, gt=0)
+    take_profit_pct: float = Field(default=0.02, gt=0)
+
+    stop_loss_mode: StopLossMode = Field(default=StopLossMode.PERCENT)
+    stop_loss_pct: float = Field(default=0.005, gt=0)
+    exchange_fee_pct: float = Field(default=0.0004, ge=0)
+
+    min_shadow_body_ratio: float = Field(default=0.5, gt=0)
+    shadow_dominance_ratio: float = Field(default=2.0, gt=0)
+
+    http_proxy: str | None = None
+    https_proxy: str | None = None
+    risk_free_rate: float = 0.0
+
+
 class EngulfingStrategyParams(BaseModel):
     """User-provided parameters for the Engulfing strategy."""
 
@@ -68,12 +90,12 @@ class BacktestSubmission(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    strategy: Literal["engulfing"] = "engulfing"
+    strategy: Literal["engulfing", "pinbar"] = Field(default="engulfing")
     start: datetime
     end: datetime
     initial_capital: float = Field(default=10_000.0, gt=0)
     override_download: bool = True
-    params: EngulfingStrategyParams
+    params: EngulfingStrategyParams | PinbarStrategyParams
 
 
 class JobResponse(BaseModel):
