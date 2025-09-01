@@ -140,7 +140,7 @@ class PinbarStrategy(BacktestStrategy):
             return False
         if not (previous.open > previous.close and abs(previous.close - previous.open) > body):
             return False
-        down_shadow = (candle.open - candle.low) if candle.open > candle.close else (candle.close - candle.low)
+        down_shadow = (candle.close - candle.low) if candle.open > candle.close else (candle.open - candle.low)
         up_shadow = (candle.high - candle.open) if candle.open > candle.close else (candle.high - candle.close)
         if down_shadow <= self._config.min_shadow_body_ratio * body:
             return False
