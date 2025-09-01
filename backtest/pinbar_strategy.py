@@ -89,15 +89,20 @@ class PinbarStrategy(BacktestStrategy):
             candle = candles[idx]
 
             if position is not None:
-                exit_price, exit_reason = self._check_exit(candles[idx], position)
+                exit_price, exit_reason = self._check_exit(candle, position)
                 if exit_price is not None:
                     pnl = self._record_exit(candle, exit_price, exit_reason, position, trades)
                     current_capital += pnl
                     position = None
 
-            if position is None and self._is_bullish_pinbar(candles, idx):
+            pinbar_idx = idx - 1
+            if pinbar_idx < 1:
+                continue
+
+            if position is None and self._is_bullish_pinbar(candles, pinbar_idx):
+                pinbar_candle = candles[pinbar_idx]
                 entry_price = candle.open
-                stop_loss = self._compute_stop_loss(entry_price, candle)
+                stop_loss = self._compute_stop_loss(entry_price, pinbar_candle)
                 if stop_loss >= entry_price:
                     continue
                 take_profit = entry_price * (1.0 + self._config.take_profit_pct)
@@ -110,21 +115,21 @@ class PinbarStrategy(BacktestStrategy):
                     size=current_capital,
                 )
                 exit_price, exit_reason = self._check_exit(candle, position)
-                if exit_price is not None and exit_reason is not None:
-                    pnl = self._record_exit(
-                        candle=candle,
-                        exit_price=exit_price,
-                        exit_reason=exit_reason or "",
-                        position=position,
-                        trades=trades,
-                    )
+                if exit_price is not None:
+                    pnl = self._record_exit(candle, exit_price, exit_reason or "Exit", position, trades)
                     current_capital += pnl
-                    position = None  # type: ignore
+                    position = None
+
+        # if position is not None and candles:
+        #     last_candle = candles[-1]
+        #     exit_price = last_candle.close
+        #     pnl = self._record_exit(last_candle, exit_price, "End of backtest", position, trades)
+        #     current_capital += pnl
 
         return trades
 
     def _is_bullish_pinbar(self, candles: Sequence[Candle], idx: int) -> bool:
-        if idx == 0:
+        if idx <= 0:
             return False
         candle = candles[idx]
         previous = candles[idx - 1]
