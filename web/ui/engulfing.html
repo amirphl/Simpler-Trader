@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Engulfing Strategy – Backtest Control Panel</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        color: #0f172a;
+        background: #f8fafc;
+      }
+      body {
+        margin: 0;
+        padding: 0;
+        background: #f8fafc;
+      }
+      header {
+        background: #0f172a;
+        color: #f8fafc;
+        padding: 1.5rem;
+      }
+      .header-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1rem;
+        flex-wrap: wrap;
+      }
+      .home-link {
+        color: #cbd5f5;
+        text-decoration: none;
+        font-weight: 600;
+      }
+      .home-link:hover {
+        color: #ffffff;
+      }
+      main {
+        padding: 1.5rem;
+        display: grid;
+        gap: 1.5rem;
+      }
+      section {
+        background: #ffffff;
+        border-radius: 8px;
+        padding: 1rem 1.25rem;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+      }
+      fieldset {
+        border: none;
+        padding: 0;
+        margin: 0;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 1rem;
+      }
+      label {
+        display: flex;
+        flex-direction: column;
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        color: #475569;
+      }
+      input,
+      select {
+        margin-top: 0.35rem;
+        padding: 0.5rem 0.6rem;
+        border-radius: 6px;
+        border: 1px solid #cbd5f5;
+        font-size: 1rem;
+      }
+      button {
+        cursor: pointer;
+        border: none;
+        border-radius: 6px;
+        padding: 0.75rem 1.5rem;
+        font-size: 1rem;
+        color: #fff;
+        background: #2563eb;
+        transition: background 0.2s ease;
+      }
+      button:hover {
+        background: #1d4ed8;
+      }
+      .status {
+        font-weight: 600;
+        letter-spacing: 0.05em;
+      }
+      .status[data-state="completed"] {
+        color: #15803d;
+      }
+      .status[data-state="running"],
+      .status[data-state="queued"] {
+        color: #2563eb;
+      }
+      .status[data-state="failed"] {
+        color: #b91c1c;
+      }
+      .grid-two {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 1.5rem;
+      }
+      pre {
+        background: #0f172a;
+        color: #f8fafc;
+        padding: 1rem;
+        border-radius: 6px;
+        overflow: auto;
+        max-height: 320px;
+      }
+      .history input {
+        max-width: 320px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="header-row">
+        <div>
+          <h1>Bullish Engulfing Strategy</h1>
+          <p>Configure filters, launch backtests, and monitor live progress.</p>
+        </div>
+        <a class="home-link" href="/">← All Strategies</a>
+      </div>
+    </header>
+    <main>
+      <section>
+        <h2>1. Configure Backtest</h2>
+        <form id="backtest-form">
+          <input type="hidden" name="strategy" value="engulfing" />
+          <fieldset>
+            <label>
+              Symbol
+              <input name="symbol" value="ETHUSDT" required />
+            </label>
+            <label>
+              Timeframe
+              <input name="timeframe" value="15m" required />
+            </label>
+            <label>
+              Window Size
+              <input name="window_size" type="number" value="5" min="1" required />
+            </label>
+            <label>
+              Leverage
+              <input name="leverage" type="number" value="1" step="0.1" required />
+            </label>
+            <label>
+              Take Profit %
+              <input name="take_profit_pct" type="number" value="0.02" step="0.001" required />
+            </label>
+            <label>
+              Doji Size
+              <input name="doji_size" type="number" value="0.05" step="0.01" required />
+            </label>
+            <label>
+              Start (UTC)
+              <input name="start" type="datetime-local" required />
+            </label>
+            <label>
+              End (UTC)
+              <input name="end" type="datetime-local" required />
+            </label>
+            <label>
+              Initial Capital
+              <input name="initial_capital" type="number" value="10000" step="100" required />
+            </label>
+            <label>
+              Stop Loss Mode
+              <select name="stop_loss_mode">
+                <option value="percent">Percent</option>
+                <option value="close">Previous Close</option>
+                <option value="low">Previous Low</option>
+                <option value="open">Previous Open</option>
+                <option value="body">Body Fraction</option>
+              </select>
+            </label>
+            <label>
+              Stop Loss %
+              <input name="stop_loss_pct" type="number" value="0.005" step="0.0005" />
+            </label>
+            <label>
+              Exchange Fee (decimal)
+              <input name="exchange_fee_pct" type="number" value="0.0004" step="0.0001" min="0" />
+            </label>
+            <label>
+              Skip Large Upper Wick
+              <select name="skip_large_upper_wick">
+                <option value="true">True</option>
+                <option value="false" selected>False</option>
+              </select>
+            </label>
+            <label>
+              Skip Bollinger Cross
+              <select name="skip_bollinger_cross">
+                <option value="true">True</option>
+                <option value="false" selected>False</option>
+              </select>
+            </label>
+            <label>
+              Bollinger Period
+              <input name="bollinger_period" type="number" value="20" min="2" />
+            </label>
+            <label>
+              Bollinger Stddev
+              <input name="bollinger_stddev" type="number" value="2" step="0.1" min="0.1" />
+            </label>
+            <label>
+              Enable Volume Filter
+              <select name="enable_volume_pressure_filter">
+                <option value="true" selected>True</option>
+                <option value="false">False</option>
+              </select>
+            </label>
+            <label>
+              Volume Window
+              <input name="volume_window" type="number" value="20" min="2" />
+            </label>
+            <label>
+              Max Volume Score
+              <input name="max_volume_pressure_score" type="number" value="3" step="0.1" min="0.1" />
+            </label>
+            <label>
+              Enable Stochastic Filter
+              <select name="enable_stochastic_filter">
+                <option value="true" selected>True</option>
+                <option value="false">False</option>
+              </select>
+            </label>
+            <label>
+              Stoch First Line
+              <select name="stochastic_first_line">
+                <option value="k" selected>K</option>
+                <option value="d">D</option>
+              </select>
+            </label>
+            <label>
+              Stoch First Period
+              <input name="stochastic_first_period" type="number" value="20" min="2" />
+            </label>
+            <label>
+              Stoch Second Line
+              <select name="stochastic_second_line">
+                <option value="k" selected>K</option>
+                <option value="d">D</option>
+              </select>
+            </label>
+            <label>
+              Stoch Second Period
+              <input name="stochastic_second_period" type="number" value="100" min="2" />
+            </label>
+            <label>
+              Stoch Comparison
+              <select name="stochastic_comparison">
+                <option value="gt" selected>First &gt; Second</option>
+                <option value="lt">First &lt; Second</option>
+              </select>
+            </label>
+            <label>
+              %D Smoothing
+              <input name="stochastic_d_smoothing" type="number" value="3" min="1" />
+            </label>
+          </fieldset>
+          <div style="margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap">
+            <button type="submit">Run Backtest</button>
+            <span id="current-job"></span>
+          </div>
+        </form>
+      </section>
+
+      <section class="history">
+        <h2>2. Fetch Previous Result</h2>
+        <form id="history-form" style="display: flex; gap: 0.75rem; align-items: flex-end; flex-wrap: wrap">
+          <label>
+            Job ID
+            <input name="job_id" placeholder="Paste job id" required />
+          </label>
+          <button type="submit">Load Result</button>
+        </form>
+      </section>
+
+      <section>
+        <h2>3. Live Updates</h2>
+        <div id="status-stream" class="status" data-state="idle">Awaiting submission...</div>
+      </section>
+
+      <section>
+        <div class="grid-two">
+          <div>
+            <h3>Statistics</h3>
+            <pre id="stats-output">No data yet.</pre>
+          </div>
+          <div>
+            <h3>Trades</h3>
+            <pre id="trades-output">No data yet.</pre>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script src="/static/js/app.js" defer></script>
+    <script src="/static/js/engulfing.js" defer></script>
+  </body>
+</html>
+
