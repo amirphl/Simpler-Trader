@@ -9,6 +9,7 @@ A comprehensive, production-ready backtesting framework for cryptocurrency tradi
 - **Strategy Framework**: Clean architecture with extensible strategy base classes
 - **Comprehensive Statistics**: Win rate, Sharpe ratio, drawdown, CAGR, profit factor, and more
 - **Interactive Visualization**: Scrollable, zoomable charts with entry/exit markers, indicators, and equity curves
+- **Multiple Strategies**: Bullish Engulfing plus Bullish Pinbar available out of the box, each with its own control panel
 - **Proxy Support**: Built-in HTTP/HTTPS proxy configuration for network flexibility
 - **Multiple Storage Backends**: SQLite (recommended) or CSV for candle data
 - **Type Safety**: Full type hints with Pyright configuration
@@ -103,6 +104,7 @@ Then open `http://127.0.0.1:9092` to:
 - Retrieve historical backtests anytime via the UI or REST endpoints.
 - Tail logs via your process manager (e.g., `journalctl -u backtest-web.service -f`) to review structured entries such as job submission, start, completion, and failures.
 - All web-specific logs are also emitted to stdout/stderr (respecting `WEB_LOG_LEVEL`), so local runs show the same structured messages without extra setup.
+- The landing page now offers dedicated panels for the Bullish Engulfing and Bullish Pinbar strategies to keep their forms focused.
 
 ### API Surface
 
