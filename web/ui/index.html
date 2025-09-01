@@ -13,6 +13,7 @@
       body {
         margin: 0;
         padding: 0;
+        background: #f8fafc;
       }
       header {
         background: #0f172a;
@@ -20,228 +21,69 @@
         padding: 1.5rem;
       }
       main {
-        padding: 1.5rem;
+        padding: 2rem;
         display: grid;
         gap: 1.5rem;
+        max-width: 960px;
+        margin: 0 auto;
       }
-      section {
-        background: #ffffff;
-        border-radius: 8px;
-        padding: 1rem 1.25rem;
-        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
-      }
-      fieldset {
-        border: none;
-        padding: 0;
-        margin: 0;
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 1rem;
-      }
-      label {
-        display: flex;
-        flex-direction: column;
-        font-size: 0.85rem;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        color: #475569;
-      }
-      input,
-      select {
-        margin-top: 0.35rem;
-        padding: 0.5rem 0.6rem;
-        border-radius: 6px;
-        border: 1px solid #cbd5f5;
-        font-size: 1rem;
-      }
-      button {
-        cursor: pointer;
-        border: none;
-        border-radius: 6px;
-        padding: 0.75rem 1.5rem;
-        font-size: 1rem;
-        color: #fff;
-        background: #2563eb;
-        transition: background 0.2s ease;
-      }
-      button:hover {
-        background: #1d4ed8;
-      }
-      table {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 0.9rem;
-      }
-      th,
-      td {
-        padding: 0.5rem;
-        border-bottom: 1px solid #e2e8f0;
-        text-align: left;
-      }
-      .status {
-        font-weight: 600;
-        letter-spacing: 0.05em;
-      }
-      .status[data-state="completed"] {
-        color: #15803d;
-      }
-      .status[data-state="running"],
-      .status[data-state="queued"] {
-        color: #2563eb;
-      }
-      .status[data-state="failed"] {
-        color: #b91c1c;
-      }
-      .grid-two {
+      .strategy-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
         gap: 1.5rem;
       }
-      pre {
-        background: #0f172a;
-        color: #f8fafc;
-        padding: 1rem;
-        border-radius: 6px;
-        overflow: auto;
-        max-height: 320px;
+      .card {
+        background: #ffffff;
+        border-radius: 12px;
+        padding: 1.5rem;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+        display: flex;
+        flex-direction: column;
+        gap: 0.75rem;
       }
-      .history input {
-        max-width: 320px;
+      .card h3 {
+        margin: 0;
+      }
+      .card p {
+        margin: 0;
+        color: #475569;
+        line-height: 1.5;
+      }
+      .card a {
+        margin-top: auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0.75rem 1.25rem;
+        border-radius: 8px;
+        text-decoration: none;
+        font-weight: 600;
+        color: #ffffff;
+        background: #2563eb;
+      }
+      .card a:hover {
+        background: #1d4ed8;
       }
     </style>
   </head>
   <body>
     <header>
       <h1>Backtest Control Panel</h1>
-      <p>Configure strategies, launch backtests, and monitor results in real-time.</p>
+      <p>Select a strategy to configure and launch backtests.</p>
     </header>
     <main>
-      <section>
-        <h2>1. Configure Backtest</h2>
-        <form id="backtest-form">
-          <fieldset>
-            <label>
-              Strategy
-              <select name="strategy">
-                <option value="engulfing">Engulfing Strategy</option>
-              </select>
-            </label>
-            <label>
-              Symbol
-              <input name="symbol" value="ETHUSDT" required />
-            </label>
-            <label>
-              Timeframe
-              <input name="timeframe" value="15m" required />
-            </label>
-            <label>
-              Window Size
-              <input name="window_size" type="number" value="5" min="1" required />
-            </label>
-            <label>
-              Leverage
-              <input name="leverage" type="number" value="1" step="0.1" required />
-            </label>
-            <label>
-              Take Profit %
-              <input name="take_profit_pct" type="number" value="0.02" step="0.001" required />
-            </label>
-            <label>
-              Start (UTC)
-              <input name="start" type="datetime-local" required />
-            </label>
-            <label>
-              End (UTC)
-              <input name="end" type="datetime-local" required />
-            </label>
-            <label>
-              Initial Capital
-              <input name="initial_capital" type="number" value="10000" step="100" required />
-            </label>
-            <label>
-              Stop Loss Mode
-              <select name="stop_loss_mode">
-                <option value="percent">Percent</option>
-                <option value="close">Previous Close</option>
-                <option value="low">Previous Low</option>
-                <option value="open">Previous Open</option>
-                <option value="body">Body Fraction</option>
-              </select>
-            </label>
-            <label>
-              Stop Loss %
-              <input name="stop_loss_pct" type="number" value="0.005" step="0.0005" />
-            </label>
-            <label>
-              Exchange Fee (decimal)
-              <input name="exchange_fee_pct" type="number" value="0.0004" step="0.0001" min="0" />
-            </label>
-            <label>
-              Skip Large Upper Wick
-              <select name="skip_large_upper_wick">
-                <option value="true">True</option>
-                <option value="false" selected>False</option>
-              </select>
-            </label>
-            <label>
-              Skip Bollinger Cross
-              <select name="skip_bollinger_cross">
-                <option value="true">True</option>
-                <option value="false" selected>False</option>
-              </select>
-            </label>
-            <label>
-              Enable Volume Filter
-              <select name="enable_volume_pressure_filter">
-                <option value="true" selected>True</option>
-                <option value="false">False</option>
-              </select>
-            </label>
-            <label>
-              Enable Stochastic Filter
-              <select name="enable_stochastic_filter">
-                <option value="true" selected>True</option>
-                <option value="false">False</option>
-              </select>
-            </label>
-          </fieldset>
-          <div style="margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap">
-            <button type="submit">Run Backtest</button>
-            <span id="current-job"></span>
-          </div>
-        </form>
-      </section>
-
-      <section class="history">
-        <h2>2. Fetch Previous Result</h2>
-        <form id="history-form" style="display: flex; gap: 0.75rem; align-items: flex-end; flex-wrap: wrap">
-          <label>
-            Job ID
-            <input name="job_id" placeholder="Paste job id" required />
-          </label>
-          <button type="submit">Load Result</button>
-        </form>
-      </section>
-
-      <section>
-        <h2>3. Live Updates</h2>
-        <div id="status-stream" class="status" data-state="idle">Awaiting submission...</div>
-      </section>
-
-      <section>
-        <div class="grid-two">
-          <div>
-            <h3>Statistics</h3>
-            <pre id="stats-output">No data yet.</pre>
-          </div>
-          <div>
-            <h3>Trades</h3>
-            <pre id="trades-output">No data yet.</pre>
-          </div>
-        </div>
-      </section>
+      <div class="strategy-grid">
+        <section class="card">
+          <h3>Bullish Engulfing</h3>
+          <p>Full-featured Engulfing strategy with stochastic, Bollinger, and volume filters.</p>
+          <a href="/static/engulfing.html">Open Engulfing Panel</a>
+        </section>
+        <section class="card">
+          <h3>Bullish Pinbar</h3>
+          <p>Lightweight pinbar strategy focused on reversal candles with customizable shadow ratios.</p>
+          <a href="/static/pinbar.html">Open Pinbar Panel</a>
+        </section>
+      </div>
     </main>
-    <script src="/static/app.js" defer></script>
   </body>
 </html>
-
