@@ -99,7 +99,7 @@ class PinbarStrategy(BacktestStrategy):
             if pinbar_idx < 1:
                 continue
 
-            if position is None and self._is_bullish_pinbar(candles, pinbar_idx):
+            if position is None and self._is_bullish_pinbar(candles, pinbar_idx) and candles[pinbar_idx].close > candles[pinbar_idx].open:
                 pinbar_candle = candles[pinbar_idx]
                 entry_price = candle.open
                 stop_loss = self._compute_stop_loss(entry_price, pinbar_candle)
