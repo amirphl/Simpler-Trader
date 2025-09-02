@@ -5,6 +5,7 @@ from typing import Any, Dict, Literal
 
 from backtest.engulfing_strategy import StopLossMode
 from pydantic import BaseModel, ConfigDict, Field, field_validator  # type: ignore[import-not-found]
+from pydantic import BaseModel, ConfigDict, Field, field_validator  # type: ignore[import-not-found]
 
 
 class PinbarStrategyParams(BaseModel):
@@ -23,6 +24,54 @@ class PinbarStrategyParams(BaseModel):
 
     min_shadow_body_ratio: float = Field(default=0.5, gt=0)
     shadow_dominance_ratio: float = Field(default=2.0, gt=0)
+
+    http_proxy: str | None = None
+    https_proxy: str | None = None
+    risk_free_rate: float = 0.0
+
+
+class PinbarMagicStrategyParams(BaseModel):
+    """User-provided parameters for the Pin Bar Magic strategy."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    symbol: str = Field(default="ETHUSDT")
+    timeframe: str = Field(default="1h")
+    leverage: float = Field(default=1.0, gt=0)
+
+    equity_risk_pct: float = Field(default=3.0, gt=0)
+    atr_multiple: float = Field(default=0.5, gt=0)
+    trail_points: float = Field(default=1.0, gt=0)
+    trail_offset: float = Field(default=1.0, ge=0)
+
+    slow_sma_period: int = Field(default=50, ge=1)
+    medium_ema_period: int = Field(default=18, ge=1)
+    fast_ema_period: int = Field(default=6, ge=1)
+    atr_period: int = Field(default=14, ge=1)
+    entry_cancel_bars: int = Field(default=3, ge=1)
+
+    http_proxy: str | None = None
+    https_proxy: str | None = None
+    risk_free_rate: float = 0.0
+class PinbarMagicStrategyParamsV2(BaseModel):
+    """Parameters for Pin Bar Magic v2 strategy."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    symbol: str = Field(default="ETHUSDT")
+    timeframe: str = Field(default="1h")
+    leverage: float = Field(default=1.0, gt=0)
+
+    equity_risk_pct: float = Field(default=3.0, gt=0)
+    atr_multiple: float = Field(default=0.5, gt=0)
+    trail_points: float = Field(default=1.0, gt=0)
+    trail_offset: float = Field(default=1.0, ge=0)
+
+    slow_sma_period: int = Field(default=50, ge=1)
+    medium_ema_period: int = Field(default=18, ge=1)
+    fast_ema_period: int = Field(default=6, ge=1)
+    atr_period: int = Field(default=14, ge=1)
+    entry_cancel_bars: int = Field(default=3, ge=1)
 
     http_proxy: str | None = None
     https_proxy: str | None = None
@@ -90,12 +139,17 @@ class BacktestSubmission(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    strategy: Literal["engulfing", "pinbar"] = Field(default="engulfing")
+    strategy: Literal["engulfing", "pinbar", "pinbar_magic", "pinbar_magic_v2"] = Field(default="engulfing")
     start: datetime
     end: datetime
     initial_capital: float = Field(default=10_000.0, gt=0)
     override_download: bool = True
-    params: EngulfingStrategyParams | PinbarStrategyParams
+    params: (
+        EngulfingStrategyParams
+        | PinbarStrategyParams
+        | PinbarMagicStrategyParams
+        | PinbarMagicStrategyParamsV2
+    )
 
 
 class JobResponse(BaseModel):
