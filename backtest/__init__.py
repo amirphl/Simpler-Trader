@@ -9,6 +9,7 @@ from .base import (
 )
 from .engulfing_strategy import EngulfingStrategy, EngulfingStrategyConfig, StopLossMode
 from .pinbar_strategy import PinbarStrategy, PinbarStrategyConfig
+from .pinbar_magic_strategy import PinBarMagicStrategy, PinBarMagicStrategyConfig
 from .patterns import CandlePatternSignals, detect_candle_patterns
 from .plotter import plot_backtest, plot_backtest_from_store, save_plot, show_plot
 
@@ -26,6 +27,8 @@ __all__ = [
     "EngulfingStrategyConfig",
     "PinbarStrategy",
     "PinbarStrategyConfig",
+    "PinBarMagicStrategy",
+    "PinBarMagicStrategyConfig",
     "StopLossMode",
     "plot_backtest",
     "plot_backtest_from_store",
