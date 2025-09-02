@@ -10,14 +10,23 @@ from backtest import (
     BaseBacktester,
     EngulfingStrategy,
     EngulfingStrategyConfig,
+    PinBarMagicStrategy,
+    PinBarMagicStrategyConfig,
     PinbarStrategy,
     PinbarStrategyConfig,
 )
+from backtest.pinbar_magic_strategy_v2 import PinBarMagicStrategyConfigV2, PinBarMagicStrategyV2
 from candle_downloader.binance import BinanceClient, BinanceClientConfig
 from candle_downloader.downloader import CandleDownloader
 from candle_downloader.storage import build_store
 
-from .models import BacktestSubmission, EngulfingStrategyParams, PinbarStrategyParams
+from .models import (
+    BacktestSubmission,
+    EngulfingStrategyParams,
+    PinbarMagicStrategyParams,
+    PinbarMagicStrategyParamsV2,
+    PinbarStrategyParams,
+)
 
 
 def run_backtest_job(job_id: str, submission: BacktestSubmission, *, cache_dir: Path, store_path: Path) -> Dict[str, Any]:
@@ -38,7 +47,43 @@ def run_backtest_job(job_id: str, submission: BacktestSubmission, *, cache_dir: 
     client = BinanceClient(BinanceClientConfig(proxies=proxies or None), logger=client_logger)
     downloader = CandleDownloader(client=client, store=store)
 
-    if submission.strategy == "pinbar":
+    if submission.strategy == "pinbar_magic_v2":
+        magic_params_v2 = cast(PinbarMagicStrategyParamsV2, params)
+        strategy = PinBarMagicStrategyV2(
+            PinBarMagicStrategyConfigV2(
+                symbol=magic_params_v2.symbol,
+                timeframe=magic_params_v2.timeframe,
+                leverage=magic_params_v2.leverage,
+                equity_risk_pct=magic_params_v2.equity_risk_pct,
+                atr_multiple=magic_params_v2.atr_multiple,
+                trail_points=magic_params_v2.trail_points,
+                trail_offset=magic_params_v2.trail_offset,
+                slow_sma_period=magic_params_v2.slow_sma_period,
+                medium_ema_period=magic_params_v2.medium_ema_period,
+                fast_ema_period=magic_params_v2.fast_ema_period,
+                atr_period=magic_params_v2.atr_period,
+                entry_cancel_bars=magic_params_v2.entry_cancel_bars,
+            )
+        )
+    elif submission.strategy == "pinbar_magic":
+        magic_params = cast(PinbarMagicStrategyParams, params)
+        strategy = PinBarMagicStrategy(
+            PinBarMagicStrategyConfig(
+                symbol=magic_params.symbol,
+                timeframe=magic_params.timeframe,
+                leverage=magic_params.leverage,
+                equity_risk_pct=magic_params.equity_risk_pct,
+                atr_multiple=magic_params.atr_multiple,
+                trail_points=magic_params.trail_points,
+                trail_offset=magic_params.trail_offset,
+                slow_sma_period=magic_params.slow_sma_period,
+                medium_ema_period=magic_params.medium_ema_period,
+                fast_ema_period=magic_params.fast_ema_period,
+                atr_period=magic_params.atr_period,
+                entry_cancel_bars=magic_params.entry_cancel_bars,
+            )
+        )
+    elif submission.strategy == "pinbar":
         pinbar_params = cast(PinbarStrategyParams, params)
         strategy = PinbarStrategy(
             PinbarStrategyConfig(
