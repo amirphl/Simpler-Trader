@@ -9,7 +9,7 @@ A comprehensive, production-ready backtesting framework for cryptocurrency tradi
 - **Strategy Framework**: Clean architecture with extensible strategy base classes
 - **Comprehensive Statistics**: Win rate, Sharpe ratio, drawdown, CAGR, profit factor, and more
 - **Interactive Visualization**: Scrollable, zoomable charts with entry/exit markers, indicators, and equity curves
-- **Multiple Strategies**: Bullish Engulfing plus Bullish Pinbar available out of the box, each with its own control panel
+- **Multiple Strategies**: Bullish Engulfing, Bullish Pinbar, and Pin Bar Magic — each with its own control panel
 - **Proxy Support**: Built-in HTTP/HTTPS proxy configuration for network flexibility
 - **Multiple Storage Backends**: SQLite (recommended) or CSV for candle data
 - **Type Safety**: Full type hints with Pyright configuration
