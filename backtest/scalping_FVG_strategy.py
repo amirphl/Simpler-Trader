@@ -80,41 +80,55 @@ def rsi(values: Sequence[float], period: int) -> List[Optional[float]]:
     return result
 
 
-def atr(candles: Sequence[Candle], period: int) -> List[Optional[float]]:
-    if period <= 0:
-        raise ValueError("period must be positive")
+from typing import List, Optional, Sequence
+
+def atr(candles: Sequence["Candle"], length: int) -> List[Optional[float]]:
+    """
+    ATR implementation that mimics TradingView's:
+        pine_atr(length) =>
+            trueRange = na(high[1]) ? high - low :
+                        max(max(high - low, abs(high - close[1])),
+                            abs(low - close[1]))
+            rma(trueRange, length)
+
+    Returns a list where values are None until enough history is available,
+    exactly like Pine (first ATR at index length-1).
+    """
+    if length <= 0:
+        raise ValueError("length must be positive")
 
     n = len(candles)
     result: List[Optional[float]] = [None] * n
-    if n < period + 1:
+    if n == 0 or n < length:
         return result
 
-    trs: List[float] = [0.0] * n
-
-    for i in range(1, n):
+    # --- True Range, Pine-style ---
+    tr: List[float] = [0.0] * n
+    for i in range(n):
         high = candles[i].high
         low = candles[i].low
-        prev_close = candles[i - 1].close
+        if i == 0:
+            # na(high[1]) ? high - low
+            tr[i] = high - low
+        else:
+            prev_close = candles[i - 1].close
+            tr_hl = high - low
+            tr_hc = abs(high - prev_close)
+            tr_lc = abs(low - prev_close)
+            tr[i] = max(tr_hl, tr_hc, tr_lc)
 
-        tr = max(
-            high - low,
-            abs(high - prev_close),
-            abs(low - prev_close),
-        )
-        trs[i] = tr
+    # --- RMA(trueRange, length) ---
+    # First RMA value is SMA of first `length` TRs, placed at index length-1
+    first_rma = sum(tr[0:length]) / float(length)
+    result[length - 1] = first_rma
+    prev_rma = first_rma
 
-    # First ATR as simple average
-    first_atr = sum(trs[1 : period + 1]) / period
-    result[period] = first_atr
-    prev_atr = first_atr
-
-    # Wilder smoothing
-    for i in range(period + 1, n):
-        prev_atr = (prev_atr * (period - 1) + trs[i]) / period
-        result[i] = prev_atr
+    # Wilder / RMA smoothing: rma[i] = (prev_rma * (length - 1) + tr[i]) / length
+    for i in range(length, n):
+        prev_rma = (prev_rma * (length - 1) + tr[i]) / float(length)
+        result[i] = prev_rma
 
     return result
-
 
 def sma(values: Sequence[float], period: int) -> List[Optional[float]]:
     if period <= 0:
