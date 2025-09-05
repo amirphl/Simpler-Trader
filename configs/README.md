@@ -80,3 +80,23 @@ This directory contains scenario-specific configuration files.
 2. Update the values for your scenario
 3. Create a corresponding script in `../scripts/` if needed
 
+## Live Trading
+
+**Files:** `live_trading.env.example` (copy to `live_trading.env`)
+
+**Key settings:**
+- `EXCHANGE`, `TRADING_MODE`, `API_KEY`, `API_SECRET`, `API_PASSPHRASE`, `TESTNET`
+- `TIMEFRAME`, `TOP_M_SYMBOLS`, `TOP_N_SIGNALS`, `PRICE_CHANGE_THRESHOLD`
+- Heiken Ashi: `HEIKEN_ASHI_CANDLES`, `LEVERAGE`, `TAKE_PROFIT_PCT`
+- Position/risk: `MARGIN_MODE`, `DISABLE_SYMBOL_HOURS`, `POSITION_SIZE_USDT`, `MAX_CONCURRENT_POSITIONS`, `MAX_POSITION_SIZE_PCT`
+- Persistence/logging: `STATE_FILE`, `POSITIONS_DB`, `LOG_FILE`
+- Scheduling: `CANDLE_READY_DELAY_SECONDS`
+- Network: `HTTP_PROXY`, `HTTPS_PROXY`, `PROXY`
+- Notifications: `TELEGRAM_ENABLED`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `TELEGRAM_PROXY`, `TELEGRAM_TIMEOUT`
+
+**Usage:**
+```bash
+cp configs/live_trading.env.example configs/live_trading.env
+# edit values
+./scripts/run_live_trading.sh
+```
