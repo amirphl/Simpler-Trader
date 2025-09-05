@@ -31,3 +31,4 @@ signal_state.json
 *.csv
 *.db
 
+configs/live_trading.env
