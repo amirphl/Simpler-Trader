@@ -10,6 +10,7 @@ A comprehensive, production-ready backtesting framework for cryptocurrency tradi
 - **Comprehensive Statistics**: Win rate, Sharpe ratio, drawdown, CAGR, profit factor, and more
 - **Interactive Visualization**: Scrollable, zoomable charts with entry/exit markers, indicators, and equity curves
 - **Multiple Strategies**: Bullish Engulfing, Bullish Pinbar, and Pin Bar Magic — each with its own control panel
+- **Live Trading**: Automated trading with Heiken Ashi reversal strategy, position management, and risk controls
 - **Proxy Support**: Built-in HTTP/HTTPS proxy configuration for network flexibility
 - **Multiple Storage Backends**: SQLite (recommended) or CSV for candle data
 - **Type Safety**: Full type hints with Pyright configuration
@@ -144,6 +145,68 @@ All job artifacts are stored under `results/web_backtests`, so runs continue eve
    ```bash
    journalctl -fu backtest-web.service
    ```
+
+### Live Trading Bot
+
+**⚠️ WARNING: Live trading involves real money. Always test with testnet first!**
+
+Run the automated live trading bot with Heiken Ashi reversal strategy:
+
+```bash
+# Configure the bot
+cp configs/live_trading.env.example configs/live_trading.env
+# Edit configs/live_trading.env with your API keys and parameters
+
+# Run the bot (starts in testnet mode by default)
+./scripts/run_live_trading.sh
+```
+
+Or use command-line arguments:
+
+```bash
+# Weex Futures Trading (IMPLEMENTED)
+python -m cmd.live_trading.main \
+  --exchange weex \
+  --trading-mode futures \
+  --timeframe 15m \
+  --candle-ready-delay-seconds 30 \
+  --telegram-enabled \
+  --telegram-token "$TELEGRAM_BOT_TOKEN" \
+  --telegram-chat-id "$TELEGRAM_CHAT_ID" \
+  --api-key "your_key" \
+  --api-secret "your_secret" \
+  --testnet \
+  --top-m-symbols 100 \
+  --top-n-signals 5 \
+  --price-change-threshold 2.0 \
+  --heiken-ashi-candles 3 \
+  --leverage 10 \
+  --take-profit-pct 1.0 \
+  --margin-mode isolated \
+  --position-size-usdt 100.0
+
+# Weex Spot Trading (IMPLEMENTED)
+python -m cmd.live_trading.main \
+  --exchange weex \
+  --trading-mode spot \
+  --timeframe 1h \
+  --api-key "your_key" \
+  --api-secret "your_secret" \
+  --testnet \
+  --position-size-usdt 50.0
+```
+
+**Supported Exchanges**:
+- ✅ **Weex** (Futures & Spot) - Fully implemented
+- ⏳ Binance - Interface ready, needs implementation
+- ⏳ Bybit - Interface ready, needs implementation
+
+Config & notifications:
+- Environment file: copy `configs/live_trading.env.example` to `configs/live_trading.env` and fill in exchange keys (including `API_PASSPHRASE` if required), timeframe, sizing, and `CANDLE_READY_DELAY_SECONDS`.
+- Proxies: set `HTTP_PROXY` / `HTTPS_PROXY` or `PROXY` for both the exchange and Binance data fetches.
+- Telegram (optional): set `TELEGRAM_ENABLED=true` plus `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` to receive executed trade alerts; `TELEGRAM_PROXY` and `TELEGRAM_TIMEOUT` are supported.
+
+See `WEEX_QUICK_START.md` for Weex setup guide and `LIVE_TRADING_USAGE.md` for complete documentation.
 
 ### Example: Send Live Signals to Telegram
 
@@ -353,9 +416,19 @@ The framework follows Clean Architecture principles with clear separation of con
   - `patterns.py` - 15+ candlestick pattern detection
   - `plotter.py` - Interactive visualization with Plotly
 
+- **`live_trading/`**: Live trading automation
+  - `exchange.py` - Exchange interface (abstract base class)
+  - `models.py` - Live trading data structures
+  - `scanner.py` - Symbol scanning and top mover detection
+  - `heiken_ashi.py` - Heiken Ashi calculations and reversal detection
+  - `strategy.py` - Live trading strategy engine
+  - `position_manager.py` - Position execution and state persistence
+  - `coordinator.py` - Main orchestrator with scheduling
+
 - **`cmd/`**: Command-line interfaces
   - `backtest/main.py` - Main backtest CLI
   - `candle_downloader/main.py` - Standalone candle downloader
+  - `live_trading/main.py` - Live trading bot CLI
 
 ### Design Principles
 
@@ -437,19 +510,35 @@ scalp-test/
 │   ├── downloader.py        # Candle synchronization
 │   ├── models.py            # Domain models
 │   └── storage.py           # Storage backends
+├── live_trading/             # Live trading automation
+│   ├── exchange.py          # Exchange interface
+│   ├── models.py            # Trading data structures
+│   ├── scanner.py           # Symbol scanner
+│   ├── heiken_ashi.py       # Heiken Ashi calculations
+│   ├── strategy.py          # Strategy engine
+│   ├── position_manager.py  # Position management
+│   ├── coordinator.py       # Main coordinator
+│   └── exchanges/           # Exchange implementations
+│       └── README.md        # Implementation guide
 ├── cmd/                      # CLI entry points
 │   ├── backtest/            # Main backtest CLI
-│   └── candle_downloader/   # Candle downloader CLI
+│   ├── candle_downloader/   # Candle downloader CLI
+│   └── live_trading/        # Live trading CLI
 ├── configs/                  # Scenario configurations
-│   └── eth_15m.env          # ETH 15m scenario
+│   ├── eth_15m.env          # ETH 15m scenario
+│   └── live_trading.env.example # Live trading config example
 ├── scripts/                  # Helper scripts
 │   ├── run_eth_15m.sh       # Run ETH scenario (with .env)
-│   └── run_eth_15m_direct.sh # Run ETH scenario (direct)
+│   ├── run_eth_15m_direct.sh # Run ETH scenario (direct)
+│   └── run_live_trading.sh  # Run live trading bot
 ├── data/                     # Candle data storage (auto-created)
 ├── results/                  # Backtest results (auto-created)
+├── logs/                     # Log files (auto-created)
 ├── requirements.txt          # Optional dependencies
 ├── pyrightconfig.json        # Type checking configuration
-└── README.md                 # This file
+├── README.md                 # This file
+├── BACKTEST_USAGE.md        # Backtest documentation
+└── LIVE_TRADING_USAGE.md    # Live trading documentation
 ```
 
 ## 🔍 Pattern Detection
@@ -561,7 +650,11 @@ Ensure you're using Python 3.10+ and that `pyrightconfig.json` is in the project
 ## 📚 Documentation
 
 - **`BACKTEST_USAGE.md`**: Complete CLI and configuration reference
+- **`LIVE_TRADING_USAGE.md`**: Live trading setup, configuration, and usage guide
+- **`WEEX_QUICK_START.md`**: Quick start guide for Weex exchange
+- **`live_trading/exchanges/WEEX_SETUP.md`**: Detailed Weex setup and configuration
 - **`configs/README.md`**: Configuration file documentation
+- **`live_trading/exchanges/README.md`**: Exchange implementation guide
 - **Code**: Full docstrings and type hints throughout
 
 ## 🤝 Contributing
@@ -586,4 +679,3 @@ Contributions are welcome! Please ensure:
 ---
 
 **Built with ❤️ for cryptocurrency traders and developers**
-
