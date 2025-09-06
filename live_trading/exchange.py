@@ -39,12 +39,15 @@ class MarginMode(Enum):
 @dataclass(frozen=True)
 class ExchangeConfig:
     """Configuration for exchange client."""
+
     api_key: str
     api_secret: str
     testnet: bool = True
     timeout: float = 10.0
     max_retries: int = 3
     proxies: Optional[Dict[str, str]] = None
+    passphrase: Optional[str] = None
+    locale: str = "en-US"
 
 
 @dataclass(frozen=True)
@@ -286,4 +289,3 @@ class Exchange(ABC):
     def close(self) -> None:
         """Close the exchange client and cleanup resources."""
         pass
-
