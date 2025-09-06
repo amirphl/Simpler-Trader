@@ -112,7 +112,8 @@ def check_consecutive_pattern(
 
 
 def detect_reversal_signal(
-    candles: List[HekenAshiCandle],
+    last_candle: Candle,
+    ha_candles: List[HekenAshiCandle],
     lookback_candles: int,
 ) -> str | None:
     """Detect Heiken Ashi reversal pattern.
@@ -133,21 +134,21 @@ def detect_reversal_signal(
         "LONG" for bullish reversal, "SHORT" for bearish reversal, None for no signal
     """
     required_length = lookback_candles + 1
-    if len(candles) < required_length:
+    if len(ha_candles) < required_length:
         return None
     
     # Current candle (most recent)
-    current = candles[-1]
+    last_ha_candle = ha_candles[-1]
     
-    # Previous W candles (before current)
-    previous_candles = candles[-(lookback_candles + 1):-1]
+    # Previous W candles (before last)
+    previous_candles = ha_candles[-(lookback_candles + 1):-1]
     
-    # Check for LONG signal: previous bearish, current bullish
-    if current.is_bullish() and check_consecutive_pattern(previous_candles, lookback_candles, bullish=False):
+    # Check for LONG signal: previous bearish, last bullish
+    if last_candle.is_bearish() and last_ha_candle.is_bullish() and check_consecutive_pattern(previous_candles, lookback_candles, bullish=False):
         return "LONG"
     
-    # Check for SHORT signal: previous bullish, current bearish
-    if current.is_bearish() and check_consecutive_pattern(previous_candles, lookback_candles, bullish=True):
+    # Check for SHORT signal: previous bullish, last bearish
+    if last_candle.is_bullish() and last_ha_candle.is_bearish() and check_consecutive_pattern(previous_candles, lookback_candles, bullish=True):
         return "SHORT"
     
     return None
