@@ -62,7 +62,7 @@ class SymbolScanner:
             usdt_tickers.sort(
                 key=lambda t: float(t.get("quoteVolume", 0) or 0), reverse=True
             )
-            candidate_count = min(max(limit * 3, limit), 200)
+            candidate_count = limit
             candidates = usdt_tickers[:candidate_count]
             self._log.debug(
                 f"Fetched {len(usdt_tickers)} USDT tickers; "
@@ -145,7 +145,9 @@ class SymbolScanner:
                 time.sleep(delay)
                 delay = min(delay * 2, 8.0)
 
-        raise RuntimeError(f"Ticker request failed after {attempts} attempts: {last_exc}") from last_exc
+        raise RuntimeError(
+            f"Ticker request failed after {attempts} attempts: {last_exc}"
+        ) from last_exc
 
     def _fetch_latest_closed_candle(self, symbol: str, interval: str) -> list | None:
         """Fetch the latest closed kline for a symbol."""
@@ -162,7 +164,12 @@ class SymbolScanner:
                     klines = loads(resp.read())
                     if not klines:
                         return None
-                    return klines[LAST_INDEX]
+
+                    candle = klines[LAST_INDEX]
+                    self._log.debug(
+                        "%s %s latest closed candle: %s", symbol, interval, candle
+                    )
+                    return candle
             except (HTTPError, URLError) as e:
                 last_exc = e
                 self._log.warning(
@@ -188,7 +195,12 @@ class SymbolScanner:
                 delay = min(delay * 2, 8.0)
 
         if last_exc:
-            self._log.error("Giving up fetching klines for %s after %s attempts: %s", symbol, attempts, last_exc)
+            self._log.error(
+                "Giving up fetching klines for %s after %s attempts: %s",
+                symbol,
+                attempts,
+                last_exc,
+            )
         return None
 
     def _detect_proxies(self) -> dict:
@@ -241,14 +253,23 @@ class SymbolScanner:
         top_losers = losers[:top_n]
 
         self._log.info(
-            f"Found {len(top_gainers)} top gainers and {len(top_losers)} top losers "
-            f"(min change: {min_change_pct}%)"
-            f", (top gainer: {top_gainers[0].symbol} {top_gainers[0].price_change_pct:.2f}%"
+            f"Found {len(top_gainers)} top gainers and {len(top_losers)} top losers (min change: {min_change_pct}%)"
+        )
+        self._log.info(
+            "(top gainer: {top_gainers[0].symbol} {top_gainers[0].price_change_pct:.2f}%)"
             if top_gainers
-            else ", (no gainers)"
-            f", (top loser: {top_losers[0].symbol} {top_losers[0].price_change_pct:.2f}%"
+            else "(no gainers)"
+            + f", (top loser: {top_losers[0].symbol} {top_losers[0].price_change_pct:.2f}%"
             if top_losers
             else ", (no losers)"
+        )
+        self._log.info(
+            "Top Gainers: "
+            + ", ".join(f"{s.symbol} ({s.price_change_pct:.2f}%)" for s in top_gainers)
+        )
+        self._log.info(
+            "Top Losers: "
+            + ", ".join(f"{s.symbol} ({s.price_change_pct:.2f}%)" for s in top_losers)
         )
 
         return top_gainers, top_losers
