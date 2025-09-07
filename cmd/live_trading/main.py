@@ -25,7 +25,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Exchange settings
     parser.add_argument(
         "--exchange",
-        choices=["binance", "bybit", "weex"],
+        choices=["binance", "bybit", "weex", "bitunix"],
         help="Exchange to use for trading",
     )
     parser.add_argument(
@@ -140,6 +140,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path for positions database",
     )
     parser.add_argument(
+        "--klines-db",
+        type=Path,
+        default=Path("./data/live_trading_klines.db"),
+        help="Path for cached klines database",
+    )
+    parser.add_argument(
         "--log-file",
         type=Path,
         default=Path("./logs/live_trading.log"),
@@ -152,6 +158,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=30,
         help="Seconds to wait after timeframe close before running strategy",
+    )
+    parser.add_argument(
+        "--exchange-base-url",
+        default="",
+        help="Optional override for exchange API base URL (used for bitunix)",
+    )
+    parser.add_argument(
+        "--execution-interval-minutes",
+        type=int,
+        default=5,
+        help="How often to run the strategy loop",
     )
     
     # Network
@@ -210,8 +227,11 @@ def load_env_config() -> Dict[str, str]:
         "max_position_size_pct": env("MAX_POSITION_SIZE_PCT", ""),
         "state_file": env("STATE_FILE", ""),
         "positions_db": env("POSITIONS_DB", ""),
+        "klines_db": env("KLINES_DB", ""),
         "log_file": env("LOG_FILE", ""),
         "candle_ready_delay_seconds": env("CANDLE_READY_DELAY_SECONDS", ""),
+        "execution_interval_minutes": env("EXECUTION_INTERVAL_MINUTES", ""),
+        "exchange_base_url": env("EXCHANGE_BASE_URL", ""),
         "http_proxy": env("HTTP_PROXY", ""),
         "https_proxy": env("HTTPS_PROXY", ""),
         "telegram_enabled": env("TELEGRAM_ENABLED", ""),
@@ -265,10 +285,16 @@ def apply_env_defaults(args: argparse.Namespace, config: Dict[str, str]) -> argp
         args.state_file = Path(config["state_file"])
     if config["positions_db"]:
         args.positions_db = Path(config["positions_db"])
+    if config["klines_db"]:
+        args.klines_db = Path(config["klines_db"])
     if config["log_file"]:
         args.log_file = Path(config["log_file"])
     if config["candle_ready_delay_seconds"]:
         args.candle_ready_delay_seconds = int(config["candle_ready_delay_seconds"])
+    if config["execution_interval_minutes"]:
+        args.execution_interval_minutes = int(config["execution_interval_minutes"])
+    if config["exchange_base_url"]:
+        args.exchange_base_url = config["exchange_base_url"]
     if config["http_proxy"]:
         args.http_proxy = config["http_proxy"]
     if config["https_proxy"]:
@@ -342,6 +368,7 @@ def create_exchange(args: argparse.Namespace, logger: logging.Logger):
         testnet=testnet,
         proxies=proxies,
         passphrase=api_passphrase or None,
+        base_url=args.exchange_base_url or None,
     )
     
     # Import and instantiate exchange client
@@ -369,6 +396,11 @@ def create_exchange(args: argparse.Namespace, logger: logging.Logger):
             "Please implement BybitExchange class in live_trading/exchanges/bybit.py"
         )
         raise NotImplementedError("Bybit exchange not yet implemented")
+    elif args.exchange == "bitunix":
+        from live_trading.exchanges import BitunixExchange
+
+        logger.info("Using Bitunix exchange")
+        return BitunixExchange(exchange_config, logger)
     else:
         raise ValueError(f"Unknown exchange: {args.exchange}")
 
@@ -445,8 +477,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             max_position_size_pct=args.max_position_size_pct,
             state_file=args.state_file,
             positions_db=args.positions_db,
+            klines_db=args.klines_db,
             log_file=args.log_file,
             candle_ready_delay_seconds=args.candle_ready_delay_seconds,
+            execution_interval_minutes=args.execution_interval_minutes,
             telegram_enabled=args.telegram_enabled,
             telegram_bot_token=args.telegram_token or "",
             telegram_chat_id=args.telegram_chat_id or "",
@@ -468,6 +502,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         logger.info(f"  Position size: {config.position_size_usdt} USDT")
         logger.info(f"  Max concurrent positions: {config.max_concurrent_positions}")
         logger.info(f"  Candle ready delay: {config.candle_ready_delay_seconds} seconds")
+        logger.info(f"  Execution interval: {config.execution_interval_minutes} minutes")
         if config.telegram_enabled:
             logger.info("  Telegram notifications: enabled (chat %s)", config.telegram_chat_id)
         else:
