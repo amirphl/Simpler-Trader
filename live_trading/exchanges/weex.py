@@ -13,7 +13,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
@@ -136,7 +136,7 @@ class WeexExchange(Exchange):
         endpoint: str,
         params: Optional[Dict] = None,
         signed: bool = False,
-    ) -> any:
+    ) -> Any:
         """Make HTTP request to Weex API with documented signing."""
         base_params = dict(params or {})
         max_attempts = max(1, self._config.max_retries)
