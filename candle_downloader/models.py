@@ -32,7 +32,9 @@ class Candle:
     volume: float
 
     @classmethod
-    def from_binance(cls, symbol: str, interval: str, payload: Sequence[str | int | float]) -> "Candle":
+    def from_binance(
+        cls, symbol: str, interval: str, payload: Sequence[str | int | float]
+    ) -> "Candle":
         """Build a candle instance from the Binance kline payload."""
         open_time_ms = int(payload[0])
         close_time_ms = int(payload[6])
@@ -66,8 +68,14 @@ class Candle:
             f"{self.volume:.10f}",
         ]
 
+    def is_bullish(self) -> bool:
+        """Check if candle is bullish (close > open)."""
+        return self.close > self.open
+
+    def is_bearish(self) -> bool:
+        """Check if candle is bearish (close < open)."""
+        return self.close < self.open
+
 
 def normalize_symbol(symbol: str) -> str:
     return symbol.upper().strip()
-
-
