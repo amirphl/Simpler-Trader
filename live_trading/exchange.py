@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 
 class PositionSide(Enum):
@@ -48,6 +48,7 @@ class ExchangeConfig:
     proxies: Optional[Dict[str, str]] = None
     passphrase: Optional[str] = None
     locale: str = "en-US"
+    base_url: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -102,7 +103,7 @@ class Exchange(ABC):
         pass
 
     @abstractmethod
-    def get_24h_tickers(self) -> List[Dict[str, any]]:
+    def get_24h_tickers(self) -> List[Dict[str, Any]]:
         """Get 24-hour ticker data for all symbols.
         
         Returns:
