@@ -225,7 +225,7 @@ class PositionManager:
                 )
                 position_size = max_position_size
             
-            if position_size < 10:  # Minimum position size
+            if position_size < 1:  # Minimum position size # TODO: Read from config
                 self._log.warning(f"Position size too small: {position_size}")
                 return False
             
