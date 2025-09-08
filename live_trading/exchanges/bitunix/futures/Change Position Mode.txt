@@ -1,0 +1,36 @@
+Change Position Mode
+Rate Limit: 10 req/sec/uid
+
+Description
+Adjust the position mode between 'one way mode' and 'hedge mode'
+
+If you want to change the user's position mode on all symbol contracts, you need to specify hedge mode positions or one-way positions. Note: The position mode can't be adjusted when there is an open position order under the product type. Changes the user's position mode for all symbol futures: hedging mode or one-way mode.When users hold positions or orders on any side of any trading pair in the specific product type, the request may fail.
+
+HTTP Request
+POST /api/v1/futures/account/change_position_mode
+Request Parameters
+Parameter	Type	Required	Description
+positionMode	string	true	Position Mode
+ONE_WAY
+HEDGE
+Request Example
+
+
+curl -X 'POST'  --location 'https://fapi.bitunix.com/api/v1/futures/account/change_position_mode' \
+   -H "api-key:*******" \
+   -H "sign:*" \
+   -H "nonce:your-nonce" \
+   -H "timestamp:1659076670000" \
+   -H "language:en-US" \
+   -H "Content-Type: application/json" \
+ --data '{"positionMode":"HEDGE"}'
+Response Parameters
+Parameter	Type	Description
+positionMode	string	Position Mode
+ONE_WAY
+HEDGE
+Response Example
+
+
+{"code":0,"data":[{"positionMode":"HEDGE"}],"msg":"Success"}
+Pager
