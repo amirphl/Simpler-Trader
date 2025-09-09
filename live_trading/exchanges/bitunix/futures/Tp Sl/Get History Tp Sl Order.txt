@@ -1,0 +1,68 @@
+Get History TP/SL Order
+Rate Limit: 10 req/sec/uid
+
+Description
+Get History TP/SL Order
+
+HTTP Request
+GET /api/v1/futures/tpsl/get_history_orders
+Request Parameters
+Parameter	Type	Required	Description
+symbol	string	false	Trading pair
+side	int32	false	order side
+positionMode	int32	false	order position mode
+startTime	int64	false	Start timestamp
+Unix timestamp in milliseconds format, e.g. 1597026383085
+endTime	int64	false	Start timestamp
+Unix timestamp in milliseconds format, e.g. 1597026683085
+skip	int64	false	skip order count default: 0
+limit	int64	false	Number of queries: Maximum: 100, default: 10
+Request Example
+
+
+curl -X 'GET'  --location 'https://fapi.bitunix.com/api/v1/futures/tpsl/get_history_orders?symbol=BTCUSDT' \
+   -H "api-key:*******" \
+   -H "sign:*" \
+   -H "nonce:your-nonce" \
+   -H "timestamp:1659076670000" \
+   -H "language:en-US" \
+   -H "Content-Type: application/json"
+Response Parameters
+Parameter	Type	Description
+orderList	list	TP/SL order List
+>id	string	order id
+>positionId	string	position id
+>symbol	string	coin pair
+>base	string	base
+>quote	string	quote
+>tpPrice	string	Take-profit trigger price
+>tpStopType	string	Take-profit trigger type
+LAST_PRICE
+MARK_PRICE
+>slPrice	string	Stop-loss trigger price
+>slStopType	string	Stop-loss trigger type
+LAST_PRICE
+MARK_PRICE
+>tpOrderType	string	Take-profit order type
+LIMIT
+MARKET
+Default is market.
+>tpOrderPrice	string	Take-profit order price
+>slOrderType	string	Stop-loss order type
+LIMIT
+MARKET
+Default is market.
+>slOrderPrice	string	Stop-loss order price
+>tpQty	string	Take-profit order quantity(base coin)
+At least one of tpQty or slQty is required.
+>slQty	string	Stop-loss order quantity(base coin)
+At least one of tpQty or slQty is required.
+>status	string	TP/SL order status
+>ctime	int64	create timestamp
+>triggerTime	int64	trigger time timestamp
+total	int64	total
+Response Example
+
+
+{"code":0,"data":[{"positionId":"12345678","symbol":"BTCUSDT","qty":"0.5","entryValue":"30000","side":"LONG","positionMode":"HEDGE","marginMode":"ISOLATION","leverage":100,"fee":"0.1","funding":"-0.2","realizedPNL":"102.9","margin":"300","unrealizedPNL":"1.5","liqPrice":"22209","marginRate":"0.01","ctime":1691382137448,"mtime":1691382137448}],"msg":"Success"}
+Pager
