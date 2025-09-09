@@ -1,0 +1,102 @@
+Signature Introduction
+OpenAPI Demo
+You can fill in your API key and API secret to try running the official demo provided.
+
+Github Demo
+
+Restful API Signature Public Parameters
+Headers:
+
+Name	Types	Mandatory	Description
+api-key	string	Y	api-key applied
+nonce	string	Y	Random string，32bits
+timestamp	string	Y	Current timestamp, milliseconds
+sign	string	Y	Singanture string
+Signature steps:
+
+All queryParams are sorted in ascending ASCII order by Key, Example: String queryParams = "id1uid200"
+Parameters in body, compressed into a string, remember to remove all spaces, Example：String body = {"uid":"2899","arr":[{"id":1,"name":"maple"},{"id":2,"name":"lily"}]}.
+!Attention: The request body format must be identical to the signature string.
+Signature, needs to be encrypted 2 times
+String digest = SHA256(nonce + timestamp + api-key + queryParams + body)
+String sign = SHA256(digest + secretKey)
+Note: secretKey is together when applying for api-key. Please keep them safely and do not pass it around.
+Signature Example
+Go:
+
+
+package main
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+)
+
+func main() {
+	nonce := "123456"
+	timestamp := "20241120123045"
+	apiKey := "yourApiKey"
+	secretKey := "yourSecretKey"
+	queryParams := "id1uid200" 
+	body := "{\"uid\":\"2899\",\"arr\":[{\"id\":1,\"name\":\"maple\"},{\"id\":2,\"name\":\"lily\"}]}"
+
+	digestInput := nonce + timestamp + apiKey + queryParams + body
+
+	digest := sha256Hex(digestInput)
+
+	signInput := digest + secretKey
+	sign := sha256Hex(signInput)
+
+	fmt.Println("Digest:", digest)
+	fmt.Println("Sign:", sign)
+}
+
+func sha256Hex(input string) string {
+	hash := sha256.Sum256([]byte(input))
+	return hex.EncodeToString(hash[:])
+}
+Python:
+
+
+import hashlib
+
+def sha256_hex(input_string):
+    return hashlib.sha256(input_string.encode('utf-8')).hexdigest()
+
+def main():
+    nonce = "123456"
+    timestamp = "20241120123045"
+    api_key = "yourApiKey"
+    secret_key = "yourSecretKey"
+    query_params = "id1uid200" 
+    body = '{"uid":"2899","arr":[{"id":1,"name":"maple"},{"id":2,"name":"lily"}]}'
+
+    digest_input = nonce + timestamp + api_key + query_params + body
+
+    digest = sha256_hex(digest_input)
+
+    sign_input = digest + secret_key
+    sign = sha256_hex(sign_input)
+
+    print("Digest:", digest)
+    print("Sign:", sign)
+
+if __name__ == "__main__":
+    main()
+WebSocket API Singature Parameters
+WebSocket API requests require authentication, and the following fields need to be included in all request parameter params:
+
+Name	Type	Mandatory	Description
+apiKey	string	Y	API Key
+timestamp	string	Y	Timestapmp
+nonce	string	Y	Random string
+sign	string	Y	Signature string
+Signature steps:
+
+Sort all fields in params except the sign field in ascending ASCII order by Key, remember to remove all spaces, Example: String params = "apiKey9a25209b66004da404d9ddcb48d1e11fnonce123456symbolBTCtimestamp1724285700000"
+Signature, needs to be encrypted 2 times
+String digest = SHA256(nonce + timestamp + apiKey + params)
+String sign = SHA256(digest + secretKey)
+Note: secretKey is together when applying for apiKey. Please keep them safely and do not pass it around.
+Pager
