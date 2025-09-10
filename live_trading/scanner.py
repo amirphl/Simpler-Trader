@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import datetime, timedelta, timezone
 from json import loads
 from typing import List, Tuple
 from urllib.error import HTTPError, URLError
@@ -32,6 +33,7 @@ class SymbolScanner:
 
     def scan_top_symbols_by_volume(
         self,
+        current_time: datetime,
         limit: int = 100,
         timeframe: str = "1h",
     ) -> List[SymbolInfo]:
@@ -47,6 +49,13 @@ class SymbolScanner:
         Returns:
             List of SymbolInfo sorted by volume (descending)
         """
+        timeframe_minutes = self._interval_to_minutes(timeframe)
+        if timeframe_minutes <= 0:
+            raise ValueError(f"Invalid timeframe: {timeframe}")
+
+        end_time = current_time.astimezone(timezone.utc)
+        start_time = end_time - timedelta(minutes=timeframe_minutes)
+
         try:
             tickers = self._fetch_binance_tickers()
             if not tickers:
@@ -70,40 +79,55 @@ class SymbolScanner:
             )
 
             symbols: List[SymbolInfo] = []
-            for ticker in candidates:
-                symbol = ticker["symbol"]
-                candle = self._fetch_latest_closed_candle(symbol, timeframe)
-                if candle is None:
-                    continue
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+            def process_ticker(ticker: dict) -> SymbolInfo | None:
+                symbol = ticker.get("symbol")
+                if not symbol:
+                    return None
+                window_klines = self._fetch_1m_candles_in_window(
+                    symbol, start_time, end_time, window_minutes=1
+                )
+                if not window_klines:
+                    return None
 
                 try:
-                    open_price = float(candle[1])
-                    close_price = float(candle[4])
-                    volume = float(candle[5])
-                    quote_volume = float(candle[7])
+                    open_price = float(window_klines[0][1])
+                    close_price = float(ticker["lastPrice"])
+                    volume = float(ticker["volume"])
+                    quote_volume = float(ticker["quoteVolume"])
                     price_change_pct = (
                         ((close_price - open_price) / open_price) * 100
                         if open_price > 0
                         else 0.0
                     )
                     self._log.debug(
-                        f"{symbol} {timeframe} candle parsed "
-                        f"open={open_price} close={close_price} "
-                        f"volume={volume} quote_volume={quote_volume}"
+                        "%s %s price window open=%.6f close=%.6f volume=%.6f quote_volume=%.6f (1m klines=%s)",
+                        symbol,
+                        timeframe,
+                        open_price,
+                        close_price,
+                        volume,
+                        quote_volume,
+                        len(window_klines),
                     )
-                except (ValueError, TypeError, IndexError) as e:
-                    self._log.warning(f"Failed to parse candle for {symbol}: {e}")
-                    continue
-
-                symbols.append(
-                    SymbolInfo(
+                    return SymbolInfo(
                         symbol=symbol,
                         current_price=close_price,
                         price_change_pct=price_change_pct,
                         volume=volume,
                         quote_volume=quote_volume,
                     )
-                )
+                except (ValueError, TypeError, IndexError) as e:
+                    self._log.warning(f"Failed to parse candle for {symbol}: {e}")
+                    return None
+
+            with ThreadPoolExecutor(max_workers=8) as executor:
+                futures = [executor.submit(process_ticker, t) for t in candidates]
+                for fut in as_completed(futures):
+                    res = fut.result()
+                    if res:
+                        symbols.append(res)
 
             symbols.sort(key=lambda x: x.quote_volume, reverse=True)
             result = symbols[:limit]
@@ -149,10 +173,10 @@ class SymbolScanner:
             f"Ticker request failed after {attempts} attempts: {last_exc}"
         ) from last_exc
 
-    def _fetch_latest_closed_candle(self, symbol: str, interval: str) -> list | None:
+    def _fetch_latest_candle(self, symbol: str, interval: str) -> list | None:
         """Fetch the latest closed kline for a symbol."""
-        LAST_INDEX = -2
-        params = urlencode({"symbol": symbol, "interval": interval, "limit": 2})
+        LAST_INDEX = -1
+        params = urlencode({"symbol": symbol, "interval": interval, "limit": 1})
         url = f"https://api.binance.com/api/v3/klines?{params}"
         delay = 1.0
         attempts = 3
@@ -166,9 +190,6 @@ class SymbolScanner:
                         return None
 
                     candle = klines[LAST_INDEX]
-                    self._log.debug(
-                        "%s %s latest closed candle: %s", symbol, interval, candle
-                    )
                     return candle
             except (HTTPError, URLError) as e:
                 last_exc = e
@@ -197,6 +218,132 @@ class SymbolScanner:
         if last_exc:
             self._log.error(
                 "Giving up fetching klines for %s after %s attempts: %s",
+                symbol,
+                attempts,
+                last_exc,
+            )
+        return None
+
+    def _fetch_latest_closed_candle(self, symbol: str, interval: str) -> list | None:
+        """Fetch the latest closed kline for a symbol."""
+        LAST_INDEX = -2
+        params = urlencode({"symbol": symbol, "interval": interval, "limit": 2})
+        url = f"https://api.binance.com/api/v3/klines?{params}"
+        delay = 1.0
+        attempts = 3
+        last_exc: Exception | None = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                with self._opener.open(Request(url), timeout=10) as resp:
+                    klines = loads(resp.read())
+                    if not klines:
+                        return None
+
+                    candle = klines[LAST_INDEX]
+                    return candle
+            except (HTTPError, URLError) as e:
+                last_exc = e
+                self._log.warning(
+                    "Kline request failed for %s (attempt %s/%s): %s",
+                    symbol,
+                    attempt,
+                    attempts,
+                    e,
+                )
+            except Exception as e:
+                last_exc = e
+                self._log.warning(
+                    "Kline parsing failed for %s (attempt %s/%s): %s",
+                    symbol,
+                    attempt,
+                    attempts,
+                    e,
+                )
+
+            if attempt < attempts:
+                self._log.debug("Retrying %s in %.1fs", symbol, delay)
+                time.sleep(delay)
+                delay = min(delay * 2, 8.0)
+
+        if last_exc:
+            self._log.error(
+                "Giving up fetching klines for %s after %s attempts: %s",
+                symbol,
+                attempts,
+                last_exc,
+            )
+        return None
+
+    def _fetch_1m_candles_in_window(
+        self, symbol: str, start_time: datetime, end_time: datetime, window_minutes: int
+    ) -> list | None:
+        """Fetch 1m klines for a symbol within a time window."""
+        start_ms = int(start_time.timestamp() * 1000)
+        end_ms = int(end_time.timestamp() * 1000)
+        limit = min(max(window_minutes + 1, 2), 1000)
+        params = urlencode(
+            {
+                "symbol": symbol,
+                "interval": "1m",
+                "startTime": start_ms,
+                "endTime": end_ms,
+                "limit": limit,
+            }
+        )
+        url = f"https://api.binance.com/api/v3/klines?{params}"
+
+        delay = 1.0
+        attempts = 3
+        last_exc: Exception | None = None
+
+        for attempt in range(1, attempts + 1):
+            try:
+                with self._opener.open(Request(url), timeout=10) as resp:
+                    klines = loads(resp.read())
+                    if not klines:
+                        return None
+
+                    filtered = [
+                        kline for kline in klines if start_ms <= int(kline[0]) <= end_ms
+                    ]
+                    self._log.debug(
+                        "%s 1m klines window (%s minutes): start=%s end=%s count=%s, last fetched=%s",
+                        symbol,
+                        window_minutes,
+                        start_time.isoformat(),
+                        end_time.isoformat(),
+                        len(filtered),
+                        klines[-1],
+                    )
+                    return filtered
+            except (HTTPError, URLError) as e:
+                last_exc = e
+                self._log.warning(
+                    "1m kline request failed for %s (attempt %s/%s): %s",
+                    symbol,
+                    attempt,
+                    attempts,
+                    e,
+                )
+            except Exception as e:
+                last_exc = e
+                self._log.warning(
+                    "1m kline parsing failed for %s (attempt %s/%s): %s",
+                    symbol,
+                    attempt,
+                    attempts,
+                    e,
+                )
+
+            if attempt < attempts:
+                self._log.debug("Retrying 1m klines for %s in %.1fs", symbol, delay)
+                time.sleep(delay)
+                delay = min(delay * 2, 8.0)
+
+        if last_exc:
+            self._log.error(
+                "Giving up fetching 1m klines for %s after %s attempts: %s",
                 symbol,
                 attempts,
                 last_exc,
@@ -256,19 +403,11 @@ class SymbolScanner:
             f"Found {len(top_gainers)} top gainers and {len(top_losers)} top losers (min change: {min_change_pct}%)"
         )
         self._log.info(
-            "(top gainer: {top_gainers[0].symbol} {top_gainers[0].price_change_pct:.2f}%)"
-            if top_gainers
-            else "(no gainers)"
-            + f", (top loser: {top_losers[0].symbol} {top_losers[0].price_change_pct:.2f}%"
-            if top_losers
-            else ", (no losers)"
-        )
-        self._log.info(
-            "Top Gainers: "
+            "---> Top Gainers: "
             + ", ".join(f"{s.symbol} ({s.price_change_pct:.2f}%)" for s in top_gainers)
         )
         self._log.info(
-            "Top Losers: "
+            "---> Top Losers: "
             + ", ".join(f"{s.symbol} ({s.price_change_pct:.2f}%)" for s in top_losers)
         )
 
