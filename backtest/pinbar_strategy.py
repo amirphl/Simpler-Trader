@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Sequence
+from typing import List, Sequence, Tuple, Mapping, Any
 
 from candle_downloader.models import Candle
 
@@ -70,7 +70,9 @@ class PinbarStrategy(BacktestStrategy):
     def timeframes(self) -> Sequence[str]:
         return [self._config.timeframe]
 
-    def run(self, context: BacktestContext) -> Sequence[TradePerformance]:
+    def run(
+        self, context: BacktestContext
+    ) -> Tuple[Sequence[TradePerformance], Mapping[str, Any] | None]:
         symbol = self._config.symbol
         timeframe = self._config.timeframe
         candles = context.data.get(symbol, {}).get(timeframe, [])
@@ -79,7 +81,7 @@ class PinbarStrategy(BacktestStrategy):
             extra={"symbol": symbol, "timeframe": timeframe, "length": len(candles)},
         )
         if len(candles) < 2:
-            return []
+            return [], None
 
         trades: List[TradePerformance] = []
         position: Position | None = None
@@ -126,7 +128,7 @@ class PinbarStrategy(BacktestStrategy):
         #     pnl = self._record_exit(last_candle, exit_price, "End of backtest", position, trades)
         #     current_capital += pnl
 
-        return trades
+        return trades, None
 
     def _is_bullish_pinbar(self, candles: Sequence[Candle], idx: int) -> bool:
         if idx <= 0:
@@ -219,4 +221,3 @@ class PinbarStrategy(BacktestStrategy):
                 return candle.open
             return candle.close - (self._config.stop_loss_pct * body)
         raise ValueError(f"Unsupported stop-loss mode: {mode}")
-
