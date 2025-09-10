@@ -76,6 +76,17 @@ class Candle:
         """Check if candle is bearish (close < open)."""
         return self.close < self.open
 
+    def __str__(self) -> str:
+        return (
+            f"Candle(symbol={self.symbol}, interval={self.interval}, "
+            f"open_time={self.open_time.isoformat()}, close_time={self.close_time.isoformat()}, "
+            f"open={self.open}, high={self.high}, low={self.low}, close={self.close}, "
+            f"volume={self.volume})"
+        )
+
+    def __repr__(self) -> str:
+        return self.__str__()
+
 
 def normalize_symbol(symbol: str) -> str:
     return symbol.upper().strip()
