@@ -4,9 +4,9 @@ import logging
 import math
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from statistics import mean
-from typing import Dict, List, Mapping, Sequence
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from candle_downloader.binance import MAX_BATCH
 from candle_downloader.downloader import CandleDownloader, DownloadRequest
@@ -26,6 +26,7 @@ class BacktestRunConfig:
     override_download: bool = False
     max_batch: int = MAX_BATCH
     risk_free_rate: float = 0.0  # expressed as decimal annual rate, e.g. 0.02 = 2%
+    warmup_days: int = 30
 
     def __post_init__(self) -> None:
         if self.start >= self.end:
@@ -34,6 +35,8 @@ class BacktestRunConfig:
             raise ValueError("initial_capital must be positive")
         if self.max_batch <= 0 or self.max_batch > MAX_BATCH:
             raise ValueError(f"max_batch must live in 1..{MAX_BATCH}")
+        if self.warmup_days < 0:
+            raise ValueError("warmup_days must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -45,7 +48,7 @@ class TradePerformance:
     pnl: float
     return_pct: float
     notes: str | None = None
-    metadata: Mapping[str, str | float | int] | None = None
+    metadata: Mapping[str, str | float | int | None] | None = None
 
     def duration_seconds(self) -> float:
         return (self.exit_time - self.entry_time).total_seconds()
@@ -57,6 +60,7 @@ class BacktestContext:
 
     config: BacktestRunConfig
     data: CandleMatrix
+    ignore_candles: Dict[str, Dict[str, int]] = field(default_factory=dict)
 
 
 @dataclass
@@ -79,9 +83,10 @@ class BacktestStatistics:
     cagr_pct: float = 0.0
     average_trade_duration_sec: float = 0.0
     equity_curve: List[float] = field(default_factory=list)
+    extra: Dict[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> Dict[str, float | int | List[float]]:
-        return {
+        base = {
             "total_trades": self.total_trades,
             "winning_trades": self.winning_trades,
             "losing_trades": self.losing_trades,
@@ -99,6 +104,8 @@ class BacktestStatistics:
             "average_trade_duration_sec": self.average_trade_duration_sec,
             "equity_curve": self.equity_curve,
         }
+        base.update(self.extra)
+        return base
 
 
 @dataclass
@@ -120,10 +127,12 @@ class BacktestReport:
                 "override_download": self.config.override_download,
                 "max_batch": self.config.max_batch,
                 "risk_free_rate": self.config.risk_free_rate,
+                "warmup_days": self.config.warmup_days,
             },
             "statistics": self.statistics.as_dict(),
             "trades": [
                 {
+                    "index": idx,
                     "entry_time": trade.entry_time.isoformat(),
                     "exit_time": trade.exit_time.isoformat(),
                     "pnl": trade.pnl,
@@ -131,7 +140,7 @@ class BacktestReport:
                     "notes": trade.notes,
                     "metadata": dict(trade.metadata or {}),
                 }
-                for trade in self.trades
+                for idx, trade in enumerate(self.trades)
             ],
         }
 
@@ -151,8 +160,10 @@ class BacktestStrategy(ABC):
         """Return the Binance-compatible intervals needed by the strategy."""
 
     @abstractmethod
-    def run(self, context: BacktestContext) -> Sequence[TradePerformance]:
-        """Execute backtest logic and return immutable trade outcomes."""
+    def run(
+        self, context: BacktestContext
+    ) -> Tuple[Sequence[TradePerformance], Mapping[str, Any] | None]:
+        """Execute backtest logic and return immutable trade outcomes and optional extra stats."""
 
 
 class BaseBacktester:
@@ -181,10 +192,34 @@ class BaseBacktester:
 
         start = _ensure_utc(config.start)
         end = _ensure_utc(config.end)
-        data = self._download_data(strategy_symbols, timeframes, start, end, config)
-        context = BacktestContext(config=config, data=data)
-        trades = tuple(self._strategy.run(context))
+        warmup_start = (
+            start - timedelta(days=config.warmup_days) if config.warmup_days else start
+        )
+        data = self._download_data(
+            strategy_symbols, timeframes, warmup_start, end, config
+        )
+        ignore_candles: Dict[str, Dict[str, int]] = {}
+        for symbol, tf_candles in data.items():
+            ignore_candles[symbol] = {}
+            for timeframe, candles in tf_candles.items():
+                ignore_candles[symbol][timeframe] = sum(
+                    1 for candle in candles if candle.close_time < start
+                )
+
+        context = BacktestContext(
+            config=config, data=data, ignore_candles=ignore_candles
+        )
+        result = self._strategy.run(context)
+        custom_stats: Mapping[str, Any] | None = None
+        # TODO:
+        if isinstance(result, tuple) and len(result) == 2:
+            trades, custom_stats = result  # type: ignore[misc]
+        else:
+            trades = result  # type: ignore[assignment]
+        trades = tuple(trades)
         statistics = self._build_statistics(trades, config)
+        if custom_stats:
+            statistics.extra.update(dict(custom_stats))
         return BacktestReport(
             strategy_name=self._strategy.name(),
             config=config,
@@ -250,10 +285,16 @@ class BaseBacktester:
 
         stats.average_return_pct = mean(trade.return_pct for trade in trades)
         stats.expectancy = stats.net_profit / stats.total_trades
-        stats.average_trade_duration_sec = mean(trade.duration_seconds() for trade in trades)
+        stats.average_trade_duration_sec = mean(
+            trade.duration_seconds() for trade in trades
+        )
 
         if stats.gross_loss < 0:
-            stats.profit_factor = stats.gross_profit / abs(stats.gross_loss) if stats.gross_profit > 0 else 0.0
+            stats.profit_factor = (
+                stats.gross_profit / abs(stats.gross_loss)
+                if stats.gross_profit > 0
+                else 0.0
+            )
         elif stats.gross_profit > 0:
             stats.profit_factor = float("inf")
         else:
@@ -273,9 +314,13 @@ class BaseBacktester:
         stats.max_drawdown_pct = max_drawdown * 100
 
         final_equity = stats.equity_curve[-1]
-        duration_years = (config.end - config.start).total_seconds() / (365.25 * 24 * 3600)
+        duration_years = (config.end - config.start).total_seconds() / (
+            365.25 * 24 * 3600
+        )
         if duration_years > 0 and final_equity > 0:
-            stats.cagr_pct = ((final_equity / config.initial_capital) ** (1 / duration_years) - 1) * 100
+            stats.cagr_pct = (
+                (final_equity / config.initial_capital) ** (1 / duration_years) - 1
+            ) * 100
         else:
             stats.cagr_pct = 0.0
 
@@ -296,4 +341,3 @@ def _ensure_utc(moment: datetime) -> datetime:
     if moment.tzinfo is None:
         return moment.replace(tzinfo=timezone.utc)
     return moment.astimezone(timezone.utc)
-
