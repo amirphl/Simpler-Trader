@@ -12,7 +12,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from .models import Candle, normalize_symbol
 
 BINANCE_BASE_URL = "https://api.binance.com"
-MAX_BATCH = 10000
+MAX_BATCH = 500
 
 
 def interval_to_milliseconds(interval: str) -> int:
@@ -54,7 +54,9 @@ class BinanceClientConfig:
 class BinanceClient:
     """Minimal Binance REST client for historical candle retrieval with retry logic."""
 
-    def __init__(self, config: BinanceClientConfig, logger: logging.Logger | None = None) -> None:
+    def __init__(
+        self, config: BinanceClientConfig, logger: logging.Logger | None = None
+    ) -> None:
         self._base_url = config.base_url.rstrip("/")
         self._timeout = config.timeout
         self._max_retries = config.max_retries
@@ -98,19 +100,27 @@ class BinanceClient:
                 with self._opener.open(request, timeout=self._timeout) as response:
                     body = response.read()
                 payload = json.loads(body)
-                return [Candle.from_binance(symbol, interval, kline) for kline in payload]
+                return [
+                    Candle.from_binance(symbol, interval, kline) for kline in payload
+                ]
 
             except HTTPError as exc:
                 # Don't retry on client errors (4xx) except 429 (rate limit) and 408 (timeout)
                 if 400 <= exc.code < 500 and exc.code not in (429, 408):
-                    raise RuntimeError(f"Binance request failed with status {exc.code}: {exc.reason}") from exc
+                    raise RuntimeError(
+                        f"Binance request failed with status {exc.code}: {exc.reason}"
+                    ) from exc
 
                 last_exception = exc
                 if attempt < self._max_retries - 1:
                     self._log.warning(
                         f"HTTP error {exc.code} on attempt {attempt + 1}/{self._max_retries}, "
                         f"retrying in {delay:.1f}s...",
-                        extra={"symbol": symbol, "interval": interval, "status": exc.code},
+                        extra={
+                            "symbol": symbol,
+                            "interval": interval,
+                            "status": exc.code,
+                        },
                     )
                 else:
                     raise RuntimeError(
@@ -146,16 +156,22 @@ class BinanceClient:
 
             except Exception as exc:
                 # Unexpected errors - don't retry
-                raise RuntimeError(f"Unexpected error in Binance request: {exc}") from exc
+                raise RuntimeError(
+                    f"Unexpected error in Binance request: {exc}"
+                ) from exc
 
             # Exponential backoff before retry
             if attempt < self._max_retries - 1:
                 time.sleep(delay)
-                delay = min(delay * self._retry_backoff_multiplier, self._max_retry_delay)
+                delay = min(
+                    delay * self._retry_backoff_multiplier, self._max_retry_delay
+                )
 
         # Should never reach here, but just in case
         if last_exception:
-            raise RuntimeError(f"Binance request failed after {self._max_retries} attempts") from last_exception
+            raise RuntimeError(
+                f"Binance request failed after {self._max_retries} attempts"
+            ) from last_exception
         raise RuntimeError("Binance request failed for unknown reason")
 
     def close(self) -> None:
@@ -189,4 +205,3 @@ class BinanceClient:
             if len(symbols) >= limit:
                 break
         return symbols
-
