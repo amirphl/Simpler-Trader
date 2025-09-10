@@ -32,3 +32,5 @@ signal_state.json
 *.db
 
 configs/live_trading.env
+
+gentime.py
