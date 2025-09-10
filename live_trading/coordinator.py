@@ -29,9 +29,7 @@ class LiveTradingCoordinator:
         self._config = config
         self._exchange = exchange
         self._log = logger or logging.getLogger(__name__)
-        self._timeframe_delta = timedelta(
-            minutes=self._interval_to_minutes(config.timeframe)
-        )
+        self._interval_seconds = config.execution_interval_minutes * 60
         self._candle_delay = timedelta(seconds=config.candle_ready_delay_seconds)
 
         # Initialize components
@@ -59,46 +57,47 @@ class LiveTradingCoordinator:
                 raise RuntimeError("Exchange connection test failed")
 
             self._log.info(f"Connected to {self._config.exchange_name} exchange")
-            self._log.info(f"Timeframe: {self._config.timeframe}")
-            next_run_time = self._compute_next_run_time(datetime.now(timezone.utc))
-            self._log.info(
-                f"Waiting for candle close with {self._config.candle_ready_delay_seconds}s delay; "
-                f"next execution at {next_run_time.isoformat()}"
-            )
+            self._log.info(f"Execution interval: {self._config.execution_interval_minutes} minutes")
+
+            # Immediate first run
+            current_time = datetime.now(timezone.utc)
+            self._log.info("Executing initial strategy cycle at %s", current_time.isoformat())
+            self._position_manager.update_positions(current_time)
+            self._execute_strategy_cycle(current_time)
+            self._position_manager.update_execution_time(current_time)
+
+            now_after_cycle = datetime.now(timezone.utc)
+            self._position_manager.update_positions(now_after_cycle)
+            self._position_manager.cleanup_state(now_after_cycle)
+
+            next_run_time = self._next_aligned_time(now_after_cycle)
+            self._log.info("Next execution at %s", next_run_time.isoformat())
 
             while self._running:
                 try:
                     current_time = datetime.now(timezone.utc)
 
-                    # Catch up any missed intervals; do not skip runs.
-                    while self._running and current_time >= next_run_time:
+                    if current_time >= next_run_time:
                         scheduled_run_time = next_run_time
                         self._log.info(
-                            f"Executing strategy at {current_time.isoformat()} "
-                            f"(scheduled for {scheduled_run_time.isoformat()})"
+                            "Executing strategy at %s (scheduled for %s)",
+                            current_time.isoformat(),
+                            scheduled_run_time.isoformat(),
                         )
 
-                        # Refresh positions before executing in case prior cycle closed trades.
                         self._position_manager.update_positions(current_time)
-
                         self._execute_strategy_cycle(scheduled_run_time)
                         self._position_manager.update_execution_time(scheduled_run_time)
 
-                        # Update existing positions and cleanup right after execution
                         now_after_cycle = datetime.now(timezone.utc)
                         self._position_manager.update_positions(now_after_cycle)
                         self._position_manager.cleanup_state(now_after_cycle)
 
-                        # Schedule next run
-                        next_run_time = self._compute_next_run_time(now_after_cycle)
-                        self._log.info(f"Next execution at {next_run_time.isoformat()}")
-                        current_time = datetime.now(timezone.utc)
+                        next_run_time = self._next_aligned_time(now_after_cycle)
+                        self._log.info("Next execution at %s", next_run_time.isoformat())
                         continue
 
-                    # Sleep until next scheduled run
-                    sleep_seconds = max(
-                        1.0, (next_run_time - current_time).total_seconds()
-                    )
+                    sleep_seconds = max(1.0, (next_run_time - current_time).total_seconds())
                     time.sleep(sleep_seconds)
 
                 except KeyboardInterrupt:
@@ -112,58 +111,14 @@ class LiveTradingCoordinator:
             self._running = False
             self._cleanup()
 
-    def _compute_next_run_time(self, current_time: datetime) -> datetime:
-        """Compute the next execution time based on timeframe and last run."""
-        latest_ready_time = self._latest_ready_time(current_time)
-        last_execution = self._position_manager.get_state().last_execution_time
-        self._log.debug(
-            f"latest_ready_time={latest_ready_time.isoformat()}, "
-            f"last_execution={last_execution.isoformat() if last_execution else None}"
-        )
-
-        if last_execution is None or last_execution < latest_ready_time:
-            return latest_ready_time
-
-        return self._next_ready_time(current_time)
-
-    def _interval_to_minutes(self, interval: str) -> int:
-        """Convert interval string to minutes."""
-        mapping = {
-            "1m": 1,
-            "3m": 3,
-            "5m": 5,
-            "15m": 15,
-            "30m": 30,
-            "1h": 60,
-            "2h": 120,
-            "4h": 240,
-            "6h": 360,
-            "12h": 720,
-            "1d": 1440,
-        }
-        return mapping.get(interval, 60)
-
-    def _latest_ready_time(self, current_time: datetime) -> datetime:
-        """Return the most recent timeframe boundary plus readiness delay."""
-        start_of_day = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
-        elapsed = current_time - start_of_day
-        periods_since_midnight = int(
-            elapsed.total_seconds() // self._timeframe_delta.total_seconds()
-        )
-        latest_boundary = start_of_day + self._timeframe_delta * periods_since_midnight
-        self._log.debug(
-            f"start_of_day={start_of_day.isoformat()}, elapsed={elapsed}, "
-            f"periods_since_midnight={periods_since_midnight}, latest_boundary={latest_boundary.isoformat()}, "
-            f"candle_delay={self._candle_delay}"
-        )
-        return latest_boundary + self._candle_delay
-
-    def _next_ready_time(self, current_time: datetime) -> datetime:
-        """Return the next timeframe boundary plus readiness delay."""
-        latest_ready = self._latest_ready_time(current_time)
-        if current_time < latest_ready:
-            return latest_ready
-        return latest_ready + self._timeframe_delta
+    def _next_aligned_time(self, current_time: datetime) -> datetime:
+        """Align to the next interval boundary (divisible by execution_interval_minutes)."""
+        # Compute next boundary in UTC to keep alignment consistent
+        ts = int(current_time.replace(tzinfo=timezone.utc).timestamp())
+        interval = max(self._interval_seconds, 1)
+        next_boundary_ts = ((ts // interval) + 1) * interval
+        aligned = datetime.fromtimestamp(next_boundary_ts, tz=timezone.utc)
+        return aligned + self._candle_delay
 
     def _execute_strategy_cycle(self, current_time: datetime) -> None:
         """Execute one complete strategy cycle."""
@@ -173,6 +128,7 @@ class LiveTradingCoordinator:
                 f"Scanning top {self._config.top_m_symbols} symbols by volume for timeframe {self._config.timeframe}"
             )
             top_symbols = self._scanner.scan_top_symbols_by_volume(
+                current_time=current_time,
                 limit=self._config.top_m_symbols,
                 timeframe=self._config.timeframe,
             )
@@ -208,8 +164,8 @@ class LiveTradingCoordinator:
             )
 
             # TODO:
-            long_signals = long_signals[:10]
-            short_signals = short_signals[:10]
+            # long_signals = long_signals[:10]
+            # short_signals = short_signals[:10]
 
             if not long_signals and not short_signals:
                 self._log.info("No trading signals generated")
