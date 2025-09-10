@@ -60,8 +60,10 @@ class CandleDownloader:
 
         symbol = normalize_symbol(request.symbol)
         interval_ms = interval_to_milliseconds(request.interval)
-        start_dt = _ensure_utc(start_trimmed)
-        end_dt = _ensure_utc(end_trimmed)
+        start_dt = _align_down_to_interval(_ensure_utc(start_trimmed), interval_ms)
+        end_dt = _align_down_to_interval(_ensure_utc(end_trimmed), interval_ms)
+        if end_dt <= start_dt:
+            raise ValueError("aligned start must be before aligned end")
         stats = DownloadStats()
 
         candles_by_time: Dict[int, Candle] = {}
@@ -114,7 +116,9 @@ class CandleDownloader:
             end=end_dt,
         )
         final_times = {candle.open_time_ms for candle in final_candles}
-        remaining = _build_missing_times(to_milliseconds(start_dt), to_milliseconds(end_dt), interval_ms, final_times)
+        remaining = _build_missing_times(
+            to_milliseconds(start_dt), to_milliseconds(end_dt), interval_ms, final_times
+        )
         if remaining:
             raise RuntimeError(
                 f"Unable to download full range for {symbol} {request.interval}, missing {len(remaining)} candles"
@@ -127,6 +131,13 @@ def _ensure_utc(moment: datetime) -> datetime:
     if moment.tzinfo is None:
         return moment.replace(tzinfo=timezone.utc)
     return moment.astimezone(timezone.utc)
+
+
+def _align_down_to_interval(moment: datetime, interval_ms: int) -> datetime:
+    """Floor a datetime to the nearest lower interval boundary."""
+    ms = to_milliseconds(moment)
+    aligned_ms = (ms // interval_ms) * interval_ms
+    return datetime.fromtimestamp(aligned_ms / 1000, tz=timezone.utc)
 
 
 def _build_missing_times(
@@ -216,4 +227,3 @@ def _fetch_pending_windows(
 
 def _ms_to_iso(timestamp_ms: int) -> str:
     return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).isoformat()
-
