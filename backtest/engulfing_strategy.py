@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
 from math import sqrt
-from typing import List, Sequence
+from typing import List, Sequence, Tuple, Mapping, Any
 
 from candle_downloader.models import Candle
 
@@ -98,7 +98,6 @@ class EngulfingStrategyConfig:
             raise ValueError("stochastic_second_line must be 'k' or 'd'")
 
 
-
 @dataclass
 class Position:
     """Represents an open long position."""
@@ -138,7 +137,9 @@ def calculate_volume_pressure_score(
 
     # Average volume of recent candles
     recent_volumes = [getattr(c, "volume", 0.0) or 0.0 for c in recent_candles]
-    avg_recent_volume = sum(recent_volumes) / len(recent_volumes) if recent_volumes else 0.0
+    avg_recent_volume = (
+        sum(recent_volumes) / len(recent_volumes) if recent_volumes else 0.0
+    )
     if avg_recent_volume <= 0:
         return None
 
@@ -185,7 +186,9 @@ def calculate_bollinger_bands(
     return lower, middle, upper
 
 
-def calculate_stochastic_k(candles: Sequence[Candle], period: int, index: int) -> float | None:
+def calculate_stochastic_k(
+    candles: Sequence[Candle], period: int, index: int
+) -> float | None:
     """Calculate Stochastic %K for a given candle index.
 
     %K = ((Close - Lowest Low) / (Highest High - Lowest Low)) * 100
@@ -271,7 +274,9 @@ class EngulfingStrategy(BacktestStrategy):
     def timeframes(self) -> Sequence[str]:
         return [self._config.timeframe]
 
-    def run(self, context: BacktestContext) -> Sequence[TradePerformance]:
+    def run(
+        self, context: BacktestContext
+    ) -> Tuple[Sequence[TradePerformance], Mapping[str, Any] | None]:
         self._log.info(
             "Running strategy with configuration",
             extra={
@@ -305,9 +310,12 @@ class EngulfingStrategy(BacktestStrategy):
         symbol = self._config.symbol
         timeframe = self._config.timeframe
         candles = context.data.get(symbol, {}).get(timeframe, [])
-        self._log.info("Candles loaded", extra={"symbol": symbol, "timeframe": timeframe, "length": len(candles)})
+        self._log.info(
+            "Candles loaded",
+            extra={"symbol": symbol, "timeframe": timeframe, "length": len(candles)},
+        )
         if len(candles) < max(100, self._config.window_size + 2):
-            return []
+            return [], None
 
         patterns = detect_candle_patterns(candles, doji_size=self._config.doji_size)
         trades: List[TradePerformance] = []
@@ -342,7 +350,9 @@ class EngulfingStrategy(BacktestStrategy):
                     # Check if N candles before previous candle are bearish
                     # Previous candle is at idx-1, so we check from idx-1-N to idx-2 (inclusive)
                     check_start = idx - 1 - self._config.window_size
-                    if check_start >= 0 and are_bearish(candles, check_start, self._config.window_size):
+                    if check_start >= 0 and are_bearish(
+                        candles, check_start, self._config.window_size
+                    ):
                         if not self._passes_stochastic_filter(candles, idx - 1):
                             continue
 
@@ -353,7 +363,10 @@ class EngulfingStrategy(BacktestStrategy):
                                 engulf_idx=idx - 1,
                                 window=self._config.volume_window,
                             )
-                            if score is not None and score > self._config.max_volume_pressure_score:
+                            if (
+                                score is not None
+                                and score > self._config.max_volume_pressure_score
+                            ):
                                 continue
 
                         engulf_candle = prev_candle
@@ -422,9 +435,11 @@ class EngulfingStrategy(BacktestStrategy):
             # current_capital += pnl
             position = None
 
-        return trades
+        return trades, None
 
-    def _check_exit(self, candle: Candle, position: Position) -> tuple[float | None, str | None]:
+    def _check_exit(
+        self, candle: Candle, position: Position
+    ) -> tuple[float | None, str | None]:
         if candle.low <= position.stop_loss:
             return position.stop_loss, "Stop Loss"
         if candle.high >= position.take_profit:
@@ -442,7 +457,9 @@ class EngulfingStrategy(BacktestStrategy):
         exit_time: datetime | None = None,
         note_override: str | None = None,
     ) -> float:
-        pnl, fees_paid, return_pct = self._compute_trade_financials(exit_price, position)
+        pnl, fees_paid, return_pct = self._compute_trade_financials(
+            exit_price, position
+        )
         note = note_override or f"{exit_reason} at {exit_price:.2f}"
 
         trades.append(
@@ -464,9 +481,13 @@ class EngulfingStrategy(BacktestStrategy):
         )
         return pnl
 
-    def _compute_trade_financials(self, exit_price: float, position: Position) -> tuple[float, float, float]:
+    def _compute_trade_financials(
+        self, exit_price: float, position: Position
+    ) -> tuple[float, float, float]:
         price_change = exit_price - position.entry_price
-        gross_pnl = (price_change / position.entry_price) * position.size * position.leverage
+        gross_pnl = (
+            (price_change / position.entry_price) * position.size * position.leverage
+        )
         fees_paid = self._calculate_fees(exit_price, position)
         pnl = gross_pnl - fees_paid
         return_pct = (pnl / position.size) * 100.0 if position.size else 0.0
@@ -524,12 +545,17 @@ class EngulfingStrategy(BacktestStrategy):
         if first is None or second is None:
             return False
 
-        if cfg.stochastic_first_threshold is not None and first < cfg.stochastic_first_threshold:
+        if (
+            cfg.stochastic_first_threshold is not None
+            and first < cfg.stochastic_first_threshold
+        ):
             return False
-        if cfg.stochastic_second_threshold is not None and second < cfg.stochastic_second_threshold:
+        if (
+            cfg.stochastic_second_threshold is not None
+            and second < cfg.stochastic_second_threshold
+        ):
             return False
 
         if cfg.stochastic_comparison == "gt":
             return first > second
         return first < second
-
