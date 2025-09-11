@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Sequence, Optional
+from typing import List, Sequence, Optional, Tuple, Mapping, Any
 
 from candle_downloader.models import Candle
 
@@ -295,14 +295,16 @@ class ScalpingFVGStrategy(BacktestStrategy):
     def _candle_intersects_zone(candle: Candle, zone: FVGZone) -> bool:
         return candle.low <= zone.upper and candle.high >= zone.lower
 
-    def run(self, context: BacktestContext) -> Sequence[TradePerformance]:
+    def run(
+        self, context: BacktestContext
+    ) -> Tuple[Sequence[TradePerformance], Mapping[str, Any] | None]:
         symbol = self._config.symbol
         timeframe = self._config.timeframe
 
         candles = context.data.get(symbol, {}).get(timeframe, [])
         if len(candles) < 200:
             # Need enough history for indicators + FVG
-            return []
+            return [], None
 
         closes = [c.close for c in candles]
         volumes = [float(getattr(c, "volume", 0.0) or 0.0) for c in candles]
@@ -520,4 +522,4 @@ class ScalpingFVGStrategy(BacktestStrategy):
                 )
             )
 
-        return trades
+        return trades, None
