@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Literal, Optional, Sequence
+from typing import List, Literal, Optional, Sequence, Tuple, Mapping, Any
 
 from candle_downloader.models import Candle
 
@@ -40,14 +40,19 @@ class PinBarMagicStrategyConfig:
         if self.atr_multiple <= 0:
             raise ValueError("atr_multiple must be positive")
         if self.trail_points <= 0 or self.trail_offset < 0:
-            raise ValueError("trail parameters must be non-negative and trail_points > 0")
-        if min(
-            self.slow_sma_period,
-            self.medium_ema_period,
-            self.fast_ema_period,
-            self.atr_period,
-            self.entry_cancel_bars,
-        ) <= 0:
+            raise ValueError(
+                "trail parameters must be non-negative and trail_points > 0"
+            )
+        if (
+            min(
+                self.slow_sma_period,
+                self.medium_ema_period,
+                self.fast_ema_period,
+                self.atr_period,
+                self.entry_cancel_bars,
+            )
+            <= 0
+        ):
             raise ValueError("period-based configuration values must be positive")
 
 
@@ -92,12 +97,17 @@ class PinBarMagicStrategy(BacktestStrategy):
     def timeframes(self) -> Sequence[str]:
         return [self._config.timeframe]
 
-    def run(self, context: BacktestContext) -> Sequence[TradePerformance]:
+    def run(
+        self, context: BacktestContext
+    ) -> Tuple[Sequence[TradePerformance], Mapping[str, Any] | None]:
         symbol = self._config.symbol
         timeframe = self._config.timeframe
         candles = context.data.get(symbol, {}).get(timeframe, [])
-        if len(candles) < max(self._config.slow_sma_period, self._config.atr_period) + 5:
-            return []
+        if (
+            len(candles)
+            < max(self._config.slow_sma_period, self._config.atr_period) + 5
+        ):
+            return [], None
 
         closes = [c.close for c in candles]
         fast_ema = calc_ema(closes, self._config.fast_ema_period)
@@ -129,7 +139,13 @@ class PinBarMagicStrategy(BacktestStrategy):
                     candle, position, fast_prev, fast_curr, med_prev, med_curr
                 )
                 if exit_price is not None:
-                    pnl = self._close_position(position, exit_price, exit_reason or "Exit", candle.close_time, trades)
+                    pnl = self._close_position(
+                        position,
+                        exit_price,
+                        exit_reason or "Exit",
+                        candle.close_time,
+                        trades,
+                    )
                     current_capital += pnl
                     position = None
 
@@ -156,7 +172,7 @@ class PinBarMagicStrategy(BacktestStrategy):
                     current_capital,
                 )
 
-        return trades
+        return trades, None
 
     # --- Signal helpers -------------------------------------------------
 
@@ -253,25 +269,27 @@ class PinBarMagicStrategy(BacktestStrategy):
         cond2 = candle.close < candle.open and (candle.high - candle.open) > 0.66 * rng
         return cond1 or cond2
 
-    def _bull_pierce(self, candle: Candle, fast: float, med: float, slow: float) -> bool:
+    def _bull_pierce(
+        self, candle: Candle, fast: float, med: float, slow: float
+    ) -> bool:
         return any(
-            (
-                candle.low < ema and candle.open > ema and candle.close > ema
-            )
+            (candle.low < ema and candle.open > ema and candle.close > ema)
             for ema in (fast, med, slow)
         )
 
-    def _bear_pierce(self, candle: Candle, fast: float, med: float, slow: float) -> bool:
+    def _bear_pierce(
+        self, candle: Candle, fast: float, med: float, slow: float
+    ) -> bool:
         return any(
-            (
-                candle.high > ema and candle.open < ema and candle.close < ema
-            )
+            (candle.high > ema and candle.open < ema and candle.close < ema)
             for ema in (fast, med, slow)
         )
 
     # --- Pending orders --------------------------------------------------
 
-    def _expire_orders(self, pending_orders: List[PendingOrder], current_index: int) -> None:
+    def _expire_orders(
+        self, pending_orders: List[PendingOrder], current_index: int
+    ) -> None:
         for order in list(pending_orders):
             if current_index - order.created_index > self._config.entry_cancel_bars:
                 pending_orders.remove(order)
@@ -417,4 +435,3 @@ class PinBarMagicStrategy(BacktestStrategy):
 
     def _is_market_close(self, moment: datetime) -> bool:
         return moment.weekday() == 4 and moment.hour == 16
-
