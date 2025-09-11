@@ -12,6 +12,11 @@ from .pinbar_strategy import PinbarStrategy, PinbarStrategyConfig
 from .pinbar_magic_strategy import PinBarMagicStrategy, PinBarMagicStrategyConfig
 from .patterns import CandlePatternSignals, detect_candle_patterns
 from .plotter import plot_backtest, plot_backtest_from_store, save_plot, show_plot
+from .stochastic_fsm_strategy import (
+    PositionDirection,
+    StochasticRsiFsmConfig,
+    StochasticRsiFsmStrategy,
+)
 
 __all__ = [
     "BacktestContext",
@@ -30,9 +35,11 @@ __all__ = [
     "PinBarMagicStrategy",
     "PinBarMagicStrategyConfig",
     "StopLossMode",
+    "PositionDirection",
+    "StochasticRsiFsmConfig",
+    "StochasticRsiFsmStrategy",
     "plot_backtest",
     "plot_backtest_from_store",
     "save_plot",
     "show_plot",
 ]
-
