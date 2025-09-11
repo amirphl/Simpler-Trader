@@ -23,6 +23,7 @@ from candle_downloader.binance import BinanceClient, BinanceClientConfig
 from candle_downloader.downloader import CandleDownloader
 from candle_downloader.storage import build_store
 
+
 def parse_datetime(value: str) -> datetime:
     """Parse ISO8601 datetime string to UTC datetime."""
     try:
@@ -62,25 +63,20 @@ def load_env_config() -> Dict[str, str]:
         "stoch_second_threshold": os.getenv("STRATEGY_STOCH_SECOND_THRESHOLD", ""),
         "stoch_comparison": os.getenv("STRATEGY_STOCH_COMPARISON", "gt"),
         "stoch_d_smoothing": os.getenv("STRATEGY_STOCH_D_SMOOTHING", "3"),
-
         "start": os.getenv("BACKTEST_START", ""),
         "end": os.getenv("BACKTEST_END", ""),
         "initial_capital": os.getenv("BACKTEST_INITIAL_CAPITAL", ""),
         "override_download": os.getenv("OVERRIDE_DOWNLOAD", "false"),
-
         "store_kind": os.getenv("STORE_KIND", "sqlite"),
         "store_path": os.getenv("STORE_PATH", "./data/candles.db"),
-
         "http_proxy": os.getenv("HTTP_PROXY", ""),
         "https_proxy": os.getenv("HTTPS_PROXY", ""),
         "proxy": os.getenv("PROXY", ""),
-
         "stats_output": os.getenv("STATS_OUTPUT", "./backtest_stats.json"),
         "plot_output": os.getenv("PLOT_OUTPUT", ""),
         "show_plot": os.getenv("SHOW_PLOT", "false"),
         "show_stochastic": os.getenv("SHOW_STOCHASTIC", "true"),
         "show_equity": os.getenv("SHOW_EQUITY", "true"),
-
         "log_level": os.getenv("LOG_LEVEL", "INFO"),
     }
 
@@ -138,10 +134,18 @@ Environment variables (can be overridden by CLI args):
     # Strategy parameters
     parser.add_argument("--symbol", help="Trading pair symbol (e.g., BTCUSDT)")
     parser.add_argument("--timeframe", help="Binance interval (e.g., 1h, 4h)")
-    parser.add_argument("--window-size", type=int, help="Number of candles to check for bearish pattern")
+    parser.add_argument(
+        "--window-size", type=int, help="Number of candles to check for bearish pattern"
+    )
     parser.add_argument("--leverage", type=float, help="Leverage multiplier")
-    parser.add_argument("--take-profit-pct", type=float, help="Take profit percentage (e.g., 0.02 for 2%%)")
-    parser.add_argument("--doji-size", type=float, default=0.05, help="Doji size for pattern detection")
+    parser.add_argument(
+        "--take-profit-pct",
+        type=float,
+        help="Take profit percentage (e.g., 0.02 for 2%%)",
+    )
+    parser.add_argument(
+        "--doji-size", type=float, default=0.05, help="Doji size for pattern detection"
+    )
     parser.add_argument(
         "--stop-loss-mode",
         choices=("percent", "close", "low", "open", "body"),
@@ -167,8 +171,12 @@ Environment variables (can be overridden by CLI args):
         action=argparse.BooleanOptionalAction,
         help="Skip signals when engulfing candle pierces the Bollinger upper band",
     )
-    parser.add_argument("--bollinger-period", type=int, help="Period for Bollinger band filter")
-    parser.add_argument("--bollinger-stddev", type=float, help="Stddev multiplier for Bollinger filter")
+    parser.add_argument(
+        "--bollinger-period", type=int, help="Period for Bollinger band filter"
+    )
+    parser.add_argument(
+        "--bollinger-stddev", type=float, help="Stddev multiplier for Bollinger filter"
+    )
     parser.add_argument(
         "--volume-filter",
         dest="volume_filter",
@@ -186,7 +194,9 @@ Environment variables (can be overridden by CLI args):
         choices=("k", "d"),
         help="Line type for first stochastic leg (k or d)",
     )
-    parser.add_argument("--stoch-first-period", type=int, help="Period for first stochastic leg")
+    parser.add_argument(
+        "--stoch-first-period", type=int, help="Period for first stochastic leg"
+    )
     parser.add_argument(
         "--stoch-first-threshold",
         type=float,
@@ -197,7 +207,9 @@ Environment variables (can be overridden by CLI args):
         choices=("k", "d"),
         help="Line type for second stochastic leg (k or d)",
     )
-    parser.add_argument("--stoch-second-period", type=int, help="Period for second stochastic leg")
+    parser.add_argument(
+        "--stoch-second-period", type=int, help="Period for second stochastic leg"
+    )
     parser.add_argument(
         "--stoch-second-threshold",
         type=float,
@@ -215,10 +227,16 @@ Environment variables (can be overridden by CLI args):
     )
 
     # Backtest parameters
-    parser.add_argument("--start", type=parse_datetime, help="Start datetime (ISO8601, UTC)")
-    parser.add_argument("--end", type=parse_datetime, help="End datetime (ISO8601, UTC)")
+    parser.add_argument(
+        "--start", type=parse_datetime, help="Start datetime (ISO8601, UTC)"
+    )
+    parser.add_argument(
+        "--end", type=parse_datetime, help="End datetime (ISO8601, UTC)"
+    )
     parser.add_argument("--initial-capital", type=float, help="Starting capital")
-    parser.add_argument("--override-download", action="store_true", help="Re-download all candles")
+    parser.add_argument(
+        "--override-download", action="store_true", help="Re-download all candles"
+    )
 
     # Storage parameters
     parser.add_argument("--store-kind", choices=("sqlite", "csv"), help="Storage type")
@@ -230,33 +248,55 @@ Environment variables (can be overridden by CLI args):
     parser.add_argument("--proxy", help="Shortcut for both HTTP and HTTPS proxy")
 
     # Output parameters
-    parser.add_argument("--stats-output", type=Path, help="Path to write statistics JSON")
-    parser.add_argument("--plot-output", type=Path, help="Path to save plot (HTML/PNG/SVG/PDF)")
-    parser.add_argument("--show-plot", action="store_true", help="Display plot in browser")
-    parser.add_argument("--no-stochastic", action="store_true", help="Hide stochastic oscillator subplot")
-    parser.add_argument("--no-equity", action="store_true", help="Hide equity curve subplot")
+    parser.add_argument(
+        "--stats-output", type=Path, help="Path to write statistics JSON"
+    )
+    parser.add_argument(
+        "--plot-output", type=Path, help="Path to save plot (HTML/PNG/SVG/PDF)"
+    )
+    parser.add_argument(
+        "--show-plot", action="store_true", help="Display plot in browser"
+    )
+    parser.add_argument(
+        "--no-stochastic",
+        action="store_true",
+        help="Hide stochastic oscillator subplot",
+    )
+    parser.add_argument(
+        "--no-equity", action="store_true", help="Hide equity curve subplot"
+    )
 
     parser.add_argument("--log-level", default="INFO", help="Logging level")
 
     return parser
 
 
-def resolve_config(args: argparse.Namespace, env_config: Dict[str, str]) -> Dict[str, Any]:
+def resolve_config(
+    args: argparse.Namespace, env_config: Dict[str, str]
+) -> Dict[str, Any]:
     """Resolve configuration from CLI args and environment, with CLI taking precedence."""
     config: Dict[str, Any] = {}
 
     # Strategy config
     config["symbol"] = args.symbol or env_config["symbol"] or None
     config["timeframe"] = args.timeframe or env_config["timeframe"] or None
-    config["window_size"] = args.window_size or (int(env_config["window_size"]) if env_config["window_size"] else None)
-    config["leverage"] = args.leverage or (float(env_config["leverage"]) if env_config["leverage"] else None)
+    config["window_size"] = args.window_size or (
+        int(env_config["window_size"]) if env_config["window_size"] else None
+    )
+    config["leverage"] = args.leverage or (
+        float(env_config["leverage"]) if env_config["leverage"] else None
+    )
     config["take_profit_pct"] = args.take_profit_pct or (
         float(env_config["take_profit_pct"]) if env_config["take_profit_pct"] else None
     )
     config["doji_size"] = args.doji_size or float(env_config.get("doji_size", "0.05"))
-    config["stop_loss_mode"] = args.stop_loss_mode or env_config.get("stop_loss_mode", "percent")
+    config["stop_loss_mode"] = args.stop_loss_mode or env_config.get(
+        "stop_loss_mode", "percent"
+    )
     config["stop_loss_pct"] = (
-        args.stop_loss_pct if args.stop_loss_pct is not None else float(env_config.get("stop_loss_pct", "0.005"))
+        args.stop_loss_pct
+        if args.stop_loss_pct is not None
+        else float(env_config.get("stop_loss_pct", "0.005"))
     )
     config["exchange_fee_pct"] = (
         args.exchange_fee_pct
@@ -266,51 +306,90 @@ def resolve_config(args: argparse.Namespace, env_config: Dict[str, str]) -> Dict
     if args.skip_wick_filter is not None:
         config["skip_wick_filter"] = args.skip_wick_filter
     else:
-        config["skip_wick_filter"] = str_to_bool(env_config.get("skip_wick_filter"), False)
+        config["skip_wick_filter"] = str_to_bool(
+            env_config.get("skip_wick_filter"), False
+        )
     if args.skip_bollinger_cross is not None:
         config["skip_bollinger_cross"] = args.skip_bollinger_cross
     else:
-        config["skip_bollinger_cross"] = str_to_bool(env_config.get("skip_bollinger_cross"), False)
-    config["bollinger_period"] = args.bollinger_period or int(env_config.get("bollinger_period", "20"))
-    config["bollinger_stddev"] = args.bollinger_stddev or float(env_config.get("bollinger_stddev", "2.0"))
+        config["skip_bollinger_cross"] = str_to_bool(
+            env_config.get("skip_bollinger_cross"), False
+        )
+    config["bollinger_period"] = args.bollinger_period or int(
+        env_config.get("bollinger_period", "20")
+    )
+    config["bollinger_stddev"] = args.bollinger_stddev or float(
+        env_config.get("bollinger_stddev", "2.0")
+    )
     if args.volume_filter is not None:
         config["volume_filter_enabled"] = args.volume_filter
     else:
-        config["volume_filter_enabled"] = str_to_bool(env_config.get("volume_filter_enabled"), True)
+        config["volume_filter_enabled"] = str_to_bool(
+            env_config.get("volume_filter_enabled"), True
+        )
     if args.stoch_enabled is not None:
         config["stoch_enabled"] = args.stoch_enabled
     else:
         config["stoch_enabled"] = str_to_bool(env_config.get("stoch_enabled"), True)
-    config["stoch_first_line"] = args.stoch_first_line or env_config.get("stoch_first_line", "k")
-    config["stoch_first_period"] = args.stoch_first_period or int(env_config.get("stoch_first_period", "20"))
+    config["stoch_first_line"] = args.stoch_first_line or env_config.get(
+        "stoch_first_line", "k"
+    )
+    config["stoch_first_period"] = args.stoch_first_period or int(
+        env_config.get("stoch_first_period", "20")
+    )
     config["stoch_first_threshold"] = (
         args.stoch_first_threshold
         if args.stoch_first_threshold is not None
-        else (float(env_config["stoch_first_threshold"]) if env_config.get("stoch_first_threshold") else None)
+        else (
+            float(env_config["stoch_first_threshold"])
+            if env_config.get("stoch_first_threshold")
+            else None
+        )
     )
-    config["stoch_second_line"] = args.stoch_second_line or env_config.get("stoch_second_line", "k")
-    config["stoch_second_period"] = args.stoch_second_period or int(env_config.get("stoch_second_period", "100"))
+    config["stoch_second_line"] = args.stoch_second_line or env_config.get(
+        "stoch_second_line", "k"
+    )
+    config["stoch_second_period"] = args.stoch_second_period or int(
+        env_config.get("stoch_second_period", "100")
+    )
     config["stoch_second_threshold"] = (
         args.stoch_second_threshold
         if args.stoch_second_threshold is not None
-        else (float(env_config["stoch_second_threshold"]) if env_config.get("stoch_second_threshold") else None)
+        else (
+            float(env_config["stoch_second_threshold"])
+            if env_config.get("stoch_second_threshold")
+            else None
+        )
     )
-    config["stoch_comparison"] = args.stoch_comparison or env_config.get("stoch_comparison", "gt")
-    config["stoch_d_smoothing"] = args.stoch_d_smoothing or int(env_config.get("stoch_d_smoothing", "3"))
+    config["stoch_comparison"] = args.stoch_comparison or env_config.get(
+        "stoch_comparison", "gt"
+    )
+    config["stoch_d_smoothing"] = args.stoch_d_smoothing or int(
+        env_config.get("stoch_d_smoothing", "3")
+    )
 
     # Backtest config
     config["start"] = args.start or (
         parse_datetime(env_config["start"]) if env_config["start"] else None
     )
-    config["end"] = args.end or (parse_datetime(env_config["end"]) if env_config["end"] else None)
+    config["end"] = args.end or (
+        parse_datetime(env_config["end"]) if env_config["end"] else None
+    )
     config["initial_capital"] = args.initial_capital or (
         float(env_config["initial_capital"]) if env_config["initial_capital"] else None
     )
-    config["override_download"] = args.override_download or (env_config.get("override_download", "false").lower() == "true")
+    config["override_download"] = args.override_download or (
+        env_config.get("override_download", "false").lower() == "true"
+    )
+    config["warmup_days"] = args.warmup_days or (
+        int(env_config["warmup_days"]) if env_config["warmup_days"] else 0
+    )
 
     # Storage config
     config["store_kind"] = args.store_kind or env_config.get("store_kind", "sqlite")
-    config["store_path"] = args.store_path or Path(env_config.get("store_path", "./data/candles.db"))
+    config["store_path"] = args.store_path or Path(
+        env_config.get("store_path", "./data/candles.db")
+    )
 
     # Network config
     config["http_proxy"] = args.http_proxy or env_config.get("http_proxy") or None
@@ -318,9 +397,15 @@ def resolve_config(args: argparse.Namespace, env_config: Dict[str, str]) -> Dict
     config["proxy"] = args.proxy or env_config.get("proxy") or None
 
     # Output config
-    config["stats_output"] = args.stats_output or Path(env_config.get("stats_output", "./backtest_stats.json"))
-    config["plot_output"] = args.plot_output or (Path(env_config["plot_output"]) if env_config.get("plot_output") else None)
-    config["show_plot"] = args.show_plot or (env_config.get("show_plot", "false").lower() == "true")
+    config["stats_output"] = args.stats_output or Path(
+        env_config.get("stats_output", "./backtest_stats.json")
+    )
+    config["plot_output"] = args.plot_output or (
+        Path(env_config["plot_output"]) if env_config.get("plot_output") else None
+    )
+    config["show_plot"] = args.show_plot or (
+        env_config.get("show_plot", "false").lower() == "true"
+    )
     config["show_stochastic"] = not args.no_stochastic
     config["show_equity"] = not args.no_equity
 
@@ -332,7 +417,16 @@ def resolve_config(args: argparse.Namespace, env_config: Dict[str, str]) -> Dict
 
 def validate_config(config: Dict[str, object]) -> None:
     """Validate that all required configuration is present."""
-    required = ["symbol", "timeframe", "window_size", "leverage", "take_profit_pct", "start", "end", "initial_capital"]
+    required = [
+        "symbol",
+        "timeframe",
+        "window_size",
+        "leverage",
+        "take_profit_pct",
+        "start",
+        "end",
+        "initial_capital",
+    ]
     missing = [key for key in required if config.get(key) is None]
     if missing:
         raise ValueError(f"Missing required configuration: {', '.join(missing)}")
@@ -383,7 +477,9 @@ def main(argv: list[str] | None = None) -> int:
     store = build_store(str(config["store_kind"]), store_path)
 
     client_logger = logging.getLogger("candle_downloader.binance")
-    client = BinanceClient(BinanceClientConfig(proxies=proxies or None), logger=client_logger)
+    client = BinanceClient(
+        BinanceClientConfig(proxies=proxies or None), logger=client_logger
+    )
     downloader = CandleDownloader(client=client, store=store)
 
     # Create strategy
@@ -406,12 +502,16 @@ def main(argv: list[str] | None = None) -> int:
             stochastic_first_line=str(config["stoch_first_line"]),
             stochastic_first_period=int(config["stoch_first_period"]),
             stochastic_first_threshold=(
-                float(config["stoch_first_threshold"]) if config["stoch_first_threshold"] is not None else None
+                float(config["stoch_first_threshold"])
+                if config["stoch_first_threshold"] is not None
+                else None
             ),
             stochastic_second_line=str(config["stoch_second_line"]),
             stochastic_second_period=int(config["stoch_second_period"]),
             stochastic_second_threshold=(
-                float(config["stoch_second_threshold"]) if config["stoch_second_threshold"] is not None else None
+                float(config["stoch_second_threshold"])
+                if config["stoch_second_threshold"] is not None
+                else None
             ),
             stochastic_comparison=str(config["stoch_comparison"]),
             stochastic_d_smoothing=int(config["stoch_d_smoothing"]),
@@ -439,20 +539,21 @@ def main(argv: list[str] | None = None) -> int:
         end=config["end"],  # type: ignore
         initial_capital=float(config["initial_capital"]),
         override_download=bool(config["override_download"]),
+        warmup_days=int(config["warmup_days"]),
     )
 
     logging.info("Starting backtest...")
     report = backtester.run(backtest_config)
 
     # Write statistics
-    stats_output: Path = Path(str(config["stats_output"])) 
+    stats_output: Path = Path(str(config["stats_output"]))
     write_stats(report, stats_output)
 
     # Print summary
     stats = report.statistics
     logging.info("Backtest completed:")
     logging.info(f"  Total Trades: {stats.total_trades}")
-    logging.info(f"  Win Rate: {stats.win_rate*100:.2f}%")
+    logging.info(f"  Win Rate: {stats.win_rate * 100:.2f}%")
     logging.info(f"  Net P&L: {stats.net_profit:+.2f} ({stats.net_profit_pct:+.2f}%)")
     logging.info(f"  Sharpe Ratio: {stats.sharpe_ratio:.2f}")
     logging.info(f"  Max Drawdown: {stats.max_drawdown_pct:.2f}%")
@@ -504,4 +605,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
