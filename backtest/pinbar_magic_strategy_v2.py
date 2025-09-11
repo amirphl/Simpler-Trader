@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Literal, Optional, Sequence
+from typing import List, Literal, Optional, Sequence, Tuple, Mapping, Any
 
 from candle_downloader.models import Candle
 
@@ -112,12 +112,14 @@ class PinBarMagicStrategyV2(BacktestStrategy):
 
     # ------------------------------------------------------------------ run
 
-    def run(self, context: BacktestContext) -> Sequence[TradePerformance]:
+    def run(
+        self, context: BacktestContext
+    ) -> Tuple[Sequence[TradePerformance], Mapping[str, Any] | None]:
         symbol = self._config.symbol
         timeframe = self._config.timeframe
         candles: Sequence[Candle] = context.data.get(symbol, {}).get(timeframe, [])
         if len(candles) < max(self._config.slow_sma_period, self._config.atr_period) + 5:
-            return []
+            return [], None
 
         closes = [c.close for c in candles]
         fast_ema = calc_ema(closes, self._config.fast_ema_period)
@@ -136,10 +138,6 @@ class PinBarMagicStrategyV2(BacktestStrategy):
         last_long_signal_index: Optional[int] = None
         last_short_signal_index: Optional[int] = None
 
-        # For strategy.close_all (market order at next bar open)
-        pending_market_close_index: Optional[int] = None
-        pending_market_close_reason: Optional[str] = None
-
         equity = context.config.initial_capital  # realized-equity; same as strategy.equity when flat
 
         # We need one extra bar because we reference [1] in ATR/high/low
@@ -154,29 +152,17 @@ class PinBarMagicStrategyV2(BacktestStrategy):
             candle = candles[idx]
             prev_candle = candles[idx - 1]
 
-            # ------------------------------------------------------------------
-            # 0) Execute any pending strategy.close_all at THIS bar's OPEN
-            #    (Pine: market order created on bar N, filled at open of N+1) :contentReference[oaicite:1]{index=1}
-            # ------------------------------------------------------------------
-            if position is not None and pending_market_close_index == idx:
-                pnl = self._close_position(
-                    position,
-                    exit_price=candle.open,
-                    reason=pending_market_close_reason or "Market close",
-                    exit_time=candle.open_time,
-                    trades=trades,
-                )
-                equity += pnl
-                position = None
-                pending_market_close_index = None
-                pending_market_close_reason = None
-
             fast = fast_ema[idx]
             med = med_ema[idx]
             slow = slow_sma[idx]
             atr_prev = atr_values[idx - 1]  # Pine: atr[1] inside enterlong/entershort
 
-            if any(v is None for v in (fast, med, slow, atr_prev)):
+            if (
+                fast is None
+                or med is None
+                or slow is None
+                or atr_prev is None
+            ):
                 continue
 
             fast = float(fast)
@@ -188,18 +174,19 @@ class PinBarMagicStrategyV2(BacktestStrategy):
             med_prev = med_ema[idx - 1]
 
             # ------------------------------------------------------------------
-            # 1) Trailing stop exits (strategy.exit with trail_points & trail_offset)
+            # 0) Trailing stop exits (strategy.exit with trail_points & trail_offset)
             #    These are STOP orders, so we treat them as same-bar exits when
             #    high/low crosses the trailing level.
             # ------------------------------------------------------------------
-            if position is not None and pending_market_close_index is None:
+            if position is not None:
                 self._update_trailing(position, candle)
                 exit_price, exit_reason = self._check_trailing_exit(position, candle)
                 if exit_price is not None:
+                    reason = exit_reason or "Trailing stop"
                     pnl = self._close_position(
                         position,
                         exit_price=exit_price,
-                        reason=exit_reason,
+                        reason=reason,
                         exit_time=candle.close_time,
                         trades=trades,
                     )
@@ -207,63 +194,70 @@ class PinBarMagicStrategyV2(BacktestStrategy):
                     position = None
 
             # ------------------------------------------------------------------
-            # 2) strategy.close_all conditions (Friday close, EMA cross)
-            #    These are MARKET orders, which Pine fills at NEXT BAR OPEN.
+            # 1) strategy.close_all conditions (Friday close, EMA cross)
+            #    These are MARKET orders that execute on the same bar close.
             # ------------------------------------------------------------------
-            if position is not None and pending_market_close_index is None:
-                # Friday 16:00 close (hour == 16 & dayofweek == Friday)
-                if self._is_market_close(candle.open_time):
-                    if idx + 1 < len(candles):
-                        pending_market_close_index = idx + 1
-                        pending_market_close_reason = "Market close"
+            if position is not None:
+                close_reason: Optional[str] = None
+                if self._is_market_close(candle.close_time):
+                    close_reason = "Market close"
                 else:
-                    # crossunder / crossover with Pine semantics:
-                    # crossunder(a,b) = a[1] > b[1] and a <= b
-                    # crossover(a,b)  = a[1] < b[1] and a >= b :contentReference[oaicite:2]{index=2}
                     if fast_prev is not None and med_prev is not None:
                         fast_prev_f = float(fast_prev)
                         med_prev_f = float(med_prev)
-
                         crossunder = fast_prev_f > med_prev_f and fast <= med
                         crossover = fast_prev_f < med_prev_f and fast >= med
+                        if crossunder:
+                            close_reason = "EMA crossunder"
+                        elif crossover:
+                            close_reason = "EMA crossover"
 
-                        # Pine uses strategy.close_all for both; we don't filter by direction.
-                        if crossunder and idx + 1 < len(candles):
-                            pending_market_close_index = idx + 1
-                            pending_market_close_reason = "EMA crossunder"
-                        elif crossover and idx + 1 < len(candles):
-                            pending_market_close_index = idx + 1
-                            pending_market_close_reason = "EMA crossover"
+                if close_reason:
+                    pnl = self._close_position(
+                        position,
+                        exit_price=candle.close,
+                        reason=close_reason,
+                        exit_time=candle.close_time,
+                        trades=trades,
+                    )
+                    equity += pnl
+                    position = None
 
             # ------------------------------------------------------------------
             # 3) Try to fill pending STOP-entry orders (strategy.entry with stop=)
             #    Orders are active from activate_index (next bar after creation).
-            #    We fill at the stop price when crossed by high/low.
+            #    We fill at the stop price when crossed by high/low. Orders can
+            #    reverse the current position, mirroring strategy.entry behavior.
             # ------------------------------------------------------------------
-            if position is None:
-                if pending_long is not None and idx >= pending_long.activate_index:
-                    if candle.high >= pending_long.entry_price:
-                        position = PinBarMagicPosition(
-                            direction="long",
-                            entry_time=candle.close_time,
-                            entry_index=idx,
-                            entry_price=pending_long.entry_price,
-                            qty=pending_long.qty,
-                            risk_amount=pending_long.risk_amount,
-                        )
-                        pending_long = None
+            if pending_long is not None and idx >= pending_long.activate_index:
+                if candle.high >= pending_long.entry_price:
+                    fill_price = pending_long.entry_price
+                    position, equity = self._enter_stop_position(
+                        current=position,
+                        direction="long",
+                        fill_price=fill_price,
+                        order=pending_long,
+                        candle=candle,
+                        idx=idx,
+                        trades=trades,
+                        equity=equity,
+                    )
+                    pending_long = None
 
-                if position is None and pending_short is not None and idx >= pending_short.activate_index:
-                    if candle.low <= pending_short.entry_price:
-                        position = PinBarMagicPosition(
-                            direction="short",
-                            entry_time=candle.close_time,
-                            entry_index=idx,
-                            entry_price=pending_short.entry_price,
-                            qty=pending_short.qty,
-                            risk_amount=pending_short.risk_amount,
-                        )
-                        pending_short = None
+            if pending_short is not None and idx >= pending_short.activate_index:
+                if candle.low <= pending_short.entry_price:
+                    fill_price = pending_short.entry_price
+                    position, equity = self._enter_stop_position(
+                        current=position,
+                        direction="short",
+                        fill_price=fill_price,
+                        order=pending_short,
+                        candle=candle,
+                        idx=idx,
+                        trades=trades,
+                        equity=equity,
+                    )
+                    pending_short = None
 
             # ------------------------------------------------------------------
             # 4) Cancel stale orders (strategy.cancel("id", barssince(...) > ent_canc))
@@ -328,7 +322,7 @@ class PinBarMagicStrategyV2(BacktestStrategy):
                                 activate_index=idx + 1,
                             )
 
-        return trades
+        return trades, None
 
     # ------------------------------------------------------------------ helpers
 
@@ -435,6 +429,16 @@ class PinBarMagicStrategyV2(BacktestStrategy):
 
         ret_pct = (pnl / position.risk_amount) * 100.0 if position.risk_amount > 0 else 0.0
 
+        metadata: dict[str, float | int | str] = {
+            "direction": position.direction,
+            "entry_price": position.entry_price,
+            "exit_price": exit_price,
+            "qty": position.qty,
+            "risk_amount": position.risk_amount,
+        }
+        if position.trailing_stop is not None:
+            metadata["trailing_stop"] = position.trailing_stop
+
         trades.append(
             TradePerformance(
                 entry_time=position.entry_time,
@@ -442,17 +446,49 @@ class PinBarMagicStrategyV2(BacktestStrategy):
                 pnl=pnl,
                 return_pct=ret_pct,
                 notes=reason,
-                metadata={
-                    "direction": position.direction,
-                    "entry_price": position.entry_price,
-                    "exit_price": exit_price,
-                    "qty": position.qty,
-                    "risk_amount": position.risk_amount,
-                    "trailing_stop": position.trailing_stop,
-                },
+                metadata=metadata,
             )
         )
         return pnl
+
+    def _enter_stop_position(
+        self,
+        *,
+        current: Optional[PinBarMagicPosition],
+        direction: Literal["long", "short"],
+        fill_price: float,
+        order: PendingOrder,
+        candle: Candle,
+        idx: int,
+        trades: List[TradePerformance],
+        equity: float,
+    ) -> tuple[Optional[PinBarMagicPosition], float]:
+        """Handle STOP-order fills, respecting pyramiding=1 semantics."""
+        position = current
+        updated_equity = equity
+
+        if position is not None:
+            if position.direction == direction:
+                return position, updated_equity
+            pnl = self._close_position(
+                position,
+                exit_price=fill_price,
+                reason="Reversal",
+                exit_time=candle.close_time,
+                trades=trades,
+            )
+            updated_equity += pnl
+            position = None
+
+        new_position = PinBarMagicPosition(
+            direction=direction,
+            entry_time=candle.close_time,
+            entry_index=idx,
+            entry_price=fill_price,
+            qty=order.qty,
+            risk_amount=order.risk_amount,
+        )
+        return new_position, updated_equity
 
     # --- Time helpers --------------------------------------------------------
 
