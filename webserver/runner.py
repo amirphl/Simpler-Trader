@@ -15,7 +15,14 @@ from backtest import (
     PinbarStrategy,
     PinbarStrategyConfig,
 )
-from backtest.pinbar_magic_strategy_v2 import PinBarMagicStrategyConfigV2, PinBarMagicStrategyV2
+from backtest.pinbar_magic_strategy_v2 import (
+    PinBarMagicStrategyConfigV2,
+    PinBarMagicStrategyV2,
+)
+from backtest.stochastic_fsm_strategy import (
+    StochasticRsiFsmConfig,
+    StochasticRsiFsmStrategy,
+)
 from candle_downloader.binance import BinanceClient, BinanceClientConfig
 from candle_downloader.downloader import CandleDownloader
 from candle_downloader.storage import build_store
@@ -26,10 +33,13 @@ from .models import (
     PinbarMagicStrategyParams,
     PinbarMagicStrategyParamsV2,
     PinbarStrategyParams,
+    StochasticFsmParams,
 )
 
 
-def run_backtest_job(job_id: str, submission: BacktestSubmission, *, cache_dir: Path, store_path: Path) -> Dict[str, Any]:
+def run_backtest_job(
+    job_id: str, submission: BacktestSubmission, *, cache_dir: Path, store_path: Path
+) -> Dict[str, Any]:
     """Execute the requested backtest synchronously and return its report."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     store_path.parent.mkdir(parents=True, exist_ok=True)
@@ -41,13 +51,58 @@ def run_backtest_job(job_id: str, submission: BacktestSubmission, *, cache_dir: 
     if params.https_proxy:
         proxies["https"] = params.https_proxy
 
-
     store = build_store("sqlite", store_path)
     client_logger = logging.getLogger(f"web-backtest.{job_id}.binance")
-    client = BinanceClient(BinanceClientConfig(proxies=proxies or None), logger=client_logger)
+    client = BinanceClient(
+        BinanceClientConfig(proxies=proxies or None), logger=client_logger
+    )
     downloader = CandleDownloader(client=client, store=store)
 
-    if submission.strategy == "pinbar_magic_v2":
+    if submission.strategy == "stochastic_fsm":
+        stoch_params = cast(StochasticFsmParams, params)
+        strategy = StochasticRsiFsmStrategy(
+            StochasticRsiFsmConfig(
+                symbols=stoch_params.symbols,
+                tf_1=stoch_params.base_timeframe,
+                tf_2=stoch_params.higher_timeframe,
+                tf_3=stoch_params.higher_timeframe_2,
+                k_period=stoch_params.k_period,
+                k_slowing=stoch_params.k_slowing,
+                d_period=stoch_params.d_period,
+                use_d_line=stoch_params.use_d_line,
+                oversold=stoch_params.oversold,
+                overbought=stoch_params.overbought,
+                initial_order_usdt=stoch_params.initial_order_usdt,
+                initial_leverage=stoch_params.initial_leverage,
+                martingale_multiplier=stoch_params.martingale_multiplier,
+                martingale_multipliers=tuple(stoch_params.martingale_multipliers),
+                martingale_leverages=tuple(stoch_params.martingale_leverages),
+                max_concurrent_positions=stoch_params.max_concurrent_positions,
+                take_profit_pct=stoch_params.take_profit_pct,
+                slippage_pct=stoch_params.slippage_pct,
+                maker_fee_pct=stoch_params.maker_fee_pct,
+                taker_fee_pct=stoch_params.taker_fee_pct,
+                funding_rate_per_day_pct=stoch_params.funding_rate_per_day_pct,
+                trailing_activation_pct=stoch_params.trailing_activation_pct,
+                trailing_gap_pct=stoch_params.trailing_gap_pct,
+                trailing_check_interval_seconds=stoch_params.trailing_check_interval_seconds,
+                max_position_days=stoch_params.max_position_days,
+                margin_mode=stoch_params.margin_mode,
+                aligned_high_stoch_mode=stoch_params.aligned_high_stoch_mode,
+                signal_offset=stoch_params.signal_offset,
+                enable_take_profit_check=stoch_params.enable_take_profit_check,
+                enable_high_exit_cross=stoch_params.enable_high_exit_cross,
+                use_midsold_filter=stoch_params.use_midsold_filter,
+                enable_reversal_logic=stoch_params.enable_reversal_logic,
+                enable_reversal_reentry=stoch_params.enable_reversal_reentry,
+                trailing_use_first_entry_price=stoch_params.trailing_use_first_entry_price,
+                trailing_use_close_for_stop_activation=stoch_params.trailing_use_close_for_stop_activation,
+                take_profit_use_first_entry_price=stoch_params.take_profit_use_first_entry_price,
+                enable_grid_martingales=stoch_params.enable_grid_martingales,
+                grid_martingales_percent=stoch_params.grid_martingales_percent,
+            )
+        )
+    elif submission.strategy == "pinbar_magic_v2":
         magic_params_v2 = cast(PinbarMagicStrategyParamsV2, params)
         strategy = PinBarMagicStrategyV2(
             PinBarMagicStrategyConfigV2(
@@ -98,7 +153,7 @@ def run_backtest_job(job_id: str, submission: BacktestSubmission, *, cache_dir: 
                 shadow_dominance_ratio=pinbar_params.shadow_dominance_ratio,
             )
         )
-    else:
+    elif submission.strategy == "engulfing":
         engulfing_params = cast(EngulfingStrategyParams, params)
         strategy = EngulfingStrategy(
             EngulfingStrategyConfig(
@@ -129,6 +184,8 @@ def run_backtest_job(job_id: str, submission: BacktestSubmission, *, cache_dir: 
                 exchange_fee_pct=engulfing_params.exchange_fee_pct,
             )
         )
+    else:
+        raise ValueError(f"Unknown strategy: {submission.strategy}")
 
     backtester = BaseBacktester(strategy=strategy, downloader=downloader, store=store)
     run_config = BacktestRunConfig(
@@ -137,6 +194,7 @@ def run_backtest_job(job_id: str, submission: BacktestSubmission, *, cache_dir: 
         initial_capital=submission.initial_capital,
         override_download=submission.override_download,
         risk_free_rate=params.risk_free_rate,
+        warmup_days=submission.warmup_days,
     )
 
     try:
@@ -155,4 +213,3 @@ def _ensure_utc(moment: datetime) -> datetime:
     if moment.tzinfo is None:
         return moment.replace(tzinfo=timezone.utc)
     return moment.astimezone(timezone.utc)
-
