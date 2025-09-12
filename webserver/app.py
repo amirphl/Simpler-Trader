@@ -10,7 +10,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.middleware.cors import CORSMiddleware  # type: ignore[import-not-found]
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware  # type: ignore[import-not-found]
 from fastapi.middleware.trustedhost import TrustedHostMiddleware  # type: ignore[import-not-found]
-from fastapi.responses import FileResponse, HTMLResponse  # type: ignore[import-not-found]
+from fastapi.responses import FileResponse  # type: ignore[import-not-found]
 from fastapi.staticfiles import StaticFiles  # type: ignore[import-not-found]
 
 from .manager import BacktestJobManager
@@ -25,15 +25,18 @@ def _bool_env(name: str, default: bool) -> bool:
 
 
 def _list_env(name: str, default: str) -> list[str]:
-    return [item.strip() for item in os.getenv(name, default).split(",") if item.strip()]
+    return [
+        item.strip() for item in os.getenv(name, default).split(",") if item.strip()
+    ]
 
 
 logger = logging.getLogger("webbacktest")
 app = FastAPI(title="Backtest Control Panel", version="1.0.0")
 # manager = BacktestJobManager(logger=logger.getChild("jobs"))
-manager = BacktestJobManager()    
+manager = BacktestJobManager()
 
-UI_DIR = Path("web/ui")
+ROOT_DIR = Path(__file__).resolve().parents[1]
+UI_DIR = ROOT_DIR / "web" / "ui"
 UI_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=UI_DIR), name="static")
 
@@ -96,10 +99,17 @@ if FORCE_HTTPS:
 
 def _inject_proxy_defaults(submission: BacktestSubmission) -> BacktestSubmission:
     http_proxy = submission.params.http_proxy or HTTP_PROXY_FALLBACK or PROXY_FALLBACK
-    https_proxy = submission.params.https_proxy or HTTPS_PROXY_FALLBACK or PROXY_FALLBACK
-    if http_proxy == submission.params.http_proxy and https_proxy == submission.params.https_proxy:
+    https_proxy = (
+        submission.params.https_proxy or HTTPS_PROXY_FALLBACK or PROXY_FALLBACK
+    )
+    if (
+        http_proxy == submission.params.http_proxy
+        and https_proxy == submission.params.https_proxy
+    ):
         return submission
-    params = submission.params.model_copy(update={"http_proxy": http_proxy, "https_proxy": https_proxy})
+    params = submission.params.model_copy(
+        update={"http_proxy": http_proxy, "https_proxy": https_proxy}
+    )
     return submission.model_copy(update={"params": params})
 
 
@@ -114,7 +124,7 @@ async def security_headers(request: Request, call_next: Callable[[Request], Awai
     return response
 
 
-@app.get("/", response_class=HTMLResponse)
+@app.get("/", response_class=FileResponse)
 async def index() -> FileResponse:
     return FileResponse(UI_DIR / "index.html")
 
@@ -122,9 +132,22 @@ async def index() -> FileResponse:
 @app.post("/api/backtests", response_model=JobResponse)
 async def create_backtest(submission: BacktestSubmission) -> JobResponse:
     submission = _inject_proxy_defaults(submission)
+    params = submission.params
+    symbol = getattr(params, "symbol", None)
+    if symbol is None and hasattr(params, "symbols"):
+        symbols = getattr(params, "symbols")
+        if symbols and isinstance(symbols, (list, tuple)):
+            symbol = symbols[0]
+    timeframe = getattr(params, "timeframe", None) or getattr(
+        params, "base_timeframe", None
+    )
     logger.info(
         "Submitting backtest job",
-        extra={"strategy": submission.strategy, "symbol": submission.params.symbol, "timeframe": submission.params.timeframe},
+        extra={
+            "strategy": submission.strategy,
+            "symbol": symbol,
+            "timeframe": timeframe,
+        },
     )
     state = await manager.submit_job(submission)
     return state.to_response()
@@ -134,7 +157,9 @@ async def create_backtest(submission: BacktestSubmission) -> JobResponse:
 async def get_backtest(job_id: str) -> JobResponse:
     state = manager.get_job(job_id)
     if not state:
-        logger.warning("Backtest status requested for unknown job", extra={"job_id": job_id})
+        logger.warning(
+            "Backtest status requested for unknown job", extra={"job_id": job_id}
+        )
         raise HTTPException(status_code=404, detail="Backtest not found")
     return state.to_response()
 
@@ -143,10 +168,15 @@ async def get_backtest(job_id: str) -> JobResponse:
 async def get_backtest_result(job_id: str) -> BacktestResultPayload:
     state = manager.get_job(job_id)
     if not state:
-        logger.warning("Backtest result requested for unknown job", extra={"job_id": job_id})
+        logger.warning(
+            "Backtest result requested for unknown job", extra={"job_id": job_id}
+        )
         raise HTTPException(status_code=404, detail="Backtest not found")
     if not state.result:
-        logger.info("Backtest result requested before completion", extra={"job_id": job_id, "status": state.status})
+        logger.info(
+            "Backtest result requested before completion",
+            extra={"job_id": job_id, "status": state.status},
+        )
         raise HTTPException(status_code=404, detail="Result not ready")
     return state.to_result_payload()
 
@@ -160,10 +190,17 @@ async def backtest_updates(websocket: WebSocket, job_id: str) -> None:
         state = manager.get_job(job_id)
         if state and state.result:
             await websocket.send_json(
-                {"event": "result", "job_id": job_id, "status": state.status, "result": state.result}
+                {
+                    "event": "result",
+                    "job_id": job_id,
+                    "status": state.status,
+                    "result": state.result,
+                }
             )
         else:
-            await websocket.send_json({"event": "error", "job_id": job_id, "error": "Unknown job"})
+            await websocket.send_json(
+                {"event": "error", "job_id": job_id, "error": "Unknown job"}
+            )
         await websocket.close()
         return
 
@@ -174,9 +211,23 @@ async def backtest_updates(websocket: WebSocket, job_id: str) -> None:
     state = manager.get_job(job_id)
     if state and state.status in {"completed", "failed"}:
         if state.result:
-            await websocket.send_json({"event": "result", "job_id": job_id, "status": state.status, "result": state.result})
+            await websocket.send_json(
+                {
+                    "event": "result",
+                    "job_id": job_id,
+                    "status": state.status,
+                    "result": state.result,
+                }
+            )
         elif state.error:
-            await websocket.send_json({"event": "error", "job_id": job_id, "error": state.error, "status": state.status})
+            await websocket.send_json(
+                {
+                    "event": "error",
+                    "job_id": job_id,
+                    "error": state.error,
+                    "status": state.status,
+                }
+            )
         await manager.remove_subscriber(job_id, queue)
         await websocket.close()
         return
@@ -186,7 +237,12 @@ async def backtest_updates(websocket: WebSocket, job_id: str) -> None:
             message = await queue.get()
             await websocket.send_json(message)
     except WebSocketDisconnect:
-        logger.info("WebSocket disconnected", extra={"job_id": job_id, "client": websocket.client.host if websocket.client else "unknown"})
+        logger.info(
+            "WebSocket disconnected",
+            extra={
+                "job_id": job_id,
+                "client": websocket.client.host if websocket.client else "unknown",
+            },
+        )
     finally:
         await manager.remove_subscriber(job_id, queue)
-
