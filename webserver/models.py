@@ -4,8 +4,8 @@ from datetime import datetime
 from typing import Any, Dict, Literal
 
 from backtest.engulfing_strategy import StopLossMode
-from pydantic import BaseModel, ConfigDict, Field, field_validator  # type: ignore[import-not-found]
-from pydantic import BaseModel, ConfigDict, Field, field_validator  # type: ignore[import-not-found]
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator  # type: ignore[import-not-found]
+from typing import List
 
 
 class PinbarStrategyParams(BaseModel):
@@ -24,6 +24,64 @@ class PinbarStrategyParams(BaseModel):
 
     min_shadow_body_ratio: float = Field(default=0.5, gt=0)
     shadow_dominance_ratio: float = Field(default=2.0, gt=0)
+
+    http_proxy: str | None = None
+    https_proxy: str | None = None
+    risk_free_rate: float = 0.0
+
+
+class StochasticFsmParams(BaseModel):
+    """Parameters for the dual-timeframe stochastic FSM strategy."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    symbols: List[str] = Field(default_factory=lambda: ["BTCUSDT"])
+    base_timeframe: str = Field(default="1h")
+    higher_timeframe: str = Field(default="4h")
+    higher_timeframe_2: str | None = Field(default=None)
+
+    k_period: int = Field(default=8, ge=2)
+    k_slowing: int = Field(default=8, ge=1)
+    d_period: int = Field(default=1, ge=1)
+    use_d_line: bool = False
+    oversold: float = Field(default=20.0, ge=0.0, le=100.0)
+    overbought: float = Field(default=80.0, ge=0.0, le=100.0)
+
+    initial_order_usdt: float = Field(default=100.0, gt=0.0)
+    initial_leverage: float = Field(default=3.0, gt=0.0)
+    martingale_multiplier: float = Field(default=1.1, gt=0.0)
+    martingale_multipliers: List[float] = Field(
+        default_factory=lambda: [1.5, 2.0, 2.5, 3.0]
+    )
+    martingale_leverages: List[float] = Field(
+        default_factory=lambda: [3.0, 3.0, 3.0, 3.0]
+    )
+    max_concurrent_positions: int = Field(default=5, ge=1)
+
+    take_profit_pct: float = Field(default=0.02, gt=0.0)
+    slippage_pct: float = Field(default=0.0002, ge=0.0)
+    maker_fee_pct: float = Field(default=0.0002, ge=0.0)
+    taker_fee_pct: float = Field(default=0.0006, ge=0.0)
+    funding_rate_per_day_pct: float = Field(default=0.0)
+
+    trailing_activation_pct: float = Field(default=1.5, ge=0.0)
+    trailing_gap_pct: float = Field(default=1.0, ge=0.0)
+    trailing_check_interval_seconds: float = Field(default=10.0, gt=0.0)
+    max_position_days: float = Field(default=30.0, gt=0.0)
+
+    margin_mode: str = Field(default="cross")
+    aligned_high_stoch_mode: str = Field(default="v3", pattern="^v[123]$")
+    signal_offset: int = Field(default=0, ge=0)
+    enable_take_profit_check: bool = False
+    enable_high_exit_cross: bool = False
+    use_midsold_filter: bool = False
+    enable_reversal_logic: bool = False
+    enable_reversal_reentry: bool = False
+    trailing_use_first_entry_price: bool = True
+    trailing_use_close_for_stop_activation: bool = True
+    take_profit_use_first_entry_price: bool = True
+    enable_grid_martingales: bool = True
+    grid_martingales_percent: float = Field(default=3.0, ge=0.0)
 
     http_proxy: str | None = None
     https_proxy: str | None = None
@@ -53,6 +111,8 @@ class PinbarMagicStrategyParams(BaseModel):
     http_proxy: str | None = None
     https_proxy: str | None = None
     risk_free_rate: float = 0.0
+
+
 class PinbarMagicStrategyParamsV2(BaseModel):
     """Parameters for Pin Bar Magic v2 strategy."""
 
@@ -139,17 +199,61 @@ class BacktestSubmission(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    strategy: Literal["engulfing", "pinbar", "pinbar_magic", "pinbar_magic_v2"] = Field(default="engulfing")
+    strategy: Literal[
+        "engulfing",
+        "pinbar",
+        "pinbar_magic",
+        "pinbar_magic_v2",
+        "stochastic_fsm",
+    ] = Field(default="engulfing")
     start: datetime
     end: datetime
     initial_capital: float = Field(default=10_000.0, gt=0)
     override_download: bool = True
+    warmup_days: int = Field(default=30, ge=0)
     params: (
         EngulfingStrategyParams
         | PinbarStrategyParams
         | PinbarMagicStrategyParams
         | PinbarMagicStrategyParamsV2
+        | StochasticFsmParams
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_params(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        params = data.get("params")
+        strategy = data.get("strategy")
+        if params is None or strategy is None:
+            return data
+        if isinstance(
+            params,
+            (
+                EngulfingStrategyParams,
+                PinbarStrategyParams,
+                PinbarMagicStrategyParams,
+                PinbarMagicStrategyParamsV2,
+                StochasticFsmParams,
+            ),
+        ):
+            return data
+        if not isinstance(params, dict):
+            return data
+
+        strategy_map = {
+            "engulfing": EngulfingStrategyParams,
+            "pinbar": PinbarStrategyParams,
+            "pinbar_magic": PinbarMagicStrategyParams,
+            "pinbar_magic_v2": PinbarMagicStrategyParamsV2,
+            "stochastic_fsm": StochasticFsmParams,
+        }
+        model = strategy_map.get(strategy)
+        if model is None:
+            return data
+        data["params"] = model.model_validate(params)
+        return data
 
 
 class JobResponse(BaseModel):
@@ -168,4 +272,3 @@ class BacktestResultPayload(BaseModel):
     error: str | None = None
     result: Dict[str, Any] | None = None
     request: Dict[str, Any]
-
