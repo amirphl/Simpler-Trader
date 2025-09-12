@@ -83,16 +83,27 @@ class BacktestJobManager:
         job_id = uuid4().hex
         state = JobState(job_id=job_id, request=submission.model_dump(mode="json"))
         self._jobs[job_id] = state
+        params = submission.params
+        symbol = getattr(params, "symbol", None)
+        if symbol is None and hasattr(params, "symbols"):
+            sym_list = getattr(params, "symbols", None)
+            if sym_list and isinstance(sym_list, (list, tuple)):
+                symbol = sym_list[0]
+        timeframe = getattr(params, "timeframe", None) or getattr(
+            params, "base_timeframe", None
+        )
         self._log.info(
             "Job queued",
             extra={
                 "job_id": job_id,
                 "strategy": submission.strategy,
-                "symbol": submission.params.symbol,
-                "timeframe": submission.params.timeframe,
+                "symbol": symbol,
+                "timeframe": timeframe,
             },
         )
-        await self._broadcast(job_id, {"event": "status", "job_id": job_id, "status": state.status})
+        await self._broadcast(
+            job_id, {"event": "status", "job_id": job_id, "status": state.status}
+        )
         asyncio.create_task(self._run_job(job_id, submission))
         return state
 
@@ -153,7 +164,9 @@ class BacktestJobManager:
         state = self._jobs[job_id]
         state.status = "running"
         self._log.info("Job started", extra={"job_id": job_id})
-        await self._broadcast(job_id, {"event": "status", "job_id": job_id, "status": "running"})
+        await self._broadcast(
+            job_id, {"event": "status", "job_id": job_id, "status": "running"}
+        )
 
         store_path = self._cache_dir / "shared_web_candles.db"
         try:
@@ -222,4 +235,3 @@ class BacktestJobManager:
             return
         for queue in list(subscribers):
             await queue.put(payload)
-
