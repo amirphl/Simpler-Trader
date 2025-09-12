@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,8 +60,12 @@ class ResultStore:
     def save(self, job: StoredJob) -> Path:
         payload = job.to_payload()
         path = self.path_for(job.job_id)
-        with path.open("w", encoding="utf-8") as handle:
+        tmp_path = path.with_suffix(path.suffix + ".tmp")
+        with tmp_path.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        tmp_path.replace(path)
         return path
 
     def load(self, job_id: str) -> StoredJob | None:
@@ -70,4 +75,3 @@ class ResultStore:
         with path.open("r", encoding="utf-8") as handle:
             payload = json.load(handle)
         return StoredJob.from_payload(payload)
-
