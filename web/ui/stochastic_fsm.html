@@ -1,0 +1,420 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+  <meta charset="utf-8" />
+  <title>Stochastic FSM Strategy – Backtest Control Panel</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    :root {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #0f172a;
+      background: #f8fafc;
+    }
+
+    body {
+      margin: 0;
+      padding: 0;
+      background: #f8fafc;
+    }
+
+    header {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 1.5rem;
+    }
+
+    .header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .home-link {
+      color: #cbd5f5;
+      text-decoration: none;
+      font-weight: 600;
+    }
+
+    .home-link:hover {
+      color: #ffffff;
+    }
+
+    main {
+      padding: 1.5rem;
+      display: grid;
+      gap: 1.5rem;
+    }
+
+    section {
+      background: #ffffff;
+      border-radius: 8px;
+      padding: 1rem 1.25rem;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
+    }
+
+    fieldset {
+      border: none;
+      padding: 0;
+      margin: 0;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 1rem;
+    }
+
+    label {
+      display: flex;
+      flex-direction: column;
+      font-size: 0.85rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #475569;
+    }
+
+    input,
+    select {
+      margin-top: 0.35rem;
+      padding: 0.5rem 0.6rem;
+      border-radius: 6px;
+      border: 1px solid #cbd5f5;
+      font-size: 1rem;
+    }
+
+    button {
+      cursor: pointer;
+      border: none;
+      border-radius: 6px;
+      padding: 0.75rem 1.5rem;
+      font-size: 1rem;
+      color: #fff;
+      background: #2563eb;
+      transition: background 0.2s ease;
+    }
+
+    button:hover {
+      background: #1d4ed8;
+    }
+
+    .status {
+      font-weight: 600;
+      letter-spacing: 0.05em;
+    }
+
+    .status[data-state="completed"] {
+      color: #15803d;
+    }
+
+    .status[data-state="running"],
+    .status[data-state="queued"] {
+      color: #2563eb;
+    }
+
+    .status[data-state="failed"] {
+      color: #b91c1c;
+    }
+
+    .grid-two {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 1.5rem;
+    }
+
+    pre {
+      background: #0f172a;
+      color: #f8fafc;
+      padding: 1rem;
+      border-radius: 6px;
+      overflow: auto;
+      max-height: 320px;
+    }
+
+    .history input {
+      max-width: 320px;
+    }
+  </style>
+</head>
+
+<body>
+  <header>
+    <div class="header-row">
+      <div>
+        <h1>Stochastic FSM Strategy</h1>
+        <p>Dual-timeframe stochastic entries with martingale adds, TP resets, and trailing stops.</p>
+      </div>
+      <a class="home-link" href="/">← All Strategies</a>
+    </div>
+  </header>
+  <main>
+    <section>
+      <h2>1. Configure Backtest</h2>
+      <form id="backtest-form">
+        <input type="hidden" name="strategy" value="stochastic_fsm" />
+        <fieldset>
+          <label>
+            Symbols (comma separated)
+            <input name="symbols" value="BTCUSDT,ETHUSDT" />
+          </label>
+          <label>
+            Base Timeframe
+            <input name="base_timeframe" value="1h" required />
+          </label>
+          <label>
+            Higher Timeframe
+            <input name="higher_timeframe" value="4h" required />
+          </label>
+          <label>
+            Higher Timeframe 2 (optional)
+            <input name="higher_timeframe_2" placeholder="e.g., 1d" />
+          </label>
+          <label>
+            %K Period
+            <input name="k_period" type="number" value="8" min="2" />
+          </label>
+          <label>
+            %K Smoothing
+            <input name="k_slowing" type="number" value="1" min="1" />
+          </label>
+          <label>
+            %D Period
+            <input name="d_period" type="number" value="1" min="1" />
+          </label>
+          <label>
+            Use %D Line
+            <select name="use_d_line">
+              <option value="false">No</option>
+              <option value="true" selected>Yes</option>
+            </select>
+          </label>
+          <label>
+            Oversold
+            <input name="oversold" type="number" value="20" step="0.5" />
+          </label>
+          <label>
+            Overbought
+            <input name="overbought" type="number" value="80" step="0.5" />
+          </label>
+          <label>
+            Initial Order (USDT)
+            <input name="initial_order_usdt" type="number" value="100" step="10" />
+          </label>
+          <label>
+            Initial Leverage
+            <input name="initial_leverage" type="number" value="1" step="0.1" />
+          </label>
+          <label>
+            Martingale Multipliers
+            <input name="martingale_multipliers" value="1.5,2.25,3.375,5.0625" />
+          </label>
+          <label>
+            Martingale Multiplier (scalar)
+            <input name="martingale_multiplier" type="number" value="1.1" step="0.05" />
+          </label>
+          <label>
+            Martingale Leverages
+            <input name="martingale_leverages" value="1,1,1,1" />
+          </label>
+          <label>
+            Max Concurrent Symbols
+            <input name="max_concurrent_positions" type="number" value="5" min="1" />
+          </label>
+          <label>
+            Take Profit (fraction)
+            <input name="take_profit_pct" type="number" value="0.02" step="0.001" />
+          </label>
+          <label>
+            Slippage (fraction)
+            <input name="slippage_pct" type="number" value="0.0002" step="0.0001" />
+          </label>
+          <label>
+            Maker Fee
+            <input name="maker_fee_pct" type="number" value="0.0002" step="0.0001" />
+          </label>
+          <label>
+            Taker Fee
+            <input name="taker_fee_pct" type="number" value="0.0006" step="0.0001" />
+          </label>
+          <label>
+            Funding Rate / day (%)
+            <input name="funding_rate_per_day_pct" type="number" value="0" step="0.01" />
+          </label>
+          <label>
+            Trailing Activation (%)
+            <input name="trailing_activation_pct" type="number" value="1.5" step="0.1" />
+          </label>
+          <label>
+            Trailing Gap (%)
+            <input name="trailing_gap_pct" type="number" value="1.0" step="0.1" />
+          </label>
+          <label>
+            Trailing Check Interval (s)
+            <input name="trailing_check_interval_seconds" type="number" value="10" step="1" />
+          </label>
+          <label>
+            Max Position Days
+            <input name="max_position_days" type="number" value="30" step="1" />
+          </label>
+          <label>
+            Signal Offset
+            <input name="signal_offset" type="number" value="0" min="0" step="1" />
+          </label>
+          <label>
+            Higher StochRSI Alignment
+            <select name="aligned_high_stoch_mode">
+              <option value="v1">V1 (provisional in-flight)</option>
+              <option value="v2">V2 (carry last closed)</option>
+              <option value="v3" selected>V3</option>
+            </select>
+          </label>
+          <label>
+            Enable Take Profit Check
+            <select name="enable_take_profit_check">
+              <option value="false" selected>No</option>
+              <option value="true">Yes</option>
+            </select>
+          </label>
+          <label>
+            Enable Higher TF Exit Cross
+            <select name="enable_high_exit_cross">
+              <option value="false" selected>No</option>
+              <option value="true">Yes</option>
+            </select>
+          </label>
+          <label>
+            Use Mid-Sold Filter
+            <select name="use_midsold_filter">
+              <option value="false" selected>No</option>
+              <option value="true">Yes</option>
+            </select>
+          </label>
+          <label>
+            Enable Reversal Logic
+            <select name="enable_reversal_logic">
+              <option value="false" selected>No</option>
+              <option value="true">Yes</option>
+            </select>
+          </label>
+          <label>
+            Enable Reversal Re-entry
+            <select name="enable_reversal_reentry">
+              <option value="false" selected>No</option>
+              <option value="true">Yes</option>
+            </select>
+          </label>
+          <label>
+            Enable Grid Martingales
+            <select name="enable_grid_martingales">
+              <option value="true" selected>Yes</option>
+              <option value="false">No</option>
+            </select>
+          </label>
+          <label>
+            Grid Martingales Percent
+            <input name="grid_martingales_percent" type="number" value="3" step="0.1" />
+          </label>
+          <label>
+            Trailing Uses First Entry
+            <select name="trailing_use_first_entry_price">
+              <option value="true" selected>Yes</option>
+              <option value="false">No (use average)</option>
+            </select>
+          </label>
+          <label>
+            Trailing Stop Trigger Uses Close
+            <select name="trailing_use_close_for_stop_activation">
+              <option value="true" selected>Yes</option>
+              <option value="false">No (use wick)</option>
+            </select>
+          </label>
+          <label>
+            Take Profit Uses First Entry
+            <select name="take_profit_use_first_entry_price">
+              <option value="true" selected>Yes</option>
+              <option value="false">No (use average)</option>
+            </select>
+          </label>
+          <label>
+            Margin Mode
+            <select name="margin_mode">
+              <option value="cross" selected>Cross</option>
+              <option value="isolated">Isolated</option>
+            </select>
+          </label>
+          <label>
+            Start (UTC)
+            <input name="start" type="datetime-local" required />
+          </label>
+          <label>
+            End (UTC)
+            <input name="end" type="datetime-local" required />
+          </label>
+          <label>
+            Initial Capital
+            <input name="initial_capital" type="number" value="2" step="1" required />
+          </label>
+          <label>
+            Risk Free Rate
+            <input name="risk_free_rate" type="number" value="0" step="0.001" />
+          </label>
+          <label>
+            HTTP Proxy
+            <input name="http_proxy" placeholder="Optional" />
+          </label>
+          <label>
+            HTTPS Proxy
+            <input name="https_proxy" placeholder="Optional" />
+          </label>
+        </fieldset>
+        <div style="margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap;">
+          <button type="submit">Run Backtest</button>
+          <span class="status" id="status-stream" data-state="idle">Idle</span>
+          <span id="current-job"></span>
+        </div>
+      </form>
+    </section>
+
+    <section class="history">
+      <h2>2. Fetch Previous Result</h2>
+      <form id="history-form">
+        <label>
+          Job ID
+          <input name="job_id" placeholder="Paste a previous job id" />
+        </label>
+        <div style="margin-top: 0.75rem;">
+          <button type="submit">Fetch</button>
+        </div>
+      </form>
+    </section>
+
+    <section>
+      <h2>3. Results</h2>
+      <form id="trade-jump-form" style="margin-bottom: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+        <label style="flex-direction: row; align-items: center; gap: 0.5rem; margin: 0;">
+          Jump to trade #
+          <input id="trade-jump-index" type="number" min="0" step="1" style="width: 100px;" />
+        </label>
+        <button type="submit">Go</button>
+      </form>
+      <div id="charts-output" class="chart-grid"></div>
+      <div class="grid-two">
+        <div>
+          <h3>Statistics</h3>
+          <pre id="stats-output">Waiting for results...</pre>
+        </div>
+        <div>
+          <h3>Trades</h3>
+          <div id="trades-output">Waiting for results...</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.umd.min.js"
+    defer></script>
+  <script src="/static/js/app.js" defer></script>
+  <script src="/static/js/stochastic_fsm.js" defer></script>
+</body>
+
+</html>
