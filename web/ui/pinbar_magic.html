@@ -212,6 +212,14 @@
       </section>
 
       <section>
+        <form id="trade-jump-form" style="margin-bottom: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
+          <label style="flex-direction: row; align-items: center; gap: 0.5rem; margin: 0;">
+            Jump to trade #
+            <input id="trade-jump-index" type="number" min="0" step="1" style="width: 100px;" />
+          </label>
+          <button type="submit">Go</button>
+        </form>
+        <div id="charts-output" class="chart-grid"></div>
         <div class="grid-two">
           <div>
             <h3>Statistics</h3>
@@ -224,8 +232,9 @@
         </div>
       </section>
     </main>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.umd.min.js" defer></script>
     <script src="/static/js/app.js" defer></script>
     <script src="/static/js/pinbar_magic.js" defer></script>
   </body>
 </html>
-
