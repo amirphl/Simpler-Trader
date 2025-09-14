@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -168,7 +168,7 @@ class TradingSignal:
     side: PositionSide
     entry_price: float
     stop_loss: Optional[float]
-    take_profit: float
+    take_profit: Optional[float]
     leverage: int
     margin_mode: MarginMode
     reason: str
@@ -187,7 +187,7 @@ class PositionRecord:
     quantity: float
     leverage: int
     margin_mode: MarginMode
-    take_profit: float
+    take_profit: Optional[float]
     stop_loss: Optional[float]
     exit_time: Optional[datetime] = None
     exit_price: Optional[float] = None
@@ -215,22 +215,31 @@ class TradingState:
             return False
         if symbol not in self.disabled_symbols:
             return False
-        disabled_until = self.disabled_symbols[symbol]
-        return current_time < disabled_until
+        disabled_until = self._ensure_aware(self.disabled_symbols[symbol])
+        now = self._ensure_aware(current_time)
+        return now < disabled_until
 
     def disable_symbol(self, symbol: str, current_time: datetime, hours: float) -> None:
         """Disable a symbol for the specified number of hours."""
         if hours > 0:
             from datetime import timedelta
 
-            self.disabled_symbols[symbol] = current_time + timedelta(hours=hours)
+            now = self._ensure_aware(current_time)
+            self.disabled_symbols[symbol] = now + timedelta(hours=hours)
 
     def cleanup_disabled_symbols(self, current_time: datetime) -> None:
         """Remove expired disabled symbols."""
+        now = self._ensure_aware(current_time)
         expired = [
             symbol
             for symbol, until in self.disabled_symbols.items()
-            if current_time >= until
+            if now >= self._ensure_aware(until)
         ]
         for symbol in expired:
             del self.disabled_symbols[symbol]
+
+    @staticmethod
+    def _ensure_aware(moment: datetime) -> datetime:
+        if moment.tzinfo is None:
+            return moment.replace(tzinfo=timezone.utc)
+        return moment
