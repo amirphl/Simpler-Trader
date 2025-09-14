@@ -149,6 +149,12 @@ class BitunixClient:
                 code = payload.get("code")
                 if code != 0:
                     msg = payload.get("msg", "Unknown error")
+                    # Gracefully handle known non-fatal errors (e.g., size too small, trading disabled)
+                    if code in (30016, 20012, 20003):
+                        self._log.warning(
+                            "Bitunix non-fatal error code %s: %s (path=%s)", code, msg, path
+                        )
+                        return {"code": code, "msg": msg, "data": None}
                     raise RuntimeError(f"Bitunix error code {code}: {msg}")
                 return payload
             except Exception as exc:
@@ -177,6 +183,13 @@ class BitunixClient:
         data = self._request(
             "GET", "/api/v1/futures/market/tickers", query=params, auth=False
         )
+        if not data or data.get("code", 0) != 0:
+            self._log.warning(
+                "Bitunix: fetch_tickers failed code=%s msg=%s",
+                data.get("code"),
+                data.get("msg"),
+            )
+            return {}
         out: Dict[str, Dict[str, Any]] = {}
         for item in data.get("data", []) or []:
             out[str(item.get("symbol"))] = item
@@ -201,6 +214,14 @@ class BitunixClient:
             query={"marginCoin": margin_coin},
             auth=True,
         )
+        if not data or data.get("code", 0) != 0:
+            self._log.warning(
+                "Bitunix: get_account failed margin=%s code=%s msg=%s",
+                margin_coin,
+                data.get("code"),
+                data.get("msg"),
+            )
+            return {}
         return data
 
     def get_available_balance(self, margin_coin: str) -> Optional[float]:
@@ -221,9 +242,17 @@ class BitunixClient:
             "marginCoin": margin_coin,
         }
         try:
-            _ = self._request(
+            data = self._request(
                 "POST", "/api/v1/futures/account/change_leverage", body=body, auth=True
             )
+            if data.get("code", 0) != 0:
+                self._log.warning(
+                    "Bitunix: Change leverage failed symbol=%s code=%s msg=%s",
+                    symbol,
+                    data.get("code"),
+                    data.get("msg"),
+                )
+                return False
             self._log.info(
                 "Bitunix: Changed leverage symbol=%s margin=%s lev=%s",
                 symbol,
@@ -245,9 +274,17 @@ class BitunixClient:
             "marginCoin": margin_coin,
         }
         try:
-            self._request(
+            data = self._request(
                 "POST", "/api/v1/futures/account/change_margin_mode", body=body, auth=True
             )
+            if data.get("code", 0) != 0:
+                self._log.warning(
+                    "Bitunix: Change margin mode failed symbol=%s code=%s msg=%s",
+                    symbol,
+                    data.get("code"),
+                    data.get("msg"),
+                )
+                return False
             self._log.info(
                 "Bitunix: Changed margin mode symbol=%s margin=%s mode=%s",
                 symbol,
@@ -265,9 +302,16 @@ class BitunixClient:
         """POST /api/v1/futures/account/change_position_mode"""
         body = {"positionMode": position_mode}
         try:
-            self._request(
+            data = self._request(
                 "POST", "/api/v1/futures/account/change_position_mode", body=body, auth=True
             )
+            if data.get("code", 0) != 0:
+                self._log.warning(
+                    "Bitunix: Change position mode failed code=%s msg=%s",
+                    data.get("code"),
+                    data.get("msg"),
+                )
+                return False
             self._log.info("Bitunix: Changed position mode to %s", position_mode)
             return True
         except Exception as exc:
@@ -299,6 +343,13 @@ class BitunixClient:
             query=params,
             auth=True,
         )
+        if not data or data.get("code", 0) != 0:
+            self._log.warning(
+                "Bitunix: get_pending_positions failed code=%s msg=%s",
+                data.get("code"),
+                data.get("msg"),
+            )
+            return []
         return data.get("data") or []
 
     def get_history_positions(
@@ -330,7 +381,26 @@ class BitunixClient:
             query=params,
             auth=True,
         )
-        return data.get("data") or {"positionList": [], "total": 0}
+        if not data or data.get("code", 0) != 0:
+            self._log.warning(
+                "Bitunix: get_history_positions failed code=%s msg=%s",
+                data.get("code"),
+                data.get("msg"),
+            )
+            return {"positionList": [], "total": 0}
+        payload = data.get("data")
+        if isinstance(payload, list):
+            return {"positionList": payload, "total": len(payload)}
+        if isinstance(payload, dict):
+            position_list = payload.get("positionList")
+            total = payload.get("total")
+            if isinstance(position_list, list) and isinstance(total, int):
+                return payload
+            return {
+                "positionList": position_list if isinstance(position_list, list) else [],
+                "total": int(total) if total is not None else len(position_list or []),
+            }
+        return {"positionList": [], "total": 0}
 
     def place_tpsl_order(
         self,
@@ -348,6 +418,12 @@ class BitunixClient:
         sl_qty: Optional[float] = None,
     ) -> Dict[str, Any]:
         """POST /api/v1/futures/tpsl/place_order"""
+        if tp_price is None and sl_price is None:
+            self._log.warning("Bitunix: tp/sl order rejected: missing tp_price and sl_price")
+            return {}
+        if tp_qty is None and sl_qty is None:
+            self._log.warning("Bitunix: tp/sl order rejected: missing tp_qty and sl_qty")
+            return {}
         body: Dict[str, Any] = {
             "symbol": symbol,
             "positionId": position_id,
@@ -373,9 +449,17 @@ class BitunixClient:
         if sl_qty is not None:
             body["slQty"] = str(sl_qty)
 
-        return self._request(
+        data = self._request(
             "POST", "/api/v1/futures/tpsl/place_order", body=body, auth=True
-        ).get("data") or {}
+        )
+        if not data or data.get("code", 0) != 0:
+            self._log.warning(
+                "Bitunix: place_tpsl_order failed code=%s msg=%s",
+                data.get("code"),
+                data.get("msg"),
+            )
+            return {}
+        return data.get("data") or {}
 
     def get_pending_tpsl_orders(
         self,
@@ -404,6 +488,13 @@ class BitunixClient:
         data = self._request(
             "GET", "/api/v1/futures/tpsl/get_pending_orders", query=params, auth=True
         )
+        if not data or data.get("code", 0) != 0:
+            self._log.warning(
+                "Bitunix: get_pending_tpsl_orders failed code=%s msg=%s",
+                data.get("code"),
+                data.get("msg"),
+            )
+            return []
         return data.get("data") or []
 
     def get_history_tpsl_orders(
@@ -436,7 +527,119 @@ class BitunixClient:
         data = self._request(
             "GET", "/api/v1/futures/tpsl/get_history_orders", query=params, auth=True
         )
-        return data.get("data") or {"orderList": [], "total": 0}
+        if not data or data.get("code", 0) != 0:
+            self._log.warning(
+                "Bitunix: get_history_tpsl_orders failed code=%s msg=%s",
+                data.get("code"),
+                data.get("msg"),
+            )
+            return {"orderList": [], "total": 0}
+        payload = data.get("data")
+        if isinstance(payload, list):
+            return {"orderList": payload, "total": len(payload)}
+        if isinstance(payload, dict):
+            order_list = payload.get("orderList")
+            total = payload.get("total")
+            if isinstance(order_list, list) and isinstance(total, int):
+                return payload
+            return {
+                "orderList": order_list if isinstance(order_list, list) else [],
+                "total": int(total) if total is not None else len(order_list or []),
+            }
+        return {"orderList": [], "total": 0}
+
+    def modify_position_tpsl_order(
+        self,
+        symbol: str,
+        position_id: str,
+        tp_price: Optional[float] = None,
+        tp_stop_type: Optional[str] = None,
+        sl_price: Optional[float] = None,
+        sl_stop_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """POST /api/v1/futures/tpsl/position/modify_order"""
+        if tp_price is None and sl_price is None:
+            self._log.warning("Bitunix: modify position tp/sl rejected: missing tp_price and sl_price")
+            return {}
+        body: Dict[str, Any] = {
+            "symbol": symbol,
+            "positionId": position_id,
+        }
+        if tp_price is not None:
+            body["tpPrice"] = str(tp_price)
+        if tp_stop_type:
+            body["tpStopType"] = tp_stop_type
+        if sl_price is not None:
+            body["slPrice"] = str(sl_price)
+        if sl_stop_type:
+            body["slStopType"] = sl_stop_type
+
+        data = self._request(
+            "POST", "/api/v1/futures/tpsl/position/modify_order", body=body, auth=True
+        )
+        if not data or data.get("code", 0) != 0:
+            self._log.warning(
+                "Bitunix: modify_position_tpsl_order failed code=%s msg=%s",
+                data.get("code"),
+                data.get("msg"),
+            )
+            return {}
+        return data.get("data") or {}
+
+    def modify_tpsl_order(
+        self,
+        order_id: str,
+        tp_price: Optional[float] = None,
+        tp_stop_type: Optional[str] = None,
+        sl_price: Optional[float] = None,
+        sl_stop_type: Optional[str] = None,
+        tp_order_type: Optional[str] = None,
+        tp_order_price: Optional[float] = None,
+        sl_order_type: Optional[str] = None,
+        sl_order_price: Optional[float] = None,
+        tp_qty: Optional[float] = None,
+        sl_qty: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """POST /api/v1/futures/tpsl/modify_order"""
+        if tp_price is None and sl_price is None:
+            self._log.warning("Bitunix: modify tp/sl rejected: missing tp_price and sl_price")
+            return {}
+        if tp_qty is None and sl_qty is None:
+            self._log.warning("Bitunix: modify tp/sl rejected: missing tp_qty and sl_qty")
+            return {}
+        body: Dict[str, Any] = {"orderId": order_id}
+        if tp_price is not None:
+            body["tpPrice"] = str(tp_price)
+        if tp_stop_type:
+            body["tpStopType"] = tp_stop_type
+        if sl_price is not None:
+            body["slPrice"] = str(sl_price)
+        if sl_stop_type:
+            body["slStopType"] = sl_stop_type
+        if tp_order_type:
+            body["tpOrderType"] = tp_order_type
+        if tp_order_price is not None:
+            body["tpOrderPrice"] = str(tp_order_price)
+        if sl_order_type:
+            body["slOrderType"] = sl_order_type
+        if sl_order_price is not None:
+            body["slOrderPrice"] = str(sl_order_price)
+        if tp_qty is not None:
+            body["tpQty"] = str(tp_qty)
+        if sl_qty is not None:
+            body["slQty"] = str(sl_qty)
+
+        data = self._request(
+            "POST", "/api/v1/futures/tpsl/modify_order", body=body, auth=True
+        )
+        if not data or data.get("code", 0) != 0:
+            self._log.warning(
+                "Bitunix: modify_tpsl_order failed code=%s msg=%s",
+                data.get("code"),
+                data.get("msg"),
+            )
+            return {}
+        return data.get("data") or {}
 
     def place_order(
         self,
@@ -493,8 +696,11 @@ class BitunixClient:
         data = self._request(
             "POST", "/api/v1/futures/trade/place_order", body=body, auth=True
         )
-        if data.get("code") != 0:
-            raise RuntimeError(f"Bitunix order error: {data}")
+        if data.get("code", 0) != 0:
+            self._log.warning(
+                "Bitunix order rejected code=%s msg=%s", data.get("code"), data.get("msg")
+            )
+            return {}
         return data.get("data") or {}
 
 
@@ -506,6 +712,10 @@ class BitunixExchange(Exchange):
         self._log = logger or logging.getLogger(__name__)
         self._client = BitunixClient(config, self._log)
         self._default_margin_coin = "USDT"
+
+    def fetch_price(self, symbol: str) -> Optional[float]:
+        """Fetch last price for a symbol (public endpoint)."""
+        return self._client.fetch_price(symbol)
 
     def get_account_balance(self) -> float:
         margin_coin = self._default_margin_coin
@@ -604,6 +814,8 @@ class BitunixExchange(Exchange):
             tp_price=take_profit,
             sl_price=stop_loss,
         )
+        if not response or not response.get("orderId"):
+            raise RuntimeError("Bitunix open position failed: no order id returned")
         order_id = str(response.get("orderId") or "")
         return OrderResult(
             order_id=order_id,
@@ -611,6 +823,43 @@ class BitunixExchange(Exchange):
             side=side,
             order_type=OrderType.MARKET,
             price=0.0,
+            quantity=quantity,
+            status="NEW",
+            timestamp=datetime.now(timezone.utc),
+        )
+
+    def open_limit_position(
+        self,
+        symbol: str,
+        side: PositionSide,
+        quantity: float,
+        price: float,
+        leverage: int,
+        margin_mode: MarginMode,
+        take_profit: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+    ) -> OrderResult:
+        # self.set_leverage(symbol, leverage)
+        response = self._client.place_order(
+            symbol=symbol,
+            side="BUY" if side == PositionSide.LONG else "SELL",
+            qty=quantity,
+            order_type=OrderType.LIMIT.value,
+            price=price,
+            trade_side="OPEN",
+            reduce_only=False,
+            tp_price=take_profit,
+            sl_price=stop_loss,
+        )
+        if not response or not response.get("orderId"):
+            raise RuntimeError("Bitunix open limit position failed: no order id returned")
+        order_id = str(response.get("orderId") or "")
+        return OrderResult(
+            order_id=order_id,
+            symbol=symbol,
+            side=side,
+            order_type=OrderType.LIMIT,
+            price=price,
             quantity=quantity,
             status="NEW",
             timestamp=datetime.now(timezone.utc),
@@ -637,6 +886,8 @@ class BitunixExchange(Exchange):
             trade_side="CLOSE",
             reduce_only=True,
         )
+        if not response or not response.get("orderId"):
+            raise RuntimeError("Bitunix close position failed: no order id returned")
         order_id = str(response.get("orderId") or "")
         return OrderResult(
             order_id=order_id,
@@ -677,3 +928,45 @@ class BitunixExchange(Exchange):
             self._client._session.close()
         except Exception:
             pass
+
+    def update_stop_loss(self, position: Position, stop_price: float) -> bool:
+        """Place/replace a stop-loss (used for trailing stops)."""
+        if not position.position_id:
+            self._log.warning(
+                "Bitunix: cannot set stop loss for %s without position_id", position.symbol
+            )
+            return False
+
+        try:
+            result = self._client.modify_position_tpsl_order(
+                symbol=position.symbol,
+                position_id=position.position_id,
+                sl_price=stop_price,
+                sl_stop_type="MARK_PRICE",
+            )
+            if not result:
+                # Fallback to create TP/SL if modify is unsupported.
+                result = self._client.place_tpsl_order(
+                    symbol=position.symbol,
+                    position_id=position.position_id,
+                    sl_price=stop_price,
+                    sl_stop_type="MARK_PRICE",
+                    sl_order_type="MARKET",
+                    sl_qty=position.size,
+                )
+                if not result:
+                    self._log.warning(
+                        "Bitunix: trailing stop update returned empty response for %s",
+                        position.symbol,
+                    )
+                    return False
+            self._log.info(
+                "Bitunix: updated stop loss for %s (position %s) to %.6f",
+                position.symbol,
+                position.position_id,
+                stop_price,
+            )
+            return True
+        except Exception as exc:
+            self._log.warning("Bitunix: failed to update stop loss for %s: %s", position.symbol, exc)
+            return False
