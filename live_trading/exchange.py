@@ -11,18 +11,21 @@ from typing import Dict, List, Optional, Any
 
 class PositionSide(Enum):
     """Position direction."""
+
     LONG = "LONG"
     SHORT = "SHORT"
 
 
 class PositionStatus(Enum):
     """Position status."""
+
     OPEN = "OPEN"
     CLOSED = "CLOSED"
 
 
 class OrderType(Enum):
     """Order type."""
+
     MARKET = "MARKET"
     LIMIT = "LIMIT"
     STOP_MARKET = "STOP_MARKET"
@@ -32,6 +35,7 @@ class OrderType(Enum):
 
 class MarginMode(Enum):
     """Margin mode for positions."""
+
     ISOLATED = "ISOLATED"
     CROSS = "CROSS"
 
@@ -54,6 +58,7 @@ class ExchangeConfig:
 @dataclass(frozen=True)
 class Position:
     """Represents an open position on the exchange."""
+
     symbol: str
     side: PositionSide
     size: float
@@ -68,6 +73,7 @@ class Position:
 @dataclass(frozen=True)
 class OrderResult:
     """Result of placing an order."""
+
     order_id: str
     symbol: str
     side: PositionSide
@@ -80,7 +86,7 @@ class OrderResult:
 
 class Exchange(ABC):
     """Abstract base class for exchange clients.
-    
+
     This interface will be implemented for specific exchanges (Binance, etc.)
     based on their API documentation.
     """
@@ -93,10 +99,10 @@ class Exchange(ABC):
     @abstractmethod
     def get_account_balance(self) -> float:
         """Get available account balance in USDT.
-        
+
         Returns:
             Available balance in USDT
-            
+
         Raises:
             RuntimeError: If API call fails
         """
@@ -105,7 +111,7 @@ class Exchange(ABC):
     @abstractmethod
     def get_24h_tickers(self) -> List[Dict[str, Any]]:
         """Get 24-hour ticker data for all symbols.
-        
+
         Returns:
             List of ticker dictionaries containing:
                 - symbol: str
@@ -114,7 +120,7 @@ class Exchange(ABC):
                 - lastPrice: float
                 - volume: float (base asset volume)
                 - quoteVolume: float (quote asset volume)
-                
+
         Raises:
             RuntimeError: If API call fails
         """
@@ -123,10 +129,10 @@ class Exchange(ABC):
     @abstractmethod
     def get_current_positions(self) -> List[Position]:
         """Get all currently open positions.
-        
+
         Returns:
             List of Position objects
-            
+
         Raises:
             RuntimeError: If API call fails
         """
@@ -135,13 +141,13 @@ class Exchange(ABC):
     @abstractmethod
     def get_position(self, symbol: str) -> Optional[Position]:
         """Get position for a specific symbol.
-        
+
         Args:
             symbol: Trading symbol (e.g., "BTCUSDT")
-            
+
         Returns:
             Position object if position exists, None otherwise
-            
+
         Raises:
             RuntimeError: If API call fails
         """
@@ -150,11 +156,11 @@ class Exchange(ABC):
     @abstractmethod
     def set_leverage(self, symbol: str, leverage: int) -> None:
         """Set leverage for a symbol.
-        
+
         Args:
             symbol: Trading symbol
             leverage: Leverage multiplier (e.g., 10 for 10x)
-            
+
         Raises:
             RuntimeError: If API call fails
         """
@@ -163,11 +169,11 @@ class Exchange(ABC):
     @abstractmethod
     def set_margin_mode(self, symbol: str, margin_mode: MarginMode) -> None:
         """Set margin mode for a symbol.
-        
+
         Args:
             symbol: Trading symbol
             margin_mode: ISOLATED or CROSS
-            
+
         Raises:
             RuntimeError: If API call fails
         """
@@ -184,24 +190,23 @@ class Exchange(ABC):
         take_profit: Optional[float] = None,
         stop_loss: Optional[float] = None,
     ) -> OrderResult:
-        """Open a market position with optional TP/SL.
-        
-        Args:
-            symbol: Trading symbol
-            side: LONG or SHORT
-            quantity: Position size in quote currency (USDT)
-            leverage: Leverage multiplier
-            margin_mode: ISOLATED or CROSS
-            take_profit: Optional take profit price
-            stop_loss: Optional stop loss price
-            
-        Returns:
-            OrderResult with execution details
-            
-        Raises:
-            RuntimeError: If order placement fails
-        """
-        pass
+        """Open a market position with optional TP/SL."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def open_limit_position(
+        self,
+        symbol: str,
+        side: PositionSide,
+        quantity: float,
+        price: float,
+        leverage: int,
+        margin_mode: MarginMode,
+        take_profit: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+    ) -> OrderResult:
+        """Open a limit position with optional TP/SL."""
+        raise NotImplementedError
 
     @abstractmethod
     def close_position(
@@ -210,14 +215,14 @@ class Exchange(ABC):
         side: Optional[PositionSide] = None,
     ) -> OrderResult:
         """Close an open position.
-        
+
         Args:
             symbol: Trading symbol
             side: Position side to close (if None, closes all positions for symbol)
-            
+
         Returns:
             OrderResult with execution details
-            
+
         Raises:
             RuntimeError: If position closing fails
         """
@@ -226,10 +231,10 @@ class Exchange(ABC):
     @abstractmethod
     def cancel_all_orders(self, symbol: str) -> None:
         """Cancel all open orders for a symbol.
-        
+
         Args:
             symbol: Trading symbol
-            
+
         Raises:
             RuntimeError: If API call fails
         """
@@ -245,14 +250,14 @@ class Exchange(ABC):
         end_time: Optional[int] = None,
     ) -> List[List]:
         """Get kline/candlestick data.
-        
+
         Args:
             symbol: Trading symbol
             interval: Kline interval (e.g., "1m", "5m", "15m", "1h")
             limit: Number of klines to return (max 1500)
             start_time: Start time in milliseconds
             end_time: End time in milliseconds
-            
+
         Returns:
             List of klines in Binance format:
             [
@@ -268,7 +273,7 @@ class Exchange(ABC):
                     ...
                 ]
             ]
-            
+
         Raises:
             RuntimeError: If API call fails
         """
@@ -277,10 +282,10 @@ class Exchange(ABC):
     @abstractmethod
     def test_connection(self) -> bool:
         """Test connectivity to the exchange.
-        
+
         Returns:
             True if connection successful
-            
+
         Raises:
             RuntimeError: If connection test fails
         """
