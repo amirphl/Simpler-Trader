@@ -112,7 +112,6 @@ def check_consecutive_pattern(
 
 
 def detect_reversal_signal(
-    last_candle: Candle,
     ha_candles: List[HekenAshiCandle],
     lookback_candles: int,
 ) -> str | None:
@@ -145,7 +144,11 @@ def detect_reversal_signal(
 
     # TODO:
     # Check for LONG signal: previous bearish, last bullish
-    # if last_candle.is_bearish() and last_ha_candle.is_bullish() and check_consecutive_pattern(previous_candles, lookback_candles, bullish=False):
+    # if (
+    #     last_candle.is_bearish()
+    #     and last_ha_candle.is_bullish()
+    #     and check_consecutive_pattern(previous_candles, lookback_candles, bullish=False)
+    # ):
     #     return "LONG"
     if last_ha_candle.is_bullish() and check_consecutive_pattern(
         previous_candles, lookback_candles, bullish=False
@@ -163,6 +166,62 @@ def detect_reversal_signal(
 
     if last_ha_candle.is_bearish() and check_consecutive_pattern(
         previous_candles, lookback_candles, bullish=True
+    ):
+        return "SHORT"
+
+    return None
+
+
+def detect_reversal_signal_v2(
+    ha_candles: List[HekenAshiCandle],
+    lookback_candles: int,
+) -> str | None:
+    """Detect Heiken Ashi reversal pattern."""
+    required_length = lookback_candles + 1
+    if len(ha_candles) < required_length:
+        return None
+
+    # Current candle (most recent)
+    last_ha_candle = ha_candles[-1]
+
+    # Previous W ha candles (before last)
+    previous_ha_candles = ha_candles[-(lookback_candles + 1) : -1]
+
+    # TODO:
+    # Check for LONG signal: previous bearish, last bullish
+    # if (
+    #     last_candle.is_bearish()
+    #     and last_ha_candle.is_bullish()
+    #     and check_consecutive_pattern(
+    #         previous_ha_candles, lookback_candles, bullish=False
+    #     )
+    # ):
+    #     return "LONG"
+    if (
+        last_ha_candle.is_bullish()
+        and check_consecutive_pattern(
+            previous_ha_candles, lookback_candles, bullish=False
+        )
+        # and last_ha_candle.ha_close > previous_ha_candles[-1].ha_high
+    ):
+        return "LONG"
+
+    # TODO:
+    # Check for SHORT signal: previous bullish, last bearish
+    # if (
+    #     last_candle.is_bullish()
+    #     and last_ha_candle.is_bearish()
+    #     and check_consecutive_pattern(
+    #         previous_ha_candles, lookback_candles, bullish=True
+    #     )
+    # ):
+    #     return "SHORT"
+    if (
+        last_ha_candle.is_bearish()
+        and check_consecutive_pattern(
+            previous_ha_candles, lookback_candles, bullish=True
+        )
+        # and last_ha_candle.ha_close < previous_ha_candles[-1].ha_low
     ):
         return "SHORT"
 
