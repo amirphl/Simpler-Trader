@@ -17,7 +17,11 @@ from urllib.request import ProxyHandler, Request, build_opener
 from candle_downloader.models import Candle
 
 from .exchange import Exchange, PositionSide
-from .heiken_ashi import calculate_heiken_ashi, detect_reversal_signal
+from .heiken_ashi import (
+    calculate_heiken_ashi,
+    detect_reversal_signal,
+    detect_reversal_signal_v2,
+)
 from .models import LiveTradingConfig, SymbolInfo, TradingSignal, TradingState
 
 
@@ -143,12 +147,13 @@ class LiveTradingStrategy:
                 for kline in klines
             ]
 
-            current_candle = candles[-1]
+            inprogress_candle = candles[-1]
             candles_excluding_last_one = candles[
                 :-1
             ]  # Drop last candle to avoid in-progress data
 
             # Calculate Heiken Ashi candles
+            # ha_candles = calculate_heiken_ashi(candles)
             ha_candles_excluding_last_one = calculate_heiken_ashi(
                 candles_excluding_last_one
             )
@@ -156,7 +161,7 @@ class LiveTradingStrategy:
             last_closed_candle = candles_excluding_last_one[-1]
             last_closed_ha_candle = ha_candles_excluding_last_one[-1]
             self._log.debug(
-                "%s latest original candle (%s): open=%.6f, high=%.6f, low=%.6f, close=%.6f",
+                "%s latest original closed candle (%s): open=%.6f, high=%.6f, low=%.6f, close=%.6f",
                 symbol,
                 "Green" if last_closed_candle.is_bullish() else "Red",
                 last_closed_candle.open,
@@ -165,7 +170,7 @@ class LiveTradingStrategy:
                 last_closed_candle.close,
             )
             self._log.debug(
-                "%s latest HA candle (%s): open=%.6f, high=%.6f, low=%.6f, close=%.6f",
+                "%s latest HA closed candle (%s): open=%.6f, high=%.6f, low=%.6f, close=%.6f",
                 symbol,
                 "Green" if last_closed_ha_candle.is_bullish() else "Red",
                 last_closed_ha_candle.ha_open,
@@ -195,12 +200,16 @@ class LiveTradingStrategy:
             if len(ha_candles_excluding_last_one) < required_candles:
                 return None
 
-            # Detect reversal signal
+            # TODO:
+            # Detect reversal signal on closed candles only
             signal_type = detect_reversal_signal(
-                last_closed_candle,
                 ha_candles_excluding_last_one,
                 lookback_candles=self._config.heiken_ashi_candles_before,
             )
+            # signal_type = detect_reversal_signal_v2(
+            #     ha_candles,
+            #     lookback_candles=self._config.heiken_ashi_candles_before,
+            # )
 
             if signal_type is None:
                 return None
@@ -208,19 +217,22 @@ class LiveTradingStrategy:
             # Determine position side based on price movement direction
             if signal_type == "LONG":
                 # Price was falling (top losers), now reversing up
-                # if symbol_info.price_change_pct >= 0: # TODO
+                # TODO:
+                # if symbol_info.price_change_pct >= 0:
                 #     return None  # Symbol should be from losers list
                 side = PositionSide.LONG
             else:  # SHORT
                 # Price was rising (top gainers), now reversing down
-                # if symbol_info.price_change_pct <= 0: # TODO
+                # TODO
+                # if symbol_info.price_change_pct <= 0:
                 #     return None  # Symbol should be from gainers list
                 side = PositionSide.SHORT
 
-            # Entry price is current market price
-            entry_price = current_candle.close
+            # Entry price is current market price (last in-progress candle close)
+            entry_price = inprogress_candle.close
 
-            # # Stop loss is the open price of HA candle
+            # Stop loss is the open price of HA candle
+            # TODO:
             # stop_loss = last_closed_ha_candle.ha_open
 
             stop_loss = None
@@ -246,10 +258,10 @@ class LiveTradingStrategy:
                     stop_loss = fallback_sl
             else:
                 if stop_loss is not None and stop_loss <= entry_price:
-                    fallback_sl = entry_price * 0.99
+                    fallback_sl = entry_price * 1.01
                     self._log.warning(
                         "Invalid SHORT stop loss for %s: stop_loss (%.6f) <= entry (%.6f); "
-                        "using fallback 1%% below entry: %.6f",
+                        "using fallback 1%% above entry: %.6f",
                         symbol,
                         stop_loss,
                         entry_price,
@@ -279,9 +291,11 @@ class LiveTradingStrategy:
                 },
             )
 
+            sl = f"{stop_loss:.6f}" if stop_loss is not None else "None"
+            tp = f"{take_profit:.6f}" if take_profit is not None else "None"
             self._log.info(
                 f"Signal generated: {symbol} {side.value} @ {entry_price:.6f}, "
-                f"SL: {stop_loss:.6f}, TP: {take_profit:.6f}"
+                f"SL: {sl}, TP: {tp}"
             )
 
             return signal
@@ -297,6 +311,19 @@ class LiveTradingStrategy:
     ) -> Optional[TradingSignal]:
         """Analyze a symbol using reconstructed candles from 1m klines."""
         symbol = symbol_info.symbol
+
+        # Check if symbol is disabled
+        if self._state.is_symbol_disabled(
+            symbol, current_time, self._config.disable_symbol_hours
+        ):
+            self._log.debug(f"Symbol {symbol} is disabled")
+            return None
+
+        # Check if position already exists
+        if symbol in self._state.active_positions:
+            self._log.debug(f"Position already exists for {symbol}")
+            return None
+
         timeframe_minutes = self._interval_to_minutes(self._config.timeframe)
         if timeframe_minutes <= 0:
             self._log.error(
@@ -344,35 +371,43 @@ class LiveTradingStrategy:
             candles = aggregated
 
             ha_candles = calculate_heiken_ashi(candles)
-            last_running_candle = candles[-1]
-            last_running_ha_candle = ha_candles[-1]
+            inprogress_candle = candles[-1]
 
             # Log last running candle
             self._log.info(
                 "%s latest running candle: open=%.6f, high=%.6f, low=%.6f, close=%.6f",
                 symbol,
-                last_running_candle.open,
-                last_running_candle.high,
-                last_running_candle.low,
-                last_running_candle.close,
+                inprogress_candle.open,
+                inprogress_candle.high,
+                inprogress_candle.low,
+                inprogress_candle.close,
             )
 
-            signal_type = detect_reversal_signal(
-                last_running_candle,
+            signal_type = detect_reversal_signal_v2(
                 ha_candles,
                 lookback_candles=self._config.heiken_ashi_candles_before,
             )
-            if signal_type is None:
+
+            if not (
+                (inprogress_candle.is_bullish() and signal_type == "LONG")
+                or (inprogress_candle.is_bearish() and signal_type == "SHORT")
+            ):
                 return None
 
             side = PositionSide.LONG if signal_type == "LONG" else PositionSide.SHORT
-            entry_price = last_running_candle.close
-            stop_loss = last_running_ha_candle.ha_open
+            entry_price = inprogress_candle.close
 
-            if side == PositionSide.LONG and stop_loss >= entry_price:
-                stop_loss = entry_price * 0.99
-            elif side == PositionSide.SHORT and stop_loss <= entry_price:
-                stop_loss = entry_price * 0.99
+            # TODO:
+            # stop_loss = last_running_ha_candle.ha_open
+
+            # TODO:
+            # if side == PositionSide.LONG and stop_loss >= entry_price:
+            #     stop_loss = entry_price * 0.99
+            # elif side == PositionSide.SHORT and stop_loss <= entry_price:
+            #     stop_loss = entry_price * 0.99
+
+            # TODO:
+            stop_loss = None
 
             if side == PositionSide.LONG:
                 take_profit = entry_price * (1 + self._config.take_profit_pct / 100)
@@ -396,13 +431,19 @@ class LiveTradingStrategy:
                 },
             )
 
+            sl = f"{signal.stop_loss:.6f}" if signal.stop_loss is not None else "None"
+            tp = (
+                f"{signal.take_profit:.6f}"
+                if signal.take_profit is not None
+                else "None"
+            )
             self._log.info(
-                "V2 Signal generated: %s %s @ %.6f, SL: %.6f, TP: %.6f, Timestamp: %s",
+                "V2 Signal generated: %s %s @ %.6f, SL: %s, TP: %s, Timestamp: %s",
                 symbol,
                 side.value,
                 entry_price,
-                stop_loss,
-                take_profit,
+                sl,
+                tp,
                 signal.timestamp.isoformat(),
             )
 
@@ -494,9 +535,7 @@ class LiveTradingStrategy:
                 for attempt in range(1, 4):
                     try:
                         opener = self._get_thread_opener()
-                        with opener.open(
-                            Request(url), timeout=10
-                        ) as resp:
+                        with opener.open(Request(url), timeout=10) as resp:
                             batch = loads(resp.read())
                             if not batch:
                                 return results
@@ -773,7 +812,9 @@ class LiveTradingStrategy:
         self._log.info(f"Analyzing {len(top_losers)} top losers for LONG signals")
         self._log.info(f"Analyzing {len(top_gainers)} top gainers for SHORT signals")
 
-        def process(symbol_info: SymbolInfo, expect_side: PositionSide) -> Optional[TradingSignal]:
+        def process(
+            symbol_info: SymbolInfo, expect_side: PositionSide
+        ) -> Optional[TradingSignal]:
             signal = self.analyze_symbol_v2(symbol_info, current_time)
             if signal is None:
                 return None
@@ -805,13 +846,19 @@ class LiveTradingStrategy:
             len(short_signals),
         )
         for signal in long_signals + short_signals:
+            sl = f"{signal.stop_loss:.6f}" if signal.stop_loss is not None else "None"
+            tp = (
+                f"{signal.take_profit:.6f}"
+                if signal.take_profit is not None
+                else "None"
+            )
             self._log.info(
-                "  Signal: %s %s @ %.6f (SL: %.6f, TP: %.6f) Reason: %s",
+                "  Signal: %s %s @ %.6f (SL: %s, TP: %s) Reason: %s",
                 signal.symbol,
                 signal.side.value,
                 signal.entry_price,
-                signal.stop_loss,
-                signal.take_profit,
+                sl,
+                tp,
                 signal.reason,
             )
         return long_signals, short_signals
