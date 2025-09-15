@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from json import loads
 from typing import List, Tuple
 from urllib.error import HTTPError, URLError
@@ -14,6 +14,51 @@ from urllib.request import Request, ProxyHandler, build_opener
 
 from .exchange import Exchange
 from .models import SymbolInfo
+
+
+_TOP_TOKENS = set(
+    [
+        "btc",
+        "eth",
+        "bnb",
+        # "xrp",
+        "ada",
+        "sol",
+        "trx",
+        "doge",
+        "bch",
+        "hype",
+        "link",
+        "leo",
+        "xmr",
+        "xlm",
+        "zec",
+        "ltc",
+        "sui",
+        "avax",
+        "hbar",
+        "shib",
+        "mnt",
+        "ton",
+        "cro",
+        "uni",
+        "dot",
+        "tao",
+        "aave",
+        "aster",
+        "near",
+        "ena",
+        "pepe",
+        "paxg",
+        "arb",
+        "algo",
+        "atom",
+        "fil",
+        "sei",
+        "cake",
+        "dash",
+    ]
+)
 
 
 class SymbolScanner:
@@ -53,12 +98,13 @@ class SymbolScanner:
         if timeframe_minutes <= 0:
             raise ValueError(f"Invalid timeframe: {timeframe}")
 
-        end_time = current_time.astimezone(timezone.utc)
-        start_time = end_time - timedelta(minutes=timeframe_minutes)
+        # end_time = current_time.astimezone(timezone.utc)
+        # start_time = end_time - timedelta(minutes=timeframe_minutes)
 
         try:
             tickers = self._fetch_binance_tickers()
             if not tickers:
+                self._log.error("No tickers returned from Binance")
                 raise RuntimeError("No tickers returned from Binance")
 
             usdt_tickers = [
@@ -85,31 +131,31 @@ class SymbolScanner:
                 symbol = ticker.get("symbol")
                 if not symbol:
                     return None
-                window_klines = self._fetch_1m_candles_in_window(
-                    symbol, start_time, end_time, window_minutes=1
-                )
-                if not window_klines:
+                s = symbol.lower().replace("usdt", "")
+                if s not in _TOP_TOKENS:
+                    return None
+                candle = self._fetch_latest_closed_candle(symbol, timeframe)
+                if not candle:
                     return None
 
                 try:
-                    open_price = float(window_klines[0][1])
-                    close_price = float(ticker["lastPrice"])
-                    volume = float(ticker["volume"])
-                    quote_volume = float(ticker["quoteVolume"])
+                    open_price = float(candle[1])
+                    close_price = float(candle[4])
+                    volume = float(candle[5])
+                    quote_volume = float(candle[7])
                     price_change_pct = (
                         ((close_price - open_price) / open_price) * 100
                         if open_price > 0
                         else 0.0
                     )
                     self._log.debug(
-                        "%s %s price window open=%.6f close=%.6f volume=%.6f quote_volume=%.6f (1m klines=%s)",
+                        "%s %s price window open=%.6f close=%.6f volume=%.6f quote_volume=%.6f",
                         symbol,
                         timeframe,
                         open_price,
                         close_price,
                         volume,
                         quote_volume,
-                        len(window_klines),
                     )
                     return SymbolInfo(
                         symbol=symbol,
@@ -173,6 +219,7 @@ class SymbolScanner:
             f"Ticker request failed after {attempts} attempts: {last_exc}"
         ) from last_exc
 
+    # TODO: Not tested.
     def _fetch_latest_candle(self, symbol: str, interval: str) -> list | None:
         """Fetch the latest closed kline for a symbol."""
         LAST_INDEX = -1
@@ -403,11 +450,11 @@ class SymbolScanner:
             f"Found {len(top_gainers)} top gainers and {len(top_losers)} top losers (min change: {min_change_pct}%)"
         )
         self._log.info(
-            "---> Top Gainers: "
+            "Top Gainers: "
             + ", ".join(f"{s.symbol} ({s.price_change_pct:.2f}%)" for s in top_gainers)
         )
         self._log.info(
-            "---> Top Losers: "
+            "Top Losers: "
             + ", ".join(f"{s.symbol} ({s.price_change_pct:.2f}%)" for s in top_losers)
         )
 
