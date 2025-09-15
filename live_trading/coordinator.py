@@ -10,7 +10,7 @@ from typing import Optional
 from signal_notifier import TelegramClient
 
 from .exchange import Exchange
-from .models import LiveTradingConfig
+from .models import LiveTradingConfig, TradingSignal
 from .position_manager import PositionManager
 from .scanner import SymbolScanner
 from .strategy import LiveTradingStrategy
@@ -57,11 +57,15 @@ class LiveTradingCoordinator:
                 raise RuntimeError("Exchange connection test failed")
 
             self._log.info(f"Connected to {self._config.exchange_name} exchange")
-            self._log.info(f"Execution interval: {self._config.execution_interval_minutes} minutes")
+            self._log.info(
+                f"Execution interval: {self._config.execution_interval_minutes} minutes"
+            )
 
             # Immediate first run
             current_time = datetime.now(timezone.utc)
-            self._log.info("Executing initial strategy cycle at %s", current_time.isoformat())
+            self._log.info(
+                "Executing initial strategy cycle at %s", current_time.isoformat()
+            )
             self._position_manager.update_positions(current_time)
             self._execute_strategy_cycle(current_time)
             self._position_manager.update_execution_time(current_time)
@@ -94,10 +98,14 @@ class LiveTradingCoordinator:
                         self._position_manager.cleanup_state(now_after_cycle)
 
                         next_run_time = self._next_aligned_time(now_after_cycle)
-                        self._log.info("Next execution at %s", next_run_time.isoformat())
+                        self._log.info(
+                            "Next execution at %s", next_run_time.isoformat()
+                        )
                         continue
 
-                    sleep_seconds = max(1.0, (next_run_time - current_time).total_seconds())
+                    sleep_seconds = max(
+                        1.0, (next_run_time - current_time).total_seconds()
+                    )
                     time.sleep(sleep_seconds)
 
                 except KeyboardInterrupt:
@@ -164,13 +172,20 @@ class LiveTradingCoordinator:
             )
 
             # TODO:
-            # long_signals = long_signals[:10]
-            # short_signals = short_signals[:10]
+            long_signals = long_signals[:20]
+            short_signals = short_signals[:20]
 
             if not long_signals and not short_signals:
                 self._log.info("No trading signals generated")
                 return
-            signals = [*long_signals, *short_signals]
+            # Interleave short and long signals: 1st short, 1st long, 2nd short, 2nd long, ...
+            signals: list[TradingSignal] = []
+            max_len = max(len(short_signals), len(long_signals))
+            for i in range(max_len):
+                if i < len(short_signals):
+                    signals.append(short_signals[i])
+                if i < len(long_signals):
+                    signals.append(long_signals[i])
 
             # 4. Execute signals
             self._log.info(
