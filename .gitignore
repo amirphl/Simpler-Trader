@@ -34,3 +34,5 @@ signal_state.json
 configs/live_trading.env
 
 gentime.py
+
+node_modules/
