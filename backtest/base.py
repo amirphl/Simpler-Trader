@@ -190,8 +190,8 @@ class BaseBacktester:
         if not timeframes:
             raise ValueError("strategy must provide at least one timeframe")
 
-        start = _ensure_utc(config.start)
-        end = _ensure_utc(config.end)
+        start = _ensure_utc(config.start.replace(hour=0, minute=0, second=0, microsecond=0))
+        end = _ensure_utc(config.end.replace(hour=23, minute=59, second=59, microsecond=999999))
         warmup_start = (
             start - timedelta(days=config.warmup_days) if config.warmup_days else start
         )
