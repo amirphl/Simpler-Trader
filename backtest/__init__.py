@@ -10,6 +10,7 @@ from .base import (
 from .engulfing_strategy import EngulfingStrategy, EngulfingStrategyConfig, StopLossMode
 from .pinbar_strategy import PinbarStrategy, PinbarStrategyConfig
 from .pinbar_magic_strategy import PinBarMagicStrategy, PinBarMagicStrategyConfig
+from .pinbar_magic_strategy_v2 import PinBarMagicStrategyConfigV2, PinBarMagicStrategyV2
 from .patterns import CandlePatternSignals, detect_candle_patterns
 from .plotter import plot_backtest, plot_backtest_from_store, save_plot, show_plot
 from .stochastic_fsm_strategy import (
@@ -34,6 +35,8 @@ __all__ = [
     "PinbarStrategyConfig",
     "PinBarMagicStrategy",
     "PinBarMagicStrategyConfig",
+    "PinBarMagicStrategyV2",
+    "PinBarMagicStrategyConfigV2",
     "StopLossMode",
     "PositionDirection",
     "StochasticRsiFsmConfig",
