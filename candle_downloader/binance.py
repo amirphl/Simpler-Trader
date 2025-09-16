@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+# from datetime import datetime, timezone
 import json
 import logging
 import time
@@ -100,6 +101,18 @@ class BinanceClient:
                 with self._opener.open(request, timeout=self._timeout) as response:
                     body = response.read()
                 payload = json.loads(body)
+                # self._log.debug(
+                #     f"Received response with {len(payload) if isinstance(payload, list) else 'unknown'} klines for "
+                #     f"{symbol} {interval} (attempt {attempt + 1}/{self._max_retries})",
+                #     extra={
+                #         "symbol": symbol,
+                #         "interval": interval,
+                #         "status": response.status,
+                #         "start_iso": _ms_to_iso(start_ms),
+                #         "end_iso": _ms_to_iso(end_ms),
+                #         "limit": limit,
+                #     },
+                # )
                 return [
                     Candle.from_binance(symbol, interval, kline) for kline in payload
                 ]
@@ -205,3 +218,7 @@ class BinanceClient:
             if len(symbols) >= limit:
                 break
         return symbols
+
+
+# def _ms_to_iso(timestamp_ms: int) -> str:
+#     return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).isoformat()
