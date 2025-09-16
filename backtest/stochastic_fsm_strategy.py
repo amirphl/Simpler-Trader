@@ -607,7 +607,7 @@ class StochasticRsiFsmStrategy(BacktestStrategy):
             c1 = context.data.get(symbol, {}).get(cfg.tf_1, [])
             c2 = context.data.get(symbol, {}).get(cfg.tf_2, [])
             c3 = context.data.get(symbol, {}).get(cfg.tf_3, []) if cfg.tf_3 else []
-            if not tf_1_candles or not tf_2_candles:
+            if not c1 or not c2:
                 self._log.warning(
                     "Missing candles for %s (base or primary higher timeframe)", symbol
                 )
