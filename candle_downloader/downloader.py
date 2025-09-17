@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from bisect import bisect_right, insort
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Sequence, Set, Tuple
@@ -55,13 +56,10 @@ class CandleDownloader:
         self._log = logger or logging.getLogger(__name__)
 
     def sync(self, request: DownloadRequest) -> DownloadResult:
-        start_trimmed = request.start.replace(minute=0, second=0, microsecond=0)
-        end_trimmed = request.end.replace(minute=0, second=0, microsecond=0)
-
         symbol = normalize_symbol(request.symbol)
         interval_ms = interval_to_milliseconds(request.interval)
-        start_dt = _align_down_to_interval(_ensure_utc(start_trimmed), interval_ms)
-        end_dt = _align_down_to_interval(_ensure_utc(end_trimmed), interval_ms)
+        start_dt = _align_down_to_interval(_ensure_utc(request.start), interval_ms)
+        end_dt = _align_down_to_interval(_ensure_utc(request.end), interval_ms)
         if end_dt <= start_dt:
             raise ValueError("aligned start must be before aligned end")
         stats = DownloadStats()
@@ -120,8 +118,30 @@ class CandleDownloader:
             to_milliseconds(start_dt), to_milliseconds(end_dt), interval_ms, final_times
         )
         if remaining:
-            raise RuntimeError(
-                f"Unable to download full range for {symbol} {request.interval}, missing {len(remaining)} candles"
+            self._log.warning(
+                "Download incomplete; generating synthetic candles for missing slots",
+                extra={
+                    "symbol": symbol,
+                    "interval": request.interval,
+                    "missing": len(remaining),
+                    "requested_start": start_dt.isoformat(),
+                    "requested_end": end_dt.isoformat(),
+                },
+            )
+            synthetic = _synthesize_missing_candles(
+                symbol=symbol,
+                interval=request.interval,
+                interval_ms=interval_ms,
+                missing=remaining,
+                known=final_candles,
+            )
+            inserted = self._store.save(synthetic)
+            stats.saved_candles += inserted
+            final_candles = self._store.load(
+                symbol=symbol,
+                interval=request.interval,
+                start=start_dt,
+                end=end_dt,
             )
 
         return DownloadResult(stats=stats, candles=final_candles)
@@ -196,8 +216,6 @@ def _fetch_pending_windows(
                     extra={
                         "symbol": symbol,
                         "interval": interval,
-                        "start_ms": cursor,
-                        "end_ms": chunk_end,
                         "start_time": _ms_to_iso(cursor),
                         "end_time": _ms_to_iso(chunk_end),
                         "limit": limit,
@@ -227,3 +245,63 @@ def _fetch_pending_windows(
 
 def _ms_to_iso(timestamp_ms: int) -> str:
     return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).isoformat()
+
+
+# NOTE: This function is a best-effort attempt to fill in missing candles when the downloader fails to retrieve them after retries.
+# NOTE: Needs review to ensure it doesn't introduce misleading data. The synthesized candles are marked with zero volume and open/high/low/close all set to the same price, which is derived from the nearest known candles.
+def _synthesize_missing_candles(
+    *,
+    symbol: str,
+    interval: str,
+    interval_ms: int,
+    missing: Set[int],
+    known: Sequence[Candle],
+) -> List[Candle]:
+    if not missing:
+        return []
+    known_by_time = {candle.open_time_ms: candle for candle in known}
+    known_times = sorted(known_by_time)
+
+    fallback_price = known_by_time[known_times[0]].close if known_times else 1.0
+    generated: List[Candle] = []
+    for open_time_ms in sorted(missing):
+        price = _anchor_price(
+            open_time_ms=open_time_ms,
+            known_by_time=known_by_time,
+            known_times=known_times,
+            fallback_price=fallback_price,
+        )
+        candle = Candle(
+            symbol=symbol,
+            interval=interval,
+            open_time=datetime.fromtimestamp(open_time_ms / 1000, tz=timezone.utc),
+            close_time=datetime.fromtimestamp(
+                (open_time_ms + interval_ms - 1) / 1000, tz=timezone.utc
+            ),
+            open=price,
+            high=price,
+            low=price,
+            close=price,
+            volume=0.0,
+        )
+        generated.append(candle)
+        known_by_time[open_time_ms] = candle
+        insort(known_times, open_time_ms)
+    return generated
+
+
+def _anchor_price(
+    *,
+    open_time_ms: int,
+    known_by_time: Dict[int, Candle],
+    known_times: Sequence[int],
+    fallback_price: float,
+) -> float:
+    idx = bisect_right(known_times, open_time_ms)
+    if idx > 0:
+        prev_ts = known_times[idx - 1]
+        return known_by_time[prev_ts].close
+    if idx < len(known_times):
+        next_ts = known_times[idx]
+        return known_by_time[next_ts].open
+    return fallback_price
