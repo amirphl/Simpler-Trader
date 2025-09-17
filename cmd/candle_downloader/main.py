@@ -38,12 +38,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="normal",
         help="normal downloads only missing candles; override re-fetches everything.",
     )
-    parser.add_argument("--store-kind", choices=("sqlite", "csv"), default="sqlite")
+    parser.add_argument("--store-kind", choices=("postgres",), default="postgres")
     parser.add_argument(
         "--store-path",
         type=Path,
-        default=Path("./data/candles.db"),
-        help="Path to the sqlite database or csv file.",
+        default=None,
+        help="Optional .env file path for postgres settings.",
     )
     parser.add_argument(
         "--batch",
@@ -86,8 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
-    store_path: Path = args.store_path
-    store = build_store(args.store_kind, store_path)
+    store = build_store(args.store_kind, args.store_path)
     proxies = resolve_proxies(args)
     client_logger = logging.getLogger("candle_downloader.binance")
     client = BinanceClient(BinanceClientConfig(proxies=proxies or None), logger=client_logger)
@@ -112,4 +111,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
-
