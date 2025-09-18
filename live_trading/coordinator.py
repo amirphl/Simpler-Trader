@@ -11,9 +11,9 @@ from signal_notifier import TelegramClient
 
 from .exchange import Exchange
 from .models import LiveTradingConfig, TradingSignal
+from .heiken_ashi_strategy import HeikenAshiLiveStrategy
 from .position_manager import PositionManager
 from .scanner import SymbolScanner
-from .strategy import LiveTradingStrategy
 
 
 class LiveTradingCoordinator:
@@ -37,7 +37,8 @@ class LiveTradingCoordinator:
             config, exchange, logger, telegram_client=telegram_client
         )
         self._scanner = SymbolScanner(exchange, logger)
-        self._strategy = LiveTradingStrategy(
+
+        self._strategy = HeikenAshiLiveStrategy(
             config,
             exchange,
             self._position_manager.get_state(),
@@ -212,6 +213,12 @@ class LiveTradingCoordinator:
     def _cleanup(self) -> None:
         """Cleanup resources."""
         self._log.info("Cleaning up resources")
+        try:
+            close_strategy = getattr(self._strategy, "close", None)
+            if callable(close_strategy):
+                close_strategy()
+        except Exception as e:
+            self._log.error(f"Error while closing strategy resources: {e}")
         try:
             self._exchange.close()
         except Exception as e:
