@@ -970,3 +970,61 @@ class BitunixExchange(Exchange):
         except Exception as exc:
             self._log.warning("Bitunix: failed to update stop loss for %s: %s", position.symbol, exc)
             return False
+
+    # ------------------------------------------------------------------
+    # PinBarMagic placeholders (to be replaced with official Bitunix docs)
+    # ------------------------------------------------------------------
+    def place_stop_entry_order(
+        self,
+        symbol: str,
+        side: PositionSide,
+        quantity: float,
+        stop_price: float,
+        leverage: int,
+        margin_mode: MarginMode,
+        stop_loss: Optional[float] = None,
+    ) -> OrderResult:
+        """Placeholder stop-entry implementation.
+
+        NOTE: Bitunix trigger-order API wiring is pending. This fallback submits a
+        limit order at the stop trigger price so higher-level logic remains runnable.
+        """
+        self._log.warning(
+            "Bitunix: place_stop_entry_order is placeholder; using LIMIT fallback "
+            "(symbol=%s side=%s stop_price=%.6f)",
+            symbol,
+            side.value,
+            stop_price,
+        )
+        return self.open_limit_position(
+            symbol=symbol,
+            side=side,
+            quantity=quantity,
+            price=stop_price,
+            leverage=leverage,
+            margin_mode=margin_mode,
+            take_profit=None,
+            stop_loss=stop_loss,
+        )
+
+    def cancel_order(self, symbol: str, order_id: str) -> bool:
+        """Placeholder single-order cancellation until Bitunix API wiring is added."""
+        self._log.warning(
+            "Bitunix: cancel_order(symbol=%s, order_id=%s) placeholder; "
+            "falling back to cancel_all_orders",
+            symbol,
+            order_id,
+        )
+        try:
+            self.cancel_all_orders(symbol)
+            return True
+        except Exception:
+            return False
+
+    def get_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Placeholder for open-order retrieval."""
+        self._log.warning(
+            "Bitunix: get_open_orders placeholder not implemented (symbol=%s)",
+            symbol,
+        )
+        return []
