@@ -12,7 +12,12 @@ from typing import Dict, Optional
 from signal_notifier import TelegramClient
 
 from .exchange import Exchange, OrderResult, Position, PositionSide
-from .models import LiveTradingConfig, PositionRecord, TradingSignal, TradingState
+from .models import (
+    LiveTradingConfig,
+    PositionRecord,
+    TradingSignal,
+    TradingState,
+)
 
 
 class PositionManager:
@@ -120,8 +125,9 @@ class PositionManager:
             self._state.failed_trades = data.get("failed_trades", 0)
 
             self._log.info(
-                f"Loaded state: {len(self._state.active_positions)} active positions, "
-                f"{len(self._state.disabled_symbols)} disabled symbols"
+                "Loaded state: %s active positions, %s disabled symbols",
+                len(self._state.active_positions),
+                len(self._state.disabled_symbols),
             )
 
         except Exception as e:
@@ -169,6 +175,11 @@ class PositionManager:
             "margin_mode": pos.margin_mode.value,
             "take_profit": pos.take_profit,
             "stop_loss": pos.stop_loss,
+            "risk_amount": pos.risk_amount,
+            "trailing_active": pos.trailing_active,
+            "trailing_stop": pos.trailing_stop,
+            "extreme_since_activation": pos.extreme_since_activation,
+            "strategy": pos.strategy,
             "exit_time": pos.exit_time.isoformat() if pos.exit_time else None,
             "exit_price": pos.exit_price,
             "pnl": pos.pnl,
@@ -191,6 +202,11 @@ class PositionManager:
             margin_mode=MarginMode(data["margin_mode"]),
             take_profit=data["take_profit"],
             stop_loss=data["stop_loss"],
+            risk_amount=data.get("risk_amount"),
+            trailing_active=bool(data.get("trailing_active", False)),
+            trailing_stop=data.get("trailing_stop"),
+            extreme_since_activation=data.get("extreme_since_activation"),
+            strategy=str(data.get("strategy", "heiken_ashi")),
             exit_time=self._ensure_aware(datetime.fromisoformat(data["exit_time"]))
             if data.get("exit_time")
             else None,
@@ -209,6 +225,16 @@ class PositionManager:
         Returns:
             True if position opened successfully
         """
+        if (
+            signal.strategy == "pinbar_magic_v2"
+            or signal.metadata.get("strategy") == "pinbar_magic_v2"
+        ):
+            self._log.warning(
+                "PinBarMagic signal received by PositionManager. "
+                "Use live_trading.pinbar_magic_coordinator for PinBar Magic v2 execution."
+            )
+            return False
+
         symbol = signal.symbol
 
         # Check max concurrent positions
@@ -298,6 +324,7 @@ class PositionManager:
                 margin_mode=signal.margin_mode,
                 take_profit=signal.take_profit,
                 stop_loss=signal.stop_loss,
+                strategy=signal.strategy,
                 status="OPEN",
                 notes=signal.reason,
             )
@@ -384,14 +411,20 @@ class PositionManager:
         conn.commit()
         conn.close()
 
-    def update_positions(self, current_time: datetime) -> None:
+    def update_positions(
+        self, current_time: datetime, *, enable_generic_trailing: bool = True
+    ) -> None:
         """Update position statuses by checking exchange."""
+        now = self._ensure_aware(current_time)
         if not self._state.active_positions:
             return
 
-        self._log.info(f"Updating {len(self._state.active_positions)} active positions")
+        self._log.info(
+            "Updating positions: %s active", len(self._state.active_positions)
+        )
 
         closed_symbols: list[str] = []
+        state_changed = False
         try:
             exchange_positions = self._exchange.get_current_positions()
         except Exception as exc:
@@ -399,6 +432,7 @@ class PositionManager:
             return
 
         exchange_positions_by_symbol = {pos.symbol: pos for pos in exchange_positions}
+
         trailing_allowed = (time.time() - self._last_trailing_check_ts) >= (
             self._trailing_check_interval_seconds
         )
@@ -410,7 +444,7 @@ class PositionManager:
                     # Position closed (likely hit TP or SL)
                     self._log.info(f"Position closed for {symbol}")
                     position.status = "CLOSED"
-                    position.exit_time = current_time
+                    position.exit_time = now
 
                     # Try to get exit details from recent trades (not implemented in base Exchange)
                     # For now, we mark as closed without exact exit price
@@ -418,9 +452,10 @@ class PositionManager:
                     self._save_position_to_db(position)
                     closed_symbols.append(symbol)
                     self._state.successful_trades += 1
+                    state_changed = True
                     continue
 
-                if trailing_allowed:
+                if trailing_allowed and enable_generic_trailing:
                     self._log.info(
                         f"Checking trailing stop for {symbol}",
                     )
@@ -431,16 +466,38 @@ class PositionManager:
 
         # Remove closed positions from active state
         for symbol in closed_symbols:
-            del self._state.active_positions[symbol]
+            current = self._state.active_positions.get(symbol)
+            if current is None:
+                continue
+            if current.status != "OPEN":
+                del self._state.active_positions[symbol]
             # Immediately re-enable the symbol since the position is closed
             # TODO:
             # if symbol in self._state.disabled_symbols:
             #     del self._state.disabled_symbols[symbol]
 
         if closed_symbols:
+            state_changed = True
+        if state_changed:
             self._save_state()
         if trailing_allowed:
             self._last_trailing_check_ts = time.time()
+
+    def apply_pinbar_position_management(
+        self, snapshots: Dict[str, object], current_time: datetime
+    ) -> None:
+        """Compatibility no-op. PinBar logic moved to pinbar_magic_coordinator."""
+        self._log.warning(
+            "apply_pinbar_position_management() is deprecated in PositionManager; "
+            "use pinbar_magic_coordinator instead."
+        )
+
+    def activate_due_pinbar_entries(self, current_time: datetime) -> None:
+        """Compatibility no-op. PinBar logic moved to pinbar_magic_coordinator."""
+        self._log.warning(
+            "activate_due_pinbar_entries() is deprecated in PositionManager; "
+            "use pinbar_magic_coordinator instead."
+        )
 
     def cleanup_state(self, current_time: datetime) -> None:
         """Cleanup expired disabled symbols."""
@@ -465,10 +522,12 @@ class PositionManager:
         """Send Telegram notification for an opened trade."""
         if not self._telegram:
             return
+
         def _fmt(value: Optional[float], digits: int) -> str:
             if value is None:
                 return "N/A"
             return f"{value:.{digits}f}"
+
         try:
             lines = [
                 "Live trade executed",
