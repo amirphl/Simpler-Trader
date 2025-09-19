@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from json import loads
 from typing import List, Tuple
 from urllib.error import HTTPError, URLError
