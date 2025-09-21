@@ -132,10 +132,33 @@ class PinbarMagicStrategyParamsV2(BaseModel):
     fast_ema_period: int = Field(default=6, ge=1)
     atr_period: int = Field(default=14, ge=1)
     entry_cancel_bars: int = Field(default=3, ge=1)
+    trailing_tick_timeframe: str = Field(default="15m")
+    use_trailing_tick_emulation: bool = False
+    use_stop_fill_open_gap: bool = True
+    entry_activation_mode: Literal["next_bar", "same_bar"] = "next_bar"
+    enable_friday_close: bool = True
+    friday_close_hour_utc: int = Field(default=16, ge=0, le=23)
+    enable_ema_cross_close: bool = True
+    risk_equity_include_unrealized: bool = True
+    risk_equity_mark_source: Literal["close", "open", "hl2", "ohlc4"] = "close"
 
     http_proxy: str | None = None
     https_proxy: str | None = None
     risk_free_rate: float = 0.0
+
+    @field_validator("entry_activation_mode", mode="before")
+    @classmethod
+    def _normalize_entry_activation_mode(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+    @field_validator("risk_equity_mark_source", mode="before")
+    @classmethod
+    def _normalize_risk_equity_mark_source(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
 
 
 class EngulfingStrategyParams(BaseModel):
