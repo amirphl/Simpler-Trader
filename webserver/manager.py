@@ -73,6 +73,7 @@ class BacktestJobManager:
     def __init__(self, logger: logging.Logger | None = None) -> None:
         self._jobs: MutableMapping[str, JobState] = {}
         self._subscribers: Dict[str, Set[asyncio.Queue]] = defaultdict(set)
+        self._tasks: Set[asyncio.Task[None]] = set()
         self._results = ResultStore(Path("results/web_backtests"))
         self._cache_dir = Path("data/web_backtests")
         self._cache_dir.mkdir(parents=True, exist_ok=True)
@@ -104,7 +105,9 @@ class BacktestJobManager:
         await self._broadcast(
             job_id, {"event": "status", "job_id": job_id, "status": state.status}
         )
-        asyncio.create_task(self._run_job(job_id, submission))
+        task = asyncio.create_task(self._run_job(job_id, submission))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
         return state
 
     def get_job(self, job_id: str) -> JobState | None:
@@ -168,15 +171,28 @@ class BacktestJobManager:
             job_id, {"event": "status", "job_id": job_id, "status": "running"}
         )
 
-        store_path = self._cache_dir / "shared_web_candles.db"
         try:
             result = await asyncio.to_thread(
                 run_backtest_job,
                 job_id,
                 submission,
                 cache_dir=self._cache_dir,
-                store_path=store_path,
             )
+        except asyncio.CancelledError:
+            state.status = "cancelled"
+            state.error = "Cancelled due to server shutdown"
+            state.completed_at = datetime.now(timezone.utc)
+            self._log.info("Job cancelled", extra={"job_id": job_id})
+            await self._broadcast(
+                job_id,
+                {
+                    "event": "error",
+                    "job_id": job_id,
+                    "status": state.status,
+                    "error": state.error,
+                },
+            )
+            raise
         except Exception as exc:  # pragma: no cover - defensive
             state.status = "failed"
             state.error = str(exc)
@@ -235,3 +251,16 @@ class BacktestJobManager:
             return
         for queue in list(subscribers):
             await queue.put(payload)
+
+    async def shutdown(self) -> None:
+        for subscribers in list(self._subscribers.values()):
+            for queue in list(subscribers):
+                queue.put_nowait({"event": "shutdown"})
+
+        tasks = list(self._tasks)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        self._subscribers.clear()
