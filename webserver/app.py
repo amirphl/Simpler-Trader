@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 
@@ -181,6 +182,11 @@ async def get_backtest_result(job_id: str) -> BacktestResultPayload:
     return state.to_result_payload()
 
 
+@app.on_event("shutdown")
+async def shutdown_backtest_manager() -> None:
+    await manager.shutdown()
+
+
 @app.websocket("/ws/backtests/{job_id}")
 async def backtest_updates(websocket: WebSocket, job_id: str) -> None:
     await websocket.accept()
@@ -235,6 +241,8 @@ async def backtest_updates(websocket: WebSocket, job_id: str) -> None:
     try:
         while True:
             message = await queue.get()
+            if message.get("event") == "shutdown":
+                break
             await websocket.send_json(message)
     except WebSocketDisconnect:
         logger.info(
@@ -244,5 +252,7 @@ async def backtest_updates(websocket: WebSocket, job_id: str) -> None:
                 "client": websocket.client.host if websocket.client else "unknown",
             },
         )
+    except asyncio.CancelledError:
+        logger.info("WebSocket update task cancelled", extra={"job_id": job_id})
     finally:
         await manager.remove_subscriber(job_id, queue)
