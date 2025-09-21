@@ -38,11 +38,10 @@ from .models import (
 
 
 def run_backtest_job(
-    job_id: str, submission: BacktestSubmission, *, cache_dir: Path, store_path: Path
+    job_id: str, submission: BacktestSubmission, *, cache_dir: Path
 ) -> Dict[str, Any]:
     """Execute the requested backtest synchronously and return its report."""
     cache_dir.mkdir(parents=True, exist_ok=True)
-    store_path.parent.mkdir(parents=True, exist_ok=True)
 
     params = submission.params
     proxies = {}
@@ -51,7 +50,7 @@ def run_backtest_job(
     if params.https_proxy:
         proxies["https"] = params.https_proxy
 
-    store = build_store("sqlite", store_path)
+    store = build_store("postgres", None)
     client_logger = logging.getLogger(f"web-backtest.{job_id}.binance")
     client = BinanceClient(
         BinanceClientConfig(proxies=proxies or None), logger=client_logger
@@ -118,6 +117,15 @@ def run_backtest_job(
                 fast_ema_period=magic_params_v2.fast_ema_period,
                 atr_period=magic_params_v2.atr_period,
                 entry_cancel_bars=magic_params_v2.entry_cancel_bars,
+                trailing_tick_timeframe=magic_params_v2.trailing_tick_timeframe.strip(),
+                use_trailing_tick_emulation=magic_params_v2.use_trailing_tick_emulation,
+                use_stop_fill_open_gap=magic_params_v2.use_stop_fill_open_gap,
+                entry_activation_mode=magic_params_v2.entry_activation_mode.strip().lower(),
+                enable_friday_close=magic_params_v2.enable_friday_close,
+                friday_close_hour_utc=magic_params_v2.friday_close_hour_utc,
+                enable_ema_cross_close=magic_params_v2.enable_ema_cross_close,
+                risk_equity_include_unrealized=magic_params_v2.risk_equity_include_unrealized,
+                risk_equity_mark_source=magic_params_v2.risk_equity_mark_source.strip().lower(),
             )
         )
     elif submission.strategy == "pinbar_magic":
