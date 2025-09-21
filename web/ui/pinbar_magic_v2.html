@@ -6,7 +6,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
       :root {
-        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-family:
+          system-ui,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          sans-serif;
         color: #0f172a;
         background: #f8fafc;
       }
@@ -62,7 +67,8 @@
         letter-spacing: 0.05em;
         color: #475569;
       }
-      input {
+      input,
+      select {
         margin-top: 0.35rem;
         padding: 0.5rem 0.6rem;
         border-radius: 6px;
@@ -117,8 +123,9 @@
         <div>
           <h1>Pin Bar Magic v2</h1>
           <p>
-            Direct port of the TradingView script: pinbar triggers, EMA/SMA fan filters, ATR sizing, and Pine-style
-            trail exits.
+            Pine-compatible inputs from
+            <code>pinbar_magic_strategy.pine</code> plus execution-model
+            controls for backtest parity tuning.
           </p>
         </div>
         <a class="home-link" href="/">← All Strategies</a>
@@ -139,43 +146,197 @@
             </label>
             <label>
               Leverage
-              <input name="leverage" type="number" value="1" step="0.1" required />
+              <input
+                name="leverage"
+                type="number"
+                value="1"
+                step="0.1"
+                required
+              />
             </label>
             <label>
               Equity Risk %
-              <input name="equity_risk_pct" type="number" value="3" step="0.1" min="0.1" required />
+              <input
+                name="equity_risk_pct"
+                type="number"
+                value="3"
+                step="1"
+                min="1"
+                max="100"
+                required
+              />
             </label>
             <label>
               ATR Multiple
-              <input name="atr_multiple" type="number" value="0.5" step="0.1" min="0.1" required />
+              <input
+                name="atr_multiple"
+                type="number"
+                value="0.5"
+                step="0.1"
+                min="0.1"
+                max="100"
+                required
+              />
             </label>
             <label>
-              Trail Points
-              <input name="trail_points" type="number" value="1" step="0.1" min="0.1" required />
+              Trail Points (Price Units)
+              <input
+                name="trail_points"
+                type="number"
+                value="1"
+                step="1"
+                min="1"
+                max="1000"
+                required
+              />
             </label>
             <label>
-              Trail Offset
-              <input name="trail_offset" type="number" value="1" step="0.1" min="0" required />
+              Trail Offset (Price Units)
+              <input
+                name="trail_offset"
+                type="number"
+                value="1"
+                step="1"
+                min="1"
+                max="1000"
+                required
+              />
             </label>
             <label>
               Slow SMA Period
-              <input name="slow_sma_period" type="number" value="50" min="1" required />
+              <input
+                name="slow_sma_period"
+                type="number"
+                value="50"
+                step="1"
+                min="1"
+                max="500"
+                required
+              />
             </label>
             <label>
               Medium EMA Period
-              <input name="medium_ema_period" type="number" value="18" min="1" required />
+              <input
+                name="medium_ema_period"
+                type="number"
+                value="18"
+                step="1"
+                min="1"
+                max="500"
+                required
+              />
             </label>
             <label>
               Fast EMA Period
-              <input name="fast_ema_period" type="number" value="6" min="1" required />
+              <input
+                name="fast_ema_period"
+                type="number"
+                value="6"
+                step="1"
+                min="1"
+                max="500"
+                required
+              />
             </label>
             <label>
               ATR Period
-              <input name="atr_period" type="number" value="14" min="1" required />
+              <input
+                name="atr_period"
+                type="number"
+                value="14"
+                step="1"
+                min="1"
+                max="500"
+                required
+              />
             </label>
             <label>
               Cancel Entry After (bars)
-              <input name="entry_cancel_bars" type="number" value="3" min="1" required />
+              <input
+                name="entry_cancel_bars"
+                type="number"
+                value="3"
+                step="1"
+                min="1"
+                max="500"
+                required
+              />
+            </label>
+            <label>
+              Entry Activation Mode
+              <select name="entry_activation_mode">
+                <option value="next_bar" selected>next_bar</option>
+                <option value="same_bar">same_bar</option>
+              </select>
+            </label>
+            <label>
+              Use Trailing Tick Emulation
+              <select name="use_trailing_tick_emulation">
+                <option value="false" selected>false</option>
+                <option value="true">true</option>
+              </select>
+            </label>
+            <label>
+              Trailing Tick Timeframe
+              <input name="trailing_tick_timeframe" value="15m" />
+            </label>
+            <label>
+              Stop Fill Open Gap
+              <select name="use_stop_fill_open_gap">
+                <option value="true" selected>true</option>
+                <option value="false">false</option>
+              </select>
+            </label>
+            <label>
+              Include Unrealized in Risk Equity
+              <select name="risk_equity_include_unrealized">
+                <option value="true" selected>true</option>
+                <option value="false">false</option>
+              </select>
+            </label>
+            <label>
+              Risk Equity Mark Source
+              <select name="risk_equity_mark_source">
+                <option value="close" selected>close</option>
+                <option value="open">open</option>
+                <option value="hl2">hl2</option>
+                <option value="ohlc4">ohlc4</option>
+              </select>
+            </label>
+            <label>
+              Enable Friday Close
+              <select name="enable_friday_close">
+                <option value="true" selected>true</option>
+                <option value="false">false</option>
+              </select>
+            </label>
+            <label>
+              Friday Close Hour (UTC)
+              <input
+                name="friday_close_hour_utc"
+                type="number"
+                value="16"
+                step="1"
+                min="0"
+                max="23"
+                required
+              />
+            </label>
+            <label>
+              Enable EMA Cross Close
+              <select name="enable_ema_cross_close">
+                <option value="true" selected>true</option>
+                <option value="false">false</option>
+              </select>
+            </label>
+            <label>
+              Risk Free Rate
+              <input
+                name="risk_free_rate"
+                type="number"
+                value="0"
+                step="0.001"
+              />
             </label>
             <label>
               Start (UTC)
@@ -187,10 +348,18 @@
             </label>
             <label>
               Initial Capital
-              <input name="initial_capital" type="number" value="10000" step="100" required />
+              <input
+                name="initial_capital"
+                type="number"
+                value="10000"
+                step="100"
+                required
+              />
             </label>
           </fieldset>
-          <div style="margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap">
+          <div
+            style="margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap"
+          >
             <button type="submit">Run Backtest</button>
             <span id="current-job"></span>
           </div>
@@ -199,7 +368,15 @@
 
       <section class="history">
         <h2>2. Fetch Previous Result</h2>
-        <form id="history-form" style="display: flex; gap: 0.75rem; align-items: flex-end; flex-wrap: wrap">
+        <form
+          id="history-form"
+          style="
+            display: flex;
+            gap: 0.75rem;
+            align-items: flex-end;
+            flex-wrap: wrap;
+          "
+        >
           <label>
             Job ID
             <input name="job_id" placeholder="Paste job id" required />
@@ -210,14 +387,37 @@
 
       <section>
         <h2>3. Live Updates</h2>
-        <div id="status-stream" class="status" data-state="idle">Awaiting submission...</div>
+        <div id="status-stream" class="status" data-state="idle">
+          Awaiting submission...
+        </div>
       </section>
 
       <section>
-        <form id="trade-jump-form" style="margin-bottom: 0.75rem; display: flex; gap: 0.5rem; flex-wrap: wrap;">
-          <label style="flex-direction: row; align-items: center; gap: 0.5rem; margin: 0;">
+        <form
+          id="trade-jump-form"
+          style="
+            margin-bottom: 0.75rem;
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+          "
+        >
+          <label
+            style="
+              flex-direction: row;
+              align-items: center;
+              gap: 0.5rem;
+              margin: 0;
+            "
+          >
             Jump to trade #
-            <input id="trade-jump-index" type="number" min="0" step="1" style="width: 100px;" />
+            <input
+              id="trade-jump-index"
+              type="number"
+              min="0"
+              step="1"
+              style="width: 100px"
+            />
           </label>
           <button type="submit">Go</button>
         </form>
@@ -234,8 +434,14 @@
         </div>
       </section>
     </main>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.umd.min.js" defer></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"
+      defer
+    ></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.umd.min.js"
+      defer
+    ></script>
     <script src="/static/js/app.js" defer></script>
     <script src="/static/js/pinbar_magic_v2.js" defer></script>
   </body>
