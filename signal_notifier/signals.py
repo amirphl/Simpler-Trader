@@ -19,4 +19,3 @@ class SignalSpec:
     leverage: float | None = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     notes: str | None = None
-
