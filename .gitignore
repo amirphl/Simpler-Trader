@@ -23,6 +23,7 @@ logs/
 # Environment/config files
 .env
 .env.*
+*.env
 signal_state.json
 
 # Generated artifacts
