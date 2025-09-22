@@ -7,7 +7,6 @@ from typing import Optional, Sequence
 from candle_downloader.models import Candle
 
 from backtest.engulfing_strategy import (
-    EngulfingStrategyConfig,
     are_bearish,
     calculate_stochastic_k,
     calculate_volume_pressure_score,
@@ -69,16 +68,14 @@ class EngulfingSignalGenerator(SignalGenerator):
             return None
 
         check_start = prev_idx - self._config.window_size
-        if check_start < 0 or not are_bearish(candles, check_start, self._config.window_size):
+        if check_start < 0 or not are_bearish(
+            candles, check_start, self._config.window_size
+        ):
             return None
 
         stoch_k20 = calculate_stochastic_k(candles, 20, prev_idx)
         stoch_k100 = calculate_stochastic_k(candles, 100, prev_idx)
-        if (
-            stoch_k20 is None
-            or stoch_k100 is None
-            or stoch_k20 <= stoch_k100
-        ):
+        if stoch_k20 is None or stoch_k100 is None or stoch_k20 <= stoch_k100:
             return None
 
         volume_score = calculate_volume_pressure_score(
@@ -276,4 +273,3 @@ class ScalpingFVGSignalGenerator(SignalGenerator):
     @staticmethod
     def _candle_intersects_zone(candle: Candle, zone: FVGZone) -> bool:
         return candle.low <= zone.upper and candle.high >= zone.lower
-
