@@ -30,12 +30,11 @@ fi
 echo -e "${YELLOW}Activating virtual environment...${NC}"
 source venv/bin/activate
 
-# Optional config preload (main.py now resolves strategy-specific defaults)
+# Optional config file forwarding to main.py
+EXTRA_ARGS=()
 if [ -n "${CONFIG_FILE:-}" ] && [ -f "${CONFIG_FILE}" ]; then
-    echo -e "${YELLOW}Loading configuration from: ${CONFIG_FILE}${NC}"
-    set -a
-    source "${CONFIG_FILE}"
-    set +a
+    echo -e "${YELLOW}Using configuration file: ${CONFIG_FILE}${NC}"
+    EXTRA_ARGS+=(--config-file "${CONFIG_FILE}")
 elif [ -n "${CONFIG_FILE:-}" ]; then
     echo -e "${YELLOW}Warning: Config file not found: ${CONFIG_FILE}${NC}"
     echo "Using strategy-specific defaults in cmd.live_trading.main"
@@ -47,4 +46,4 @@ mkdir -p "${PROJECT_ROOT}/logs"
 
 # Run the live trading bot
 echo -e "${GREEN}Starting live trading bot...${NC}"
-python -m cmd.live_trading.main "$@"
+python3 -m cmd.live_trading.main "${EXTRA_ARGS[@]}" "$@"
