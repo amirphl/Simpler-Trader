@@ -97,7 +97,11 @@ class SignalNotifier:
 
     def _resolve_symbols(self) -> List[str]:
         if self._settings.symbols:
-            return [symbol.strip().upper() for symbol in self._settings.symbols if symbol.strip()]
+            return [
+                symbol.strip().upper()
+                for symbol in self._settings.symbols
+                if symbol.strip()
+            ]
         return self._binance.fetch_top_symbols(self._settings.top_symbols)
 
     def _process_symbol(self, symbol: str) -> int:
