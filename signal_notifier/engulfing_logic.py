@@ -42,7 +42,9 @@ class EngulfingSignalDetector:
     def __init__(self, config: EngulfingSignalConfig) -> None:
         self._config = config
 
-    def evaluate(self, symbol: str, candles: Sequence[Candle]) -> Optional[EngulfingSignal]:
+    def evaluate(
+        self, symbol: str, candles: Sequence[Candle]
+    ) -> Optional[EngulfingSignal]:
         """Return a signal if the newest candle completes the strategy conditions."""
         idx = len(candles) - 1
         if idx < 2:
@@ -56,16 +58,18 @@ class EngulfingSignalDetector:
             return None
 
         start_idx = idx - 1 - self._config.window_size
-        if start_idx < 0 or not are_bearish(candles, start_idx, self._config.window_size):
+        if start_idx < 0 or not are_bearish(
+            candles, start_idx, self._config.window_size
+        ):
             return None
-        
+
         # score = calculate_volume_pressure_score(candles, idx - 1, self._config.volume_window)
         # if score is not None and score > self._config.max_volume_pressure_score:
         #     return None
 
         entry_price = entry_candle.open
 
-        print(f"Candles spec used for this signal: {candles[start_idx:idx+1]}")
+        print(f"Candles spec used for this signal: {candles[start_idx : idx + 1]}")
         print(f"Entry candle: {entry_candle}")
         print(f"Engulf candle: {engulf_candle}")
         print(f"Reference candle: {reference_candle}")
@@ -94,7 +98,9 @@ def are_bearish(candles: Sequence[Candle], start_idx: int, count: int) -> bool:
     return True
 
 
-def calculate_stochastic_k(candles: Sequence[Candle], period: int, index: int) -> Optional[float]:
+def calculate_stochastic_k(
+    candles: Sequence[Candle], period: int, index: int
+) -> Optional[float]:
     """Compute Stochastic %K for a candle index."""
     if period <= 1 or index < 0:
         return None
@@ -131,7 +137,9 @@ def calculate_volume_pressure_score(
     recent_candles = window_candles[:-1]
     engulf_candle = window_candles[-1]
 
-    recent_volumes = [getattr(candle, "volume", 0.0) or 0.0 for candle in recent_candles]
+    recent_volumes = [
+        getattr(candle, "volume", 0.0) or 0.0 for candle in recent_candles
+    ]
     avg_volume = sum(recent_volumes) / len(recent_volumes) if recent_volumes else 0.0
     if avg_volume <= 0:
         return None
@@ -160,5 +168,3 @@ def _is_bullish_engulfing(previous: Candle, current: Candle) -> bool:
         and previous.close >= current.open
         and (current.close - current.open) > (previous.open - previous.close)
     )
-
-
