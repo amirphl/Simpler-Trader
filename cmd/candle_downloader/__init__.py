@@ -1,2 +1,0 @@
-"""Candle downloader command package."""
-
