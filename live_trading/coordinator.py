@@ -26,11 +26,19 @@ class LiveTradingCoordinator:
         telegram_client: Optional[TelegramClient] = None,
         logger: logging.Logger | None = None,
     ) -> None:
+        if config.strategy_name != "heiken_ashi":
+            raise ValueError(
+                "LiveTradingCoordinator only supports heiken_ashi strategy; "
+                "use pinbar_magic_coordinator for pinbar_magic_v2."
+            )
+
         self._config = config
         self._exchange = exchange
         self._log = logger or logging.getLogger(__name__)
         self._interval_seconds = config.execution_interval_minutes * 60
         self._candle_delay = timedelta(seconds=config.candle_ready_delay_seconds)
+        # Keep shutdown responsive even when next run is far away.
+        self._sleep_step_seconds = 5.0
 
         # Initialize components
         self._position_manager = PositionManager(
@@ -68,8 +76,13 @@ class LiveTradingCoordinator:
                 "Executing initial strategy cycle at %s", current_time.isoformat()
             )
             self._position_manager.update_positions(current_time)
-            self._execute_strategy_cycle(current_time)
-            self._position_manager.update_execution_time(current_time)
+            cycle_ok = self._execute_strategy_cycle(current_time)
+            if cycle_ok:
+                self._position_manager.update_execution_time(current_time)
+            else:
+                self._log.warning(
+                    "Initial strategy cycle failed; last_execution_time not updated"
+                )
 
             now_after_cycle = datetime.now(timezone.utc)
             self._position_manager.update_positions(now_after_cycle)
@@ -91,8 +104,17 @@ class LiveTradingCoordinator:
                         )
 
                         self._position_manager.update_positions(current_time)
-                        self._execute_strategy_cycle(scheduled_run_time)
-                        self._position_manager.update_execution_time(scheduled_run_time)
+                        cycle_ok = self._execute_strategy_cycle(scheduled_run_time)
+                        if cycle_ok:
+                            self._position_manager.update_execution_time(
+                                scheduled_run_time
+                            )
+                        else:
+                            self._log.warning(
+                                "Strategy cycle failed for scheduled run %s; "
+                                "last_execution_time not updated",
+                                scheduled_run_time.isoformat(),
+                            )
 
                         now_after_cycle = datetime.now(timezone.utc)
                         self._position_manager.update_positions(now_after_cycle)
@@ -104,17 +126,19 @@ class LiveTradingCoordinator:
                         )
                         continue
 
-                    sleep_seconds = max(
-                        1.0, (next_run_time - current_time).total_seconds()
+                    sleep_seconds = min(
+                        self._sleep_step_seconds,
+                        max(0.2, (next_run_time - current_time).total_seconds()),
                     )
-                    time.sleep(sleep_seconds)
+                    self._sleep_with_stop(sleep_seconds)
 
                 except KeyboardInterrupt:
                     self._log.info("Received interrupt signal")
                     break
                 except Exception as e:
                     self._log.error(f"Error in main loop: {e}", exc_info=True)
-                    time.sleep(60)  # Wait a minute before retrying
+                    # Back off after unexpected loop errors without blocking stop().
+                    self._sleep_with_stop(60.0)
 
         finally:
             self._running = False
@@ -123,13 +147,17 @@ class LiveTradingCoordinator:
     def _next_aligned_time(self, current_time: datetime) -> datetime:
         """Align to the next interval boundary (divisible by execution_interval_minutes)."""
         # Compute next boundary in UTC to keep alignment consistent
-        ts = int(current_time.replace(tzinfo=timezone.utc).timestamp())
+        if current_time.tzinfo is None:
+            current_utc = current_time.replace(tzinfo=timezone.utc)
+        else:
+            current_utc = current_time.astimezone(timezone.utc)
+        ts = int(current_utc.timestamp())
         interval = max(self._interval_seconds, 1)
         next_boundary_ts = ((ts // interval) + 1) * interval
         aligned = datetime.fromtimestamp(next_boundary_ts, tz=timezone.utc)
         return aligned + self._candle_delay
 
-    def _execute_strategy_cycle(self, current_time: datetime) -> None:
+    def _execute_strategy_cycle(self, current_time: datetime) -> bool:
         """Execute one complete strategy cycle."""
         try:
             # 1. Scan for top symbols by volume
@@ -144,7 +172,7 @@ class LiveTradingCoordinator:
 
             if not top_symbols:
                 self._log.warning("No symbols found in scan")
-                return
+                return True
 
             # 2. Find top movers (gainers and losers)
             self._log.info(
@@ -163,7 +191,7 @@ class LiveTradingCoordinator:
 
             if not top_gainers and not top_losers:
                 self._log.info("No significant movers found")
-                return
+                return True
 
             # 3. Generate trading signals
             long_signals, short_signals = self._strategy.generate_signals(
@@ -178,7 +206,7 @@ class LiveTradingCoordinator:
 
             if not long_signals and not short_signals:
                 self._log.info("No trading signals generated")
-                return
+                return True
             # Interleave short and long signals: 1st short, 1st long, 2nd short, 2nd long, ...
             signals: list[TradingSignal] = []
             max_len = max(len(short_signals), len(long_signals))
@@ -206,9 +234,11 @@ class LiveTradingCoordinator:
             self._log.info(
                 f"Strategy cycle completed: {successful}/{len(signals)} signals executed"
             )
+            return True
 
         except Exception as e:
             self._log.error(f"Error in strategy cycle: {e}", exc_info=True)
+            return False
 
     def _cleanup(self) -> None:
         """Cleanup resources."""
@@ -223,6 +253,14 @@ class LiveTradingCoordinator:
             self._exchange.close()
         except Exception as e:
             self._log.error(f"Error during cleanup: {e}")
+
+    def _sleep_with_stop(self, seconds: float) -> None:
+        """Sleep in small chunks so stop() can interrupt long waits."""
+        remaining = max(0.0, seconds)
+        while self._running and remaining > 0:
+            chunk = min(self._sleep_step_seconds, remaining)
+            time.sleep(chunk)
+            remaining -= chunk
 
     def stop(self) -> None:
         """Stop the coordinator gracefully."""
