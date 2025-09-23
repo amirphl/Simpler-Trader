@@ -45,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Exchange settings
     parser.add_argument(
         "--exchange",
-        choices=["binance", "bybit", "weex", "bitunix"],
+        choices=["binance", "bybit", "bitunix"],
         help="Exchange to use for trading",
     )
     parser.add_argument(
@@ -220,7 +220,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--disable-symbol-hours",
-        type=int,
+        type=float,
         default=24,
         help="Hours to disable symbol after trade (0 = no disable)",
     )
@@ -300,7 +300,8 @@ def build_parser() -> argparse.ArgumentParser:
     # Notifications
     parser.add_argument(
         "--telegram-enabled",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=False,
         help="Enable Telegram notifications for executed trades",
     )
     parser.add_argument("--telegram-token", help="Telegram bot token")
@@ -351,6 +352,20 @@ def _parse_bool(value: str) -> bool:
     return value.strip().lower() in ("true", "1", "yes", "on")
 
 
+def _parse_int(value: str, key: str) -> int:
+    try:
+        return int(value.strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid integer for {key}: {value!r}") from exc
+
+
+def _parse_float(value: str, key: str) -> float:
+    try:
+        return float(value.strip())
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"Invalid number for {key}: {value!r}") from exc
+
+
 def _parse_symbols_csv(value: str) -> tuple[str, ...]:
     if not value.strip():
         return tuple()
@@ -377,10 +392,12 @@ def load_env_config(config_file: Optional[Path] = None) -> Dict[str, str]:
     env = os.getenv
 
     def read_env(*keys: str) -> str:
+        # Global precedence is OS env > config file across all aliases.
         for key in keys:
             value = env(key, "")
             if value != "":
                 return value
+        for key in keys:
             file_value = file_values.get(key, "")
             if file_value != "":
                 return file_value
@@ -459,7 +476,7 @@ def load_env_config(config_file: Optional[Path] = None) -> Dict[str, str]:
         "https_proxy": read_env("HTTPS_PROXY"),
         "proxy": read_env("PROXY"),
         "telegram_enabled": read_env("TELEGRAM_ENABLED"),
-        "telegram_token": read_env("TELEGRAM_BOT_TOKEN"),
+        "telegram_token": read_env("TELEGRAM_BOT_TOKEN", "TELEGRAM_TOKEN"),
         "telegram_chat_id": read_env("TELEGRAM_CHAT_ID"),
         "telegram_proxy": read_env("TELEGRAM_PROXY"),
         "telegram_timeout": read_env("TELEGRAM_TIMEOUT"),
@@ -472,9 +489,9 @@ def apply_env_defaults(
 ) -> argparse.Namespace:
     """Apply environment variable defaults to arguments."""
     if config["exchange"]:
-        args.exchange = config["exchange"]
+        args.exchange = config["exchange"].strip().lower()
     if config["trading_mode"]:
-        args.trading_mode = config["trading_mode"]
+        args.trading_mode = config["trading_mode"].strip().lower()
     if config["api_key"]:
         args.api_key = config["api_key"]
     if config["api_secret"]:
@@ -482,47 +499,59 @@ def apply_env_defaults(
     if config["api_passphrase"]:
         args.api_passphrase = config["api_passphrase"]
     if config["testnet"]:
-        args.testnet = config["testnet"].lower() in ("true", "1", "yes")
+        args.testnet = _parse_bool(config["testnet"])
     if config["timeframe"]:
-        args.timeframe = config["timeframe"]
+        args.timeframe = config["timeframe"].strip().lower()
     if config["strategy_name"]:
-        args.strategy_name = config["strategy_name"]
+        args.strategy_name = config["strategy_name"].strip().lower()
     if config["pinbar_symbols"]:
         args.pinbar_symbols = config["pinbar_symbols"]
     if config["top_m_symbols"]:
-        args.top_m_symbols = int(config["top_m_symbols"])
+        args.top_m_symbols = _parse_int(config["top_m_symbols"], "TOP_M_SYMBOLS")
     if config["top_n_signals"]:
-        args.top_n_signals = int(config["top_n_signals"])
+        args.top_n_signals = _parse_int(config["top_n_signals"], "TOP_N_SIGNALS")
     if config["price_change_threshold"]:
-        args.price_change_threshold = float(config["price_change_threshold"])
+        args.price_change_threshold = _parse_float(
+            config["price_change_threshold"], "PRICE_CHANGE_THRESHOLD"
+        )
     if config["heiken_ashi_candles"]:
-        args.heiken_ashi_candles = int(config["heiken_ashi_candles"])
+        args.heiken_ashi_candles = _parse_int(
+            config["heiken_ashi_candles"], "HEIKEN_ASHI_CANDLES"
+        )
     if config["leverage"]:
-        args.leverage = int(config["leverage"])
+        args.leverage = _parse_int(config["leverage"], "LEVERAGE")
     if config["take_profit_pct"]:
-        args.take_profit_pct = float(config["take_profit_pct"])
+        args.take_profit_pct = _parse_float(
+            config["take_profit_pct"], "TAKE_PROFIT_PCT"
+        )
     if config["equity_risk_pct"]:
-        args.equity_risk_pct = float(config["equity_risk_pct"])
+        args.equity_risk_pct = _parse_float(
+            config["equity_risk_pct"], "EQUITY_RISK_PCT"
+        )
     if config["atr_multiple"]:
-        args.atr_multiple = float(config["atr_multiple"])
+        args.atr_multiple = _parse_float(config["atr_multiple"], "ATR_MULTIPLE")
     if config["trail_points"]:
-        args.trail_points = float(config["trail_points"])
+        args.trail_points = _parse_float(config["trail_points"], "TRAIL_POINTS")
     if config["trail_offset"]:
-        args.trail_offset = float(config["trail_offset"])
+        args.trail_offset = _parse_float(config["trail_offset"], "TRAIL_OFFSET")
     if config["slow_sma_period"]:
-        args.slow_sma_period = int(config["slow_sma_period"])
+        args.slow_sma_period = _parse_int(config["slow_sma_period"], "SLOW_SMA_PERIOD")
     if config["medium_ema_period"]:
-        args.medium_ema_period = int(config["medium_ema_period"])
+        args.medium_ema_period = _parse_int(
+            config["medium_ema_period"], "MEDIUM_EMA_PERIOD"
+        )
     if config["fast_ema_period"]:
-        args.fast_ema_period = int(config["fast_ema_period"])
+        args.fast_ema_period = _parse_int(config["fast_ema_period"], "FAST_EMA_PERIOD")
     if config["atr_period"]:
-        args.atr_period = int(config["atr_period"])
+        args.atr_period = _parse_int(config["atr_period"], "ATR_PERIOD")
     if config["entry_cancel_bars"]:
-        args.entry_cancel_bars = int(config["entry_cancel_bars"])
+        args.entry_cancel_bars = _parse_int(
+            config["entry_cancel_bars"], "ENTRY_CANCEL_BARS"
+        )
     if config["entry_activation_mode"]:
-        args.entry_activation_mode = config["entry_activation_mode"]
+        args.entry_activation_mode = config["entry_activation_mode"].strip().lower()
     if config["trailing_tick_timeframe"]:
-        args.trailing_tick_timeframe = config["trailing_tick_timeframe"]
+        args.trailing_tick_timeframe = config["trailing_tick_timeframe"].strip().lower()
     if config["use_trailing_tick_emulation"]:
         args.use_trailing_tick_emulation = _parse_bool(
             config["use_trailing_tick_emulation"]
@@ -532,7 +561,9 @@ def apply_env_defaults(
     if config["enable_friday_close"]:
         args.enable_friday_close = _parse_bool(config["enable_friday_close"])
     if config["friday_close_hour_utc"]:
-        args.friday_close_hour_utc = int(config["friday_close_hour_utc"])
+        args.friday_close_hour_utc = _parse_int(
+            config["friday_close_hour_utc"], "FRIDAY_CLOSE_HOUR_UTC"
+        )
     if config["enable_ema_cross_close"]:
         args.enable_ema_cross_close = _parse_bool(config["enable_ema_cross_close"])
     if config["risk_equity_include_unrealized"]:
@@ -540,17 +571,25 @@ def apply_env_defaults(
             config["risk_equity_include_unrealized"]
         )
     if config["risk_equity_mark_source"]:
-        args.risk_equity_mark_source = config["risk_equity_mark_source"]
+        args.risk_equity_mark_source = config["risk_equity_mark_source"].strip().lower()
     if config["margin_mode"]:
-        args.margin_mode = config["margin_mode"]
+        args.margin_mode = config["margin_mode"].strip().lower()
     if config["disable_symbol_hours"]:
-        args.disable_symbol_hours = float(config["disable_symbol_hours"])
+        args.disable_symbol_hours = _parse_float(
+            config["disable_symbol_hours"], "DISABLE_SYMBOL_HOURS"
+        )
     if config["position_size_usdt"]:
-        args.position_size_usdt = float(config["position_size_usdt"])
+        args.position_size_usdt = _parse_float(
+            config["position_size_usdt"], "POSITION_SIZE_USDT"
+        )
     if config["max_concurrent_positions"]:
-        args.max_concurrent_positions = int(config["max_concurrent_positions"])
+        args.max_concurrent_positions = _parse_int(
+            config["max_concurrent_positions"], "MAX_CONCURRENT_POSITIONS"
+        )
     if config["max_position_size_pct"]:
-        args.max_position_size_pct = float(config["max_position_size_pct"])
+        args.max_position_size_pct = _parse_float(
+            config["max_position_size_pct"], "MAX_POSITION_SIZE_PCT"
+        )
     if config["state_file"]:
         args.state_file = Path(config["state_file"])
     if config["positions_db"]:
@@ -560,9 +599,13 @@ def apply_env_defaults(
     if config["log_file"]:
         args.log_file = Path(config["log_file"])
     if config["candle_ready_delay_seconds"]:
-        args.candle_ready_delay_seconds = int(config["candle_ready_delay_seconds"])
+        args.candle_ready_delay_seconds = _parse_int(
+            config["candle_ready_delay_seconds"], "CANDLE_READY_DELAY_SECONDS"
+        )
     if config["execution_interval_minutes"]:
-        args.execution_interval_minutes = int(config["execution_interval_minutes"])
+        args.execution_interval_minutes = _parse_int(
+            config["execution_interval_minutes"], "EXECUTION_INTERVAL_MINUTES"
+        )
     if config["exchange_base_url"]:
         args.exchange_base_url = config["exchange_base_url"]
     if config["http_proxy"]:
@@ -580,9 +623,11 @@ def apply_env_defaults(
     if config["telegram_proxy"]:
         args.telegram_proxy = config["telegram_proxy"]
     if config["telegram_timeout"]:
-        args.telegram_timeout = float(config["telegram_timeout"])
+        args.telegram_timeout = _parse_float(
+            config["telegram_timeout"], "TELEGRAM_TIMEOUT"
+        )
     if config["log_level"]:
-        args.log_level = config["log_level"]
+        args.log_level = config["log_level"].strip().upper()
 
     return args
 
@@ -645,19 +690,7 @@ def create_exchange(args: argparse.Namespace, logger: logging.Logger):
     )
 
     # Import and instantiate exchange client
-    if args.exchange == "weex":
-        from live_trading.exchanges import WeexExchange, WeexTradingMode
-
-        trading_mode = (
-            WeexTradingMode.SPOT
-            if args.trading_mode == "spot"
-            else WeexTradingMode.FUTURES
-        )
-
-        logger.info(f"Using Weex exchange in {trading_mode.value} mode")
-        return WeexExchange(exchange_config, trading_mode, logger)
-
-    elif args.exchange == "binance":
+    if args.exchange == "binance":
         logger.warning(
             "Binance exchange implementation not yet available. "
             "Please implement BinanceExchange class in live_trading/exchanges/binance.py"
@@ -706,7 +739,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     pre_args, _ = parser.parse_known_args(argv)
     resolved_config_file = resolve_config_file(pre_args)
     env_config = load_env_config(resolved_config_file)
-    env_defaults = apply_env_defaults(parser.parse_args([]), env_config)
+    try:
+        env_defaults = apply_env_defaults(parser.parse_args([]), env_config)
+    except ValueError as exc:
+        parser.error(str(exc))
     parser.set_defaults(**vars(env_defaults))
     args = parser.parse_args(argv)
     args.config_file = resolved_config_file
@@ -796,46 +832,23 @@ def main(argv: Optional[List[str]] = None) -> int:
             telegram_timeout_seconds=args.telegram_timeout,
         )
 
-        logger.info("Live trading configuration:")
-        logger.info(
-            f"  Exchange: {config.exchange_name} ({'testnet' if config.testnet else 'LIVE'})"
-        )
-        logger.info(f"  Strategy: {config.strategy_name}")
-        logger.info(f"  Timeframe: {config.timeframe}")
-        logger.info(f"  Top M symbols: {config.top_m_symbols}")
-        logger.info(f"  Top N signals: {config.top_n_signals}")
-        logger.info(f"  Price change threshold: {config.price_change_threshold_pct}%")
-        logger.info(f"  HA candles before: {config.heiken_ashi_candles_before}")
-        logger.info(f"  Leverage: {config.leverage}x")
-        logger.info(f"  Take profit: {config.take_profit_pct}%")
-        logger.info(f"  Margin mode: {config.margin_mode.value}")
-        logger.info(f"  Disable symbol hours: {config.disable_symbol_hours}")
-        logger.info(f"  Position size: {config.position_size_usdt} USDT")
-        logger.info(f"  Max concurrent positions: {config.max_concurrent_positions}")
-        logger.info(
-            f"  Candle ready delay: {config.candle_ready_delay_seconds} seconds"
-        )
-        logger.info(
-            f"  Execution interval: {config.execution_interval_minutes} minutes"
-        )
-        if config.telegram_enabled:
-            logger.info(
-                "  Telegram notifications: enabled (chat %s)", config.telegram_chat_id
-            )
-        else:
-            logger.info("  Telegram notifications: disabled")
+        logger.info("Live trading configuration (all properties):")
+        for key, raw_value in vars(config).items():
+            value = raw_value.value if hasattr(raw_value, "value") else raw_value
+            logger.info("  %s=%r", key, value)
 
         telegram_client = create_telegram_client(config, logger)
 
         # Create and run coordinator
         if config.strategy_name == "pinbar_magic_v2":
-            pinbar_symbols = (
-                tuple(symbol.upper() for symbol in config.pinbar_symbols if symbol)
-                or ("ETHUSDT",)
-            )
+            pinbar_symbols = tuple(
+                symbol.upper() for symbol in config.pinbar_symbols if symbol
+            ) or ("ETHUSDT",)
             pinbar_cfg = PinBarMagicCoordinatorV2Config(
                 symbols=pinbar_symbols,
                 timeframe=config.timeframe,
+                trailing_tick_timeframe=config.trailing_tick_timeframe,
+                use_trailing_tick_emulation=config.use_trailing_tick_emulation,
                 poll_interval_seconds=5.0,
                 trailing_check_interval_seconds=5.0,
                 leverage=config.leverage,
