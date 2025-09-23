@@ -11,6 +11,21 @@ from typing import Any, Dict, Literal, Optional, Tuple
 from candle_downloader.models import Candle
 from .exchange import MarginMode, PositionSide
 
+ALLOWED_TIMEFRAMES = (
+    "1m",
+    "3m",
+    "5m",
+    "15m",
+    "30m",
+    "1h",
+    "2h",
+    "4h",
+    "6h",
+    "12h",
+    "1d",
+)
+ALLOWED_STRATEGIES = ("heiken_ashi", "pinbar_magic_v2")
+
 
 class CandlePattern(Enum):
     """Candle pattern type."""
@@ -90,30 +105,24 @@ class LiveTradingConfig:
 
     def __post_init__(self) -> None:
         """Validate configuration."""
-        if self.timeframe not in [
-            "1m",
-            "3m",
-            "5m",
-            "15m",
-            "30m",
-            "1h",
-            "2h",
-            "4h",
-            "6h",
-            "12h",
-            "1d",
-        ]:
+        if self.timeframe not in ALLOWED_TIMEFRAMES:
             raise ValueError(f"Invalid timeframe: {self.timeframe}")
-        if self.top_m_symbols <= 0:
-            raise ValueError("top_m_symbols must be positive")
-        if self.top_n_signals <= 0:
-            raise ValueError("top_n_signals must be positive")
-        if self.top_n_signals > self.top_m_symbols:
-            raise ValueError("top_n_signals cannot exceed top_m_symbols")
-        if self.price_change_threshold_pct <= 0:
-            raise ValueError("price_change_threshold_pct must be positive")
-        if self.strategy_name not in {"heiken_ashi", "pinbar_magic_v2"}:
+        if self.trailing_tick_timeframe not in ALLOWED_TIMEFRAMES:
+            raise ValueError(f"Invalid trailing_tick_timeframe: {self.trailing_tick_timeframe}")
+        if self.strategy_name not in ALLOWED_STRATEGIES:
             raise ValueError("strategy_name must be one of: heiken_ashi, pinbar_magic_v2")
+
+        # Scanner parameters are only required by Heiken Ashi flow.
+        if self.strategy_name == "heiken_ashi":
+            if self.top_m_symbols <= 0:
+                raise ValueError("top_m_symbols must be positive")
+            if self.top_n_signals <= 0:
+                raise ValueError("top_n_signals must be positive")
+            if self.top_n_signals > self.top_m_symbols:
+                raise ValueError("top_n_signals cannot exceed top_m_symbols")
+            if self.price_change_threshold_pct <= 0:
+                raise ValueError("price_change_threshold_pct must be positive")
+
         if self.heiken_ashi_candles_before <= 0:
             raise ValueError("heiken_ashi_candles_before must be positive")
         if self.leverage <= 0:
@@ -142,6 +151,10 @@ class LiveTradingConfig:
             raise ValueError(
                 "risk_equity_mark_source must be one of: close, open, hl2, ohlc4"
             )
+        if self.strategy_name == "pinbar_magic_v2":
+            for symbol in self.pinbar_symbols:
+                if not symbol or not str(symbol).strip():
+                    raise ValueError("pinbar_symbols must not contain empty values")
         if not (0 <= self.friday_close_hour_utc <= 23):
             raise ValueError("friday_close_hour_utc must be in 0..23")
         if self.disable_symbol_hours < 0:
