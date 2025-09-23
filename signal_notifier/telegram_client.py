@@ -35,7 +35,9 @@ class TelegramConfig:
 class TelegramClient:
     """Thin client for Telegram Bot API."""
 
-    def __init__(self, config: TelegramConfig, logger: logging.Logger | None = None) -> None:
+    def __init__(
+        self, config: TelegramConfig, logger: logging.Logger | None = None
+    ) -> None:
         self._config = config
         self._log = logger or logging.getLogger(__name__)
         handlers = []
@@ -62,16 +64,23 @@ class TelegramClient:
 
         for attempt in range(self._config.max_retries):
             try:
-                with self._opener.open(request, timeout=self._config.timeout) as response:
+                with self._opener.open(
+                    request, timeout=self._config.timeout
+                ) as response:
                     body = response.read()
                 data = json.loads(body)
                 if data.get("ok"):
-                    self._log.info("Sent signal to Telegram chat %s", self._config.chat_id)
+                    self._log.info(
+                        "Sent signal to Telegram chat %s", self._config.chat_id
+                    )
                     return
                 description = data.get("description", "unknown error")
                 parameters = data.get("parameters", {}) or {}
                 retry_after = parameters.get("retry_after")
-                should_retry = data.get("error_code") in (429,) or "Too Many Requests" in description
+                should_retry = (
+                    data.get("error_code") in (429,)
+                    or "Too Many Requests" in description
+                )
                 if should_retry and retry_after:
                     delay = max(delay, float(retry_after))
                 if not should_retry or attempt == self._config.max_retries - 1:
@@ -84,7 +93,11 @@ class TelegramClient:
                 )
             except HTTPError as exc:
                 last_exception = exc
-                body = exc.read().decode("utf-8", errors="ignore") if hasattr(exc, "read") else ""
+                body = (
+                    exc.read().decode("utf-8", errors="ignore")
+                    if hasattr(exc, "read")
+                    else ""
+                )
                 description = body
                 try:
                     payload = json.loads(body)
@@ -93,7 +106,9 @@ class TelegramClient:
                     pass
                 should_retry = exc.code >= 500 or exc.code in (429, 408)
                 if not should_retry or attempt == self._config.max_retries - 1:
-                    raise RuntimeError(f"Telegram HTTP error {exc.code}: {description}") from exc
+                    raise RuntimeError(
+                        f"Telegram HTTP error {exc.code}: {description}"
+                    ) from exc
                 self._log.warning(
                     "Telegram HTTP error %s (%s), retrying in %.1fs...",
                     exc.code,
@@ -103,7 +118,9 @@ class TelegramClient:
             except URLError as exc:
                 last_exception = exc
                 if attempt == self._config.max_retries - 1:
-                    raise RuntimeError(f"Telegram connection error: {exc.reason or exc}") from exc
+                    raise RuntimeError(
+                        f"Telegram connection error: {exc.reason or exc}"
+                    ) from exc
                 self._log.warning(
                     "Telegram connection error '%s', retrying in %.1fs...",
                     exc.reason or exc,
@@ -113,12 +130,16 @@ class TelegramClient:
                 last_exception = exc
                 if attempt == self._config.max_retries - 1:
                     raise RuntimeError(f"Unexpected Telegram error: {exc}") from exc
-                self._log.warning("Unexpected Telegram error '%s', retrying in %.1fs...", exc, delay)
+                self._log.warning(
+                    "Unexpected Telegram error '%s', retrying in %.1fs...", exc, delay
+                )
 
             time.sleep(delay)
-            delay = min(delay * self._config.retry_backoff_multiplier, self._config.max_retry_delay)
+            delay = min(
+                delay * self._config.retry_backoff_multiplier,
+                self._config.max_retry_delay,
+            )
 
         if last_exception:
             raise RuntimeError("Telegram send failed after retries") from last_exception
         raise RuntimeError("Telegram send failed after retries")
-
