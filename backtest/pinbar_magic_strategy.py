@@ -78,6 +78,7 @@ class PinBarMagicPosition:
     stop_price: float
     highest_price: float
     lowest_price: float
+    trailing_active: bool
     risk_amount: float
 
 
@@ -251,7 +252,10 @@ class PinBarMagicStrategy(BacktestStrategy):
         distance = abs(entry - stop)
         if distance <= 0:
             return 0.0
-        return (risk_amount * self._config.leverage) / distance
+        # Pine sizing uses equity risk divided by stop distance.
+        return risk_amount / distance
+        # TODO:
+        # return (risk_amount * self._config.leverage) / distance
 
     def _is_bullish_pinbar(self, candle: Candle) -> bool:
         rng = candle.high - candle.low
@@ -326,6 +330,7 @@ class PinBarMagicStrategy(BacktestStrategy):
                     stop_price=order.stop_price,
                     highest_price=fill_price,
                     lowest_price=fill_price,
+                    trailing_active=False,
                     risk_amount=order.risk_amount,
                 )
         return None
@@ -383,15 +388,30 @@ class PinBarMagicStrategy(BacktestStrategy):
         return None, None
 
     def _update_trailing(self, position: PinBarMagicPosition, candle: Candle) -> None:
-        trail_total = self._config.trail_points + self._config.trail_offset
         if position.direction == "long":
+            if not position.trailing_active:
+                if candle.high >= position.entry_price + self._config.trail_points:
+                    position.trailing_active = True
+                    position.highest_price = max(position.highest_price, candle.high)
+                    candidate = position.highest_price - self._config.trail_offset
+                    if candidate > position.stop_price:
+                        position.stop_price = candidate
+                return
             position.highest_price = max(position.highest_price, candle.high)
-            candidate = position.highest_price - trail_total
+            candidate = position.highest_price - self._config.trail_offset
             if candidate > position.stop_price:
                 position.stop_price = candidate
         else:
+            if not position.trailing_active:
+                if candle.low <= position.entry_price - self._config.trail_points:
+                    position.trailing_active = True
+                    position.lowest_price = min(position.lowest_price, candle.low)
+                    candidate = position.lowest_price + self._config.trail_offset
+                    if candidate < position.stop_price:
+                        position.stop_price = candidate
+                return
             position.lowest_price = min(position.lowest_price, candle.low)
-            candidate = position.lowest_price + trail_total
+            candidate = position.lowest_price + self._config.trail_offset
             if candidate < position.stop_price:
                 position.stop_price = candidate
 
