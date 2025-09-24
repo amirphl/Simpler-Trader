@@ -19,6 +19,8 @@ class BitunixClient:
     # Futures API hosts from vendor docs (examples use fapi.bitunix.com)
     MAINNET_BASE_URL = "https://fapi.bitunix.com"
     TESTNET_BASE_URL = "https://testnet-openapi.bitunix.com"
+    _NON_RETRYABLE_ERROR_CODE_MIN = 20000
+    _NON_RETRYABLE_ERROR_CODE_MAX = 50000
 
     def __init__(
         self,
@@ -121,8 +123,18 @@ class BitunixClient:
                             "Bitunix non-fatal error code %s: %s (path=%s)", code, msg, path
                         )
                         return {"code": code, "msg": msg, "data": None}
+                    if (
+                        isinstance(code, int)
+                        and self._NON_RETRYABLE_ERROR_CODE_MIN
+                        <= code
+                        < self._NON_RETRYABLE_ERROR_CODE_MAX
+                    ):
+                        raise ValueError(f"Bitunix error code {code}: {msg}")
                     raise RuntimeError(f"Bitunix error code {code}: {msg}")
                 return payload
+            except ValueError:
+                # Deterministic exchange validation errors should fail fast.
+                raise
             except Exception as exc:
                 last_exc = exc
                 if attempts >= self._max_retries:

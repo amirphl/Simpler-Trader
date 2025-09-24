@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import logging
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -27,6 +27,81 @@ class BitunixExchange(Exchange):
         self._log = logger or logging.getLogger(__name__)
         self._client = BitunixClient(config, self._log)
         self._default_margin_coin = "USDT"
+        self._pair_meta_cache: Dict[str, Dict[str, Any]] = {}
+
+    @staticmethod
+    def _quantize(
+        value: float, decimals: int, *, rounding_mode: str = ROUND_DOWN
+    ) -> float:
+        decimals = max(int(decimals), 0)
+        quantum = Decimal("1").scaleb(-decimals)
+        quantized = Decimal(str(value)).quantize(quantum, rounding=rounding_mode)
+        return float(quantized)
+
+    def _get_symbol_meta(self, symbol: str) -> Dict[str, Any]:
+        normalized_symbol = str(symbol).strip().upper()
+        cached = self._pair_meta_cache.get(normalized_symbol)
+        if cached is not None:
+            return cached
+
+        for item in self.get_trading_pairs(symbols=[normalized_symbol]):
+            if str(item.get("symbol", "")).strip().upper() == normalized_symbol:
+                self._pair_meta_cache[normalized_symbol] = item
+                return item
+        return {}
+
+    def _normalize_quantity(self, symbol: str, quantity: float) -> float:
+        qty = float(quantity)
+        if qty <= 0:
+            raise RuntimeError(f"Invalid order quantity for {symbol}: {quantity}")
+
+        meta = self._get_symbol_meta(symbol)
+        base_precision = int(meta.get("basePrecision", 8) or 8)
+        min_trade_volume = float(meta.get("minTradeVolume", 0) or 0)
+
+        normalized_qty = self._quantize(qty, base_precision, rounding_mode=ROUND_DOWN)
+        if min_trade_volume > 0 and normalized_qty < min_trade_volume:
+            raise RuntimeError(
+                f"Quantity {normalized_qty} below minTradeVolume {min_trade_volume} for {symbol}"
+            )
+        return normalized_qty
+
+    def _normalize_limit_price(self, symbol: str, side: PositionSide, price: float) -> float:
+        px = float(price)
+        if px <= 0:
+            raise RuntimeError(f"Invalid order price for {symbol}: {price}")
+
+        meta = self._get_symbol_meta(symbol)
+        quote_precision = int(meta.get("quotePrecision", 8) or 8)
+        price_protect_scope = float(meta.get("priceProtectScope", 0) or 0)
+        mark_price = self.fetch_price(symbol)
+        adjusted = px
+
+        # Keep limit price within exchange price-protection band to avoid 30014/30015.
+        if mark_price is not None and mark_price > 0 and price_protect_scope > 0:
+            if side == PositionSide.LONG:
+                max_buy = mark_price * (1.0 + price_protect_scope)
+                adjusted = min(adjusted, max_buy)
+            else:
+                min_sell = mark_price * (1.0 - price_protect_scope)
+                adjusted = max(adjusted, min_sell)
+
+        rounding = ROUND_DOWN if side == PositionSide.LONG else ROUND_UP
+        normalized_price = self._quantize(adjusted, quote_precision, rounding_mode=rounding)
+
+        if normalized_price <= 0:
+            raise RuntimeError(
+                f"Normalized order price is invalid for {symbol}: raw={price} normalized={normalized_price}"
+            )
+        if abs(normalized_price - px) > 0:
+            self._log.info(
+                "Bitunix: normalized %s limit price for %s from %.10f to %.10f",
+                side.value,
+                symbol,
+                px,
+                normalized_price,
+            )
+        return normalized_price
 
     def fetch_price(self, symbol: str) -> Optional[float]:
         """Fetch last price for a symbol (public endpoint)."""
@@ -174,10 +249,11 @@ class BitunixExchange(Exchange):
         stop_loss: Optional[float] = None,
     ) -> OrderResult:
         # self.set_leverage(symbol, leverage)
+        normalized_qty = self._normalize_quantity(symbol, quantity)
         response = self._client.place_order(
             symbol=symbol,
             side="BUY" if side == PositionSide.LONG else "SELL",
-            qty=quantity,
+            qty=normalized_qty,
             order_type=OrderType.MARKET.value,
             trade_side="OPEN",
             reduce_only=False,
@@ -193,7 +269,7 @@ class BitunixExchange(Exchange):
             side=side,
             order_type=OrderType.MARKET,
             price=0.0,
-            quantity=quantity,
+            quantity=normalized_qty,
             status="NEW",
             timestamp=datetime.now(timezone.utc),
         )
@@ -210,12 +286,14 @@ class BitunixExchange(Exchange):
         stop_loss: Optional[float] = None,
     ) -> OrderResult:
         # self.set_leverage(symbol, leverage)
+        normalized_qty = self._normalize_quantity(symbol, quantity)
+        normalized_price = self._normalize_limit_price(symbol, side, price)
         response = self._client.place_order(
             symbol=symbol,
             side="BUY" if side == PositionSide.LONG else "SELL",
-            qty=quantity,
+            qty=normalized_qty,
             order_type=OrderType.LIMIT.value,
-            price=price,
+            price=normalized_price,
             effect="GTC",
             trade_side="OPEN",
             reduce_only=False,
@@ -230,8 +308,8 @@ class BitunixExchange(Exchange):
             symbol=symbol,
             side=side,
             order_type=OrderType.LIMIT,
-            price=price,
-            quantity=quantity,
+            price=normalized_price,
+            quantity=normalized_qty,
             status="NEW",
             timestamp=datetime.now(timezone.utc),
         )
