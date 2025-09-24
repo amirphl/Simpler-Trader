@@ -683,6 +683,19 @@ class PinBarMagicCoordinatorV2:
         # return (risk_amount * float(leverage)) / distance
 
     def _place_stop_entry(self, pending: PendingEntryRecord) -> Optional[OrderResult]:
+        try:
+            self._exchange.set_margin_mode(pending.symbol, MarginMode.ISOLATED)
+            self._exchange.set_leverage(pending.symbol, 1)
+        except Exception as exc:
+            self._log.error(
+                "Failed to set account config for %s before entry (mode=%s, leverage=%sx): %s",
+                pending.symbol,
+                pending.margin_mode.value,
+                pending.leverage,
+                exc,
+            )
+            return None
+
         placer = getattr(self._exchange, "place_stop_entry_order", None)
         if callable(placer):
             try:
