@@ -643,21 +643,39 @@ class BitunixExchange(Exchange):
     ) -> OrderResult:
         """Placeholder stop-entry implementation.
 
-        NOTE: Bitunix trigger-order API wiring is pending. This fallback submits a
-        limit order at the stop trigger price so higher-level logic remains runnable.
+        NOTE: Bitunix trigger-order API wiring is pending. This emulates a stop
+        trigger check:
+        - LONG triggers when last price >= stop_price
+        - SHORT triggers when last price <= stop_price
+        Once triggered, it submits a market OPEN order.
         """
+        last_price = self.fetch_price(symbol)
+        if last_price is None or last_price <= 0:
+            raise RuntimeError(
+                f"Stop entry trigger not reached for {symbol}: last price unavailable"
+            )
+
+        if side == PositionSide.LONG and last_price < stop_price:
+            raise RuntimeError(
+                f"Stop entry trigger not reached for {symbol}: last={last_price:.10f} stop={stop_price:.10f}"
+            )
+        if side == PositionSide.SHORT and last_price > stop_price:
+            raise RuntimeError(
+                f"Stop entry trigger not reached for {symbol}: last={last_price:.10f} stop={stop_price:.10f}"
+            )
+
         self._log.warning(
-            "Bitunix: place_stop_entry_order is placeholder; using LIMIT fallback "
-            "(symbol=%s side=%s stop_price=%.6f)",
+            "Bitunix: place_stop_entry_order is placeholder; trigger reached, using MARKET fallback "
+            "(symbol=%s side=%s stop_price=%.6f last_price=%.6f)",
             symbol,
             side.value,
             stop_price,
+            last_price,
         )
-        return self.open_limit_position(
+        return self.open_market_position(
             symbol=symbol,
             side=side,
             quantity=quantity,
-            price=stop_price,
             leverage=leverage,
             margin_mode=margin_mode,
             take_profit=None,

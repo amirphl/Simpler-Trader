@@ -36,6 +36,10 @@ class _InsufficientBalanceError(RuntimeError):
     """Raised when exchange rejects an action due to insufficient balance/margin."""
 
 
+class _EntryDeferredError(RuntimeError):
+    """Raised when a stop-entry trigger has not been reached yet."""
+
+
 @dataclass(frozen=True)
 class PinBarMagicCoordinatorV2Config:
     symbols: tuple[str, ...] = ("ETHUSDT",)
@@ -463,6 +467,15 @@ class PinBarMagicCoordinatorV2:
                     exc,
                 )
                 continue
+            except _EntryDeferredError as exc:
+                pending.status = "PENDING"
+                pending.notes = f"{pending.notes}; {exc}".strip("; ")
+                self._log.info(
+                    "Stop-entry trigger not reached for %s %s; keeping pending",
+                    pending.symbol,
+                    pending.side.value,
+                )
+                continue
             if order is None:
                 pending.status = "ERROR"
                 continue
@@ -869,6 +882,8 @@ class PinBarMagicCoordinatorV2:
             except Exception as exc:
                 if self._is_insufficient_balance_error(exc):
                     raise _InsufficientBalanceError(str(exc)) from exc
+                if self._is_entry_not_triggered_error(exc):
+                    raise _EntryDeferredError(str(exc)) from exc
                 self._log.warning(
                     "place_stop_entry_order failed for %s (%s): %s",
                     pending.symbol,
@@ -891,6 +906,18 @@ class PinBarMagicCoordinatorV2:
                     and last_price <= pending.entry_price
                 ):
                     fallback_price = last_price
+                else:
+                    raise _EntryDeferredError(
+                        "stop entry trigger not reached (gap-fill fallback defers)"
+                    )
+            else:
+                raise _EntryDeferredError(
+                    "stop entry trigger not reached (missing last price)"
+                )
+        else:
+            raise _EntryDeferredError(
+                "stop entry trigger not reached (no native stop-entry support)"
+            )
 
         try:
             return self._exchange.open_limit_position(
@@ -926,6 +953,16 @@ class PinBarMagicCoordinatorV2:
             "balance not enough",
             "margin not enough",
             "available balance",
+        )
+        return any(marker in text for marker in markers)
+
+    @staticmethod
+    def _is_entry_not_triggered_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        markers = (
+            "trigger not reached",
+            "stop entry trigger",
+            "not triggered",
         )
         return any(marker in text for marker in markers)
 
