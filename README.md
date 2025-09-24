@@ -1,6 +1,7 @@
 # Scalp Test
 
 `scalp-test` is a crypto strategy research and execution workspace with:
+
 - backtesting engines,
 - a candle downloader,
 - a web backtest control panel,
@@ -167,7 +168,7 @@ Key live-trading flags:
 
 - `--config-file` (optional; default is strategy-specific `./configs/live_trading.<strategy>.env`)
 - `--strategy-name {heiken_ashi,pinbar_magic_v2}`
-- `--exchange {weex,binance,bybit,bitunix}`
+- `--exchange {binance,bybit,bitunix}`
 - `--timeframe ...`
 
 Pin Bar Magic v2 live mode runs with an ETHUSDT-focused coordinator and executes logic per closed candle, plus periodic trailing/position checks between candles.
