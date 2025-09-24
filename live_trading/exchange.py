@@ -109,6 +109,21 @@ class Exchange(ABC):
         pass
 
     @abstractmethod
+    def fetch_price(self, symbol: str) -> Optional[float]:
+        """Fetch the latest price for a given symbol.
+
+        Args:
+            symbol: Trading symbol (e.g., "BTCUSDT")
+
+        Returns:
+            Latest price as a float
+
+        Raises:
+            RuntimeError: If API call fails
+        """
+        pass
+
+    @abstractmethod
     def get_24h_tickers(self) -> List[Dict[str, Any]]:
         """Get 24-hour ticker data for all symbols.
 
@@ -241,6 +256,28 @@ class Exchange(ABC):
         pass
 
     @abstractmethod
+    def place_stop_entry_order(
+        self,
+        symbol: str,
+        side: PositionSide,
+        quantity: float,
+        stop_price: float,
+        leverage: int,
+        margin_mode: MarginMode,
+        stop_loss: Optional[float] = None,
+    ) -> OrderResult:
+        """Placeholder stop-entry implementation."""
+        pass
+
+    @abstractmethod
+    def update_stop_loss(self, position: Position, stop_price: float) -> bool:
+        pass
+
+    @abstractmethod
+    def cancel_order(self, symbol: str, order_id: str) -> bool:
+        pass
+
+    @abstractmethod
     def get_klines(
         self,
         symbol: str,
@@ -295,3 +332,132 @@ class Exchange(ABC):
     def close(self) -> None:
         """Close the exchange client and cleanup resources."""
         pass
+
+    # Optional exchange extensions -------------------------------------
+    # Default implementations keep the base interface compatible with
+    # exchanges that do not expose these advanced endpoints.
+
+    def get_trading_pairs(
+        self, symbols: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement get_trading_pairs"
+        )
+
+    def get_depth(
+        self, symbol: str, limit: Optional[str | int] = None
+    ) -> Dict[str, Any]:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement get_depth"
+        )
+
+    def get_funding_rate(self, symbol: str) -> Dict[str, Any]:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement get_funding_rate"
+        )
+
+    def get_position_tiers(self, symbol: str) -> List[Dict[str, Any]]:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement get_position_tiers"
+        )
+
+    def place_position_tpsl_order(
+        self,
+        symbol: str,
+        position_id: str,
+        tp_price: Optional[float] = None,
+        tp_stop_type: Optional[str] = None,
+        sl_price: Optional[float] = None,
+        sl_stop_type: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement place_position_tpsl_order"
+        )
+
+    def close_all_position(self, symbol: Optional[str] = None) -> None:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement close_all_position"
+        )
+
+    def flash_close_position(self, position_id: str) -> bool:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement flash_close_position"
+        )
+
+    def get_history_orders(
+        self,
+        symbol: Optional[str] = None,
+        order_id: Optional[str] = None,
+        client_id: Optional[str] = None,
+        status: Optional[str] = None,
+        order_type: Optional[str] = None,
+        start_time_ms: Optional[int] = None,
+        end_time_ms: Optional[int] = None,
+        skip: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement get_history_orders"
+        )
+
+    def get_history_trades(
+        self,
+        symbol: Optional[str] = None,
+        order_id: Optional[str] = None,
+        position_id: Optional[str] = None,
+        start_time_ms: Optional[int] = None,
+        end_time_ms: Optional[int] = None,
+        skip: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement get_history_trades"
+        )
+
+    def get_order_detail(
+        self,
+        order_id: Optional[str] = None,
+        client_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement get_order_detail"
+        )
+
+    def get_pending_orders(
+        self,
+        symbol: Optional[str] = None,
+        order_id: Optional[str] = None,
+        client_id: Optional[str] = None,
+        status: Optional[str] = None,
+        start_time_ms: Optional[int] = None,
+        end_time_ms: Optional[int] = None,
+        skip: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement get_pending_orders"
+        )
+
+    def modify_order(
+        self,
+        qty: float,
+        price: float,
+        order_id: Optional[str] = None,
+        client_id: Optional[str] = None,
+        tp_price: Optional[float] = None,
+        tp_stop_type: Optional[str] = None,
+        tp_order_type: Optional[str] = None,
+        tp_order_price: Optional[float] = None,
+        sl_price: Optional[float] = None,
+        sl_stop_type: Optional[str] = None,
+        sl_order_type: Optional[str] = None,
+        sl_order_price: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement modify_order"
+        )
+
+    def get_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
+        raise NotImplementedError(
+            f"{self.__class__.__name__} does not implement get_open_orders"
+        )
