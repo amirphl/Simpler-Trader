@@ -13,6 +13,7 @@ import requests
 from ...exchange import ExchangeConfig
 from .utils import build_query_concat, sha256_hex
 
+
 class BitunixClient:
     """Low-level Bitunix REST client (double-SHA256 signature as per spec)."""
 
@@ -54,9 +55,16 @@ class BitunixClient:
         )
 
     def _default_signer(
-        self, nonce: str, timestamp_ms: str, api_key: str, query_concat: str, body_string: str
+        self,
+        nonce: str,
+        timestamp_ms: str,
+        api_key: str,
+        query_concat: str,
+        body_string: str,
     ) -> str:
-        digest = sha256_hex(f"{nonce}{timestamp_ms}{api_key}{query_concat}{body_string}")
+        digest = sha256_hex(
+            f"{nonce}{timestamp_ms}{api_key}{query_concat}{body_string}"
+        )
         return sha256_hex(f"{digest}{self._secret}")
 
     def _request(
@@ -82,26 +90,29 @@ class BitunixClient:
             "language": self._language,
         }
 
-        if auth:
-            if not (self._api_key and self._secret):
-                raise RuntimeError("Bitunix private endpoint requires API credentials")
-            timestamp_ms = str(int(time.time() * 1000))
-            nonce = uuid.uuid4().hex
-            query_concat = build_query_concat(query)
-            signature = self._signer(nonce, timestamp_ms, self._api_key, query_concat, body_string)
-            headers.update(
-                {
-                    "api-key": self._api_key,
-                    "sign": signature,
-                    "nonce": nonce,
-                    "timestamp": timestamp_ms,
-                }
-            )
+        if auth and not (self._api_key and self._secret):
+            raise RuntimeError("Bitunix private endpoint requires API credentials")
 
         attempts = 0
         last_exc: Exception | None = None
         while attempts < self._max_retries:
             attempts += 1
+            # Regenerate auth headers on every attempt so timestamp/nonce are always fresh.
+            if auth:
+                timestamp_ms = str(int(time.time() * 1000))
+                nonce = uuid.uuid4().hex
+                query_concat = build_query_concat(query)
+                signature = self._signer(
+                    nonce, timestamp_ms, self._api_key, query_concat, body_string
+                )
+                headers.update(
+                    {
+                        "api-key": self._api_key,
+                        "sign": signature,
+                        "nonce": nonce,
+                        "timestamp": timestamp_ms,
+                    }
+                )
             try:
                 resp = self._session.request(
                     method=method.upper(),
@@ -120,7 +131,10 @@ class BitunixClient:
                     # Gracefully handle known non-fatal errors (e.g., size too small, trading disabled)
                     if code in (30016, 20012, 20003):
                         self._log.warning(
-                            "Bitunix non-fatal error code %s: %s (path=%s)", code, msg, path
+                            "Bitunix non-fatal error code %s: %s (path=%s)",
+                            code,
+                            msg,
+                            path,
                         )
                         return {"code": code, "msg": msg, "data": None}
                     if (
@@ -234,13 +248,19 @@ class BitunixClient:
             tick = self.fetch_tickers([symbol_pair]).get(symbol_pair)
             if not tick:
                 return None
-            last_price = tick.get("lastPrice") or tick.get("last") or tick.get("markPrice")
+            last_price = (
+                tick.get("lastPrice") or tick.get("last") or tick.get("markPrice")
+            )
             return float(last_price) if last_price is not None else None
         except Exception as exc:
-            self._log.warning("Bitunix: failed to fetch price for %s: %s", symbol_pair, exc)
+            self._log.warning(
+                "Bitunix: failed to fetch price for %s: %s", symbol_pair, exc
+            )
             return None
 
-    def get_depth(self, symbol: str, limit: Optional[str | int] = None) -> Dict[str, Any]:
+    def get_depth(
+        self, symbol: str, limit: Optional[str | int] = None
+    ) -> Dict[str, Any]:
         """GET /api/v1/futures/market/depth."""
         if not symbol:
             self._log.warning("Bitunix: get_depth rejected: symbol is required")
@@ -303,7 +323,10 @@ class BitunixClient:
         payload = data.get("data")
         if isinstance(payload, list):
             for item in payload:
-                if isinstance(item, dict) and str(item.get("symbol", "")).upper() == symbol.upper():
+                if (
+                    isinstance(item, dict)
+                    and str(item.get("symbol", "")).upper() == symbol.upper()
+                ):
                     return item
             if payload and isinstance(payload[0], dict):
                 return payload[0]
@@ -326,7 +349,10 @@ class BitunixClient:
             self._log.warning("Bitunix: get_kline_history rejected: symbol is required")
             return []
         if not interval:
-            self._log.warning("Bitunix: get_kline_history rejected symbol=%s: interval is required", symbol)
+            self._log.warning(
+                "Bitunix: get_kline_history rejected symbol=%s: interval is required",
+                symbol,
+            )
             return []
 
         normalized_limit = max(1, min(int(limit), 200))
@@ -403,7 +429,9 @@ class BitunixClient:
             available = account.get("available")
             return float(available) if available is not None else None
         except Exception as exc:
-            self._log.error("Bitunix: failed to fetch balance for %s: %s", margin_coin, exc)
+            self._log.error(
+                "Bitunix: failed to fetch balance for %s: %s", margin_coin, exc
+            )
             return None
 
     def change_leverage(self, margin_coin: str, symbol: str, leverage: int) -> bool:
@@ -411,7 +439,9 @@ class BitunixClient:
             self._log.warning("Bitunix: Change leverage rejected: symbol is required")
             return False
         if not margin_coin:
-            self._log.warning("Bitunix: Change leverage rejected: margin_coin is required")
+            self._log.warning(
+                "Bitunix: Change leverage rejected: margin_coin is required"
+            )
             return False
         if int(leverage) < 1:
             self._log.warning(
@@ -450,7 +480,9 @@ class BitunixClient:
             )
             return False
 
-    def change_margin_mode(self, margin_coin: str, symbol: str, margin_mode: str) -> bool:
+    def change_margin_mode(
+        self, margin_coin: str, symbol: str, margin_mode: str
+    ) -> bool:
         """POST /api/v1/futures/account/change_margin_mode"""
         body = {
             "marginMode": margin_mode,
@@ -459,7 +491,10 @@ class BitunixClient:
         }
         try:
             data = self._request(
-                "POST", "/api/v1/futures/account/change_margin_mode", body=body, auth=True
+                "POST",
+                "/api/v1/futures/account/change_margin_mode",
+                body=body,
+                auth=True,
             )
             if data.get("code", 0) != 0:
                 self._log.warning(
@@ -487,7 +522,10 @@ class BitunixClient:
         body = {"positionMode": position_mode}
         try:
             data = self._request(
-                "POST", "/api/v1/futures/account/change_position_mode", body=body, auth=True
+                "POST",
+                "/api/v1/futures/account/change_position_mode",
+                body=body,
+                auth=True,
             )
             if data.get("code", 0) != 0:
                 self._log.warning(
@@ -572,7 +610,9 @@ class BitunixClient:
     def get_single_account(self, margin_coin: str) -> Dict[str, Any]:
         """GET /api/v1/futures/account (single account)"""
         if not margin_coin:
-            self._log.warning("Bitunix: get_single_account rejected: margin_coin is required")
+            self._log.warning(
+                "Bitunix: get_single_account rejected: margin_coin is required"
+            )
             return {}
 
         data = self.get_account(margin_coin)
@@ -621,7 +661,9 @@ class BitunixClient:
         """GET /api/v1/futures/position/get_position_tiers."""
         normalized_symbol = str(symbol).strip().upper()
         if not normalized_symbol:
-            self._log.warning("Bitunix: get_position_tiers rejected: symbol is required")
+            self._log.warning(
+                "Bitunix: get_position_tiers rejected: symbol is required"
+            )
             return []
 
         data = self._request(
@@ -691,7 +733,9 @@ class BitunixClient:
             if isinstance(position_list, list) and isinstance(total, int):
                 return payload
             return {
-                "positionList": position_list if isinstance(position_list, list) else [],
+                "positionList": position_list
+                if isinstance(position_list, list)
+                else [],
                 "total": int(total) if total is not None else len(position_list or []),
             }
         return {"positionList": [], "total": 0}
@@ -721,10 +765,9 @@ class BitunixClient:
             self._log.warning("Bitunix: tp/sl order rejected: position_id is required")
             return {}
         if tp_price is None and sl_price is None:
-            self._log.warning("Bitunix: tp/sl order rejected: missing tp_price and sl_price")
-            return {}
-        if tp_qty is None and sl_qty is None:
-            self._log.warning("Bitunix: tp/sl order rejected: missing tp_qty and sl_qty")
+            self._log.warning(
+                "Bitunix: tp/sl order rejected: missing tp_price and sl_price"
+            )
             return {}
         body: Dict[str, Any] = {
             "symbol": normalized_symbol,
@@ -805,13 +848,19 @@ class BitunixClient:
         normalized_symbol = str(symbol).strip().upper()
         normalized_position_id = str(position_id).strip()
         if not normalized_symbol:
-            self._log.warning("Bitunix: place position tp/sl rejected: symbol is required")
+            self._log.warning(
+                "Bitunix: place position tp/sl rejected: symbol is required"
+            )
             return {}
         if not normalized_position_id:
-            self._log.warning("Bitunix: place position tp/sl rejected: position_id is required")
+            self._log.warning(
+                "Bitunix: place position tp/sl rejected: position_id is required"
+            )
             return {}
         if tp_price is None and sl_price is None:
-            self._log.warning("Bitunix: place position tp/sl rejected: missing tp_price and sl_price")
+            self._log.warning(
+                "Bitunix: place position tp/sl rejected: missing tp_price and sl_price"
+            )
             return {}
 
         body: Dict[str, Any] = {
@@ -960,13 +1009,19 @@ class BitunixClient:
         normalized_symbol = str(symbol).strip().upper()
         normalized_position_id = str(position_id).strip()
         if not normalized_symbol:
-            self._log.warning("Bitunix: modify position tp/sl rejected: symbol is required")
+            self._log.warning(
+                "Bitunix: modify position tp/sl rejected: symbol is required"
+            )
             return {}
         if not normalized_position_id:
-            self._log.warning("Bitunix: modify position tp/sl rejected: position_id is required")
+            self._log.warning(
+                "Bitunix: modify position tp/sl rejected: position_id is required"
+            )
             return {}
         if tp_price is None and sl_price is None:
-            self._log.warning("Bitunix: modify position tp/sl rejected: missing tp_price and sl_price")
+            self._log.warning(
+                "Bitunix: modify position tp/sl rejected: missing tp_price and sl_price"
+            )
             return {}
         body: Dict[str, Any] = {
             "symbol": normalized_symbol,
@@ -1027,10 +1082,9 @@ class BitunixClient:
             self._log.warning("Bitunix: modify tp/sl rejected: order_id is required")
             return {}
         if tp_price is None and sl_price is None:
-            self._log.warning("Bitunix: modify tp/sl rejected: missing tp_price and sl_price")
-            return {}
-        if tp_qty is None and sl_qty is None:
-            self._log.warning("Bitunix: modify tp/sl rejected: missing tp_qty and sl_qty")
+            self._log.warning(
+                "Bitunix: modify tp/sl rejected: missing tp_price and sl_price"
+            )
             return {}
         body: Dict[str, Any] = {"orderId": normalized_order_id}
         if tp_price is not None:
@@ -1103,7 +1157,9 @@ class BitunixClient:
             self._log.warning("Bitunix: cancel_tpsl_order rejected: symbol is required")
             return {}
         if not normalized_order_id:
-            self._log.warning("Bitunix: cancel_tpsl_order rejected: order_id is required")
+            self._log.warning(
+                "Bitunix: cancel_tpsl_order rejected: order_id is required"
+            )
             return {}
 
         body = {"symbol": normalized_symbol, "orderId": normalized_order_id}
@@ -1213,7 +1269,9 @@ class BitunixClient:
         """POST /api/v1/futures/trade/flash_close_position."""
         normalized_position_id = str(position_id).strip()
         if not normalized_position_id:
-            self._log.warning("Bitunix: flash_close_position rejected: position_id is required")
+            self._log.warning(
+                "Bitunix: flash_close_position rejected: position_id is required"
+            )
             return {}
 
         body: Dict[str, Any] = {"positionId": normalized_position_id}
@@ -1563,7 +1621,9 @@ class BitunixClient:
         normalized_side = str(side).strip().upper()
         normalized_order_type = str(order_type).strip().upper()
         normalized_trade_side = str(trade_side).strip().upper()
-        normalized_position_id = str(position_id).strip() if position_id is not None else ""
+        normalized_position_id = (
+            str(position_id).strip() if position_id is not None else ""
+        )
         normalized_client_id = str(client_id).strip() if client_id is not None else ""
 
         if not normalized_symbol:
@@ -1583,18 +1643,26 @@ class BitunixClient:
             )
             return {}
         if normalized_order_type == "LIMIT" and price is None:
-            self._log.warning("Bitunix: place_order rejected: price is required for LIMIT")
+            self._log.warning(
+                "Bitunix: place_order rejected: price is required for LIMIT"
+            )
             return {}
         if normalized_order_type == "LIMIT" and effect is None:
-            self._log.warning("Bitunix: place_order rejected: effect is required for LIMIT")
+            self._log.warning(
+                "Bitunix: place_order rejected: effect is required for LIMIT"
+            )
             return {}
         if normalized_trade_side == "CLOSE" and not normalized_position_id:
-            self._log.warning("Bitunix: place_order rejected: position_id is required for CLOSE")
+            self._log.warning(
+                "Bitunix: place_order rejected: position_id is required for CLOSE"
+            )
             return {}
         if effect is not None:
             effect_norm = str(effect).strip().upper()
             if effect_norm not in {"IOC", "FOK", "GTC", "POST_ONLY"}:
-                self._log.warning("Bitunix: place_order rejected: invalid effect=%s", effect)
+                self._log.warning(
+                    "Bitunix: place_order rejected: invalid effect=%s", effect
+                )
                 return {}
         else:
             effect_norm = ""
@@ -1604,7 +1672,8 @@ class BitunixClient:
             tp_stop_type_norm = str(tp_stop_type).upper()
             if tp_stop_type_norm not in {"LAST_PRICE", "MARK_PRICE"}:
                 self._log.warning(
-                    "Bitunix: place_order rejected: invalid tp_stop_type=%s", tp_stop_type
+                    "Bitunix: place_order rejected: invalid tp_stop_type=%s",
+                    tp_stop_type,
                 )
                 return {}
 
@@ -1613,7 +1682,8 @@ class BitunixClient:
             sl_stop_type_norm = str(sl_stop_type).upper()
             if sl_stop_type_norm not in {"LAST_PRICE", "MARK_PRICE"}:
                 self._log.warning(
-                    "Bitunix: place_order rejected: invalid sl_stop_type=%s", sl_stop_type
+                    "Bitunix: place_order rejected: invalid sl_stop_type=%s",
+                    sl_stop_type,
                 )
                 return {}
 
@@ -1622,7 +1692,8 @@ class BitunixClient:
             tp_order_type_norm = str(tp_order_type).upper()
             if tp_order_type_norm not in {"LIMIT", "MARKET"}:
                 self._log.warning(
-                    "Bitunix: place_order rejected: invalid tp_order_type=%s", tp_order_type
+                    "Bitunix: place_order rejected: invalid tp_order_type=%s",
+                    tp_order_type,
                 )
                 return {}
             if tp_order_type_norm == "LIMIT" and tp_order_price is None:
@@ -1636,7 +1707,8 @@ class BitunixClient:
             sl_order_type_norm = str(sl_order_type).upper()
             if sl_order_type_norm not in {"LIMIT", "MARKET"}:
                 self._log.warning(
-                    "Bitunix: place_order rejected: invalid sl_order_type=%s", sl_order_type
+                    "Bitunix: place_order rejected: invalid sl_order_type=%s",
+                    sl_order_type,
                 )
                 return {}
             if sl_order_type_norm == "LIMIT" and sl_order_price is None:
@@ -1678,13 +1750,17 @@ class BitunixClient:
         if sl_order_price is not None:
             body["slOrderPrice"] = str(sl_order_price)
 
-        self._log.debug("Bitunix: placing order %s", json.dumps(body, separators=(",", ":")))
+        self._log.debug(
+            "Bitunix: placing order %s", json.dumps(body, separators=(",", ":"))
+        )
         data = self._request(
             "POST", "/api/v1/futures/trade/place_order", body=body, auth=True
         )
         if data.get("code", 0) != 0:
             self._log.warning(
-                "Bitunix order rejected code=%s msg=%s", data.get("code"), data.get("msg")
+                "Bitunix order rejected code=%s msg=%s",
+                data.get("code"),
+                data.get("msg"),
             )
             return {}
         payload = data.get("data")

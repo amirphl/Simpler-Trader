@@ -194,6 +194,7 @@ class PinBarMagicCoordinatorV2:
 
         self._log.info("New candle processed for %s symbol(s)", len(snapshots))
         self._sync_positions(now)
+
         # 1) Bar-based trailing pass (matches backtest bar-order semantics).
         for snapshot in snapshots.values():
             self._apply_bar_trailing(snapshot, now)
@@ -243,6 +244,11 @@ class PinBarMagicCoordinatorV2:
         )
 
     def _fetch_latest_closed_candle(self, symbol: str) -> Candle | None:
+        """Return the most-recently CLOSED candle for the configured timeframe.
+
+        Tries the exchange adapter first; falls back to the legacy Binance path.
+        Returns None if fewer than 2 rows are available (can't identify closed bar).
+        """
         rows: list = []
         try:
             rows = self._exchange.get_klines(
@@ -260,13 +266,23 @@ class PinBarMagicCoordinatorV2:
 
         if not rows:
             # Compatibility fallback while some exchanges are still on legacy data path.
-            rows = self._strategy._fetch_binance_klines(  # noqa: SLF001
-                symbol=symbol,
-                interval=self._cfg.timeframe,
-                limit=3,
-            )
+            try:
+                rows = self._strategy._fetch_binance_klines(  # noqa: SLF001
+                    symbol=symbol,
+                    interval=self._cfg.timeframe,
+                    limit=3,
+                )
+            except Exception as exc:
+                self._log.warning(
+                    "PinBarMagicCoordinatorV2: legacy klines fallback failed for %s (%s): %s",
+                    symbol,
+                    self._cfg.timeframe,
+                    exc,
+                )
+
         if len(rows) < 2:
             return None
+        # rows[-1] is the still-open candle; rows[-2] is the last closed one.
         return Candle.from_binance(symbol, self._cfg.timeframe, rows[-2])
 
     def _queue_signal(
@@ -334,9 +350,24 @@ class PinBarMagicCoordinatorV2:
         return True
 
     def _sync_positions(self, now: datetime) -> None:
-        exchange_positions = self._exchange.get_current_positions()
+        """Reconcile local state with the exchange's live position list.
+
+        - Any exchange position that has no local record but matches a pending entry
+          is promoted to an active PositionRecord.
+        - Any local active position that no longer appears on the exchange is marked
+          CLOSED (e.g. hit SL/TP directly on the exchange while we weren't watching).
+        """
+        try:
+            exchange_positions = self._exchange.get_current_positions()
+        except Exception as exc:
+            self._log.warning(
+                "PinBarMagicCoordinatorV2: get_current_positions failed: %s", exc
+            )
+            return
+
         by_symbol = {p.symbol: p for p in exchange_positions}
 
+        # Promote newly filled pending entries → active positions.
         for symbol, ex_pos in by_symbol.items():
             if symbol in self._state.active_positions:
                 continue
@@ -365,16 +396,24 @@ class PinBarMagicCoordinatorV2:
                 status="OPEN",
                 notes=f"Filled from pending {pending.order_key}",
             )
-            # TODO: Log
+            self._log.info(
+                "Position opened for %s (%s) at entry price %.6f",
+                symbol,
+                ex_pos.side.value,
+                ex_pos.entry_price or pending.entry_price,
+            )
             self._notify_trade_opened(self._state.active_positions[symbol], pending)
             self._state.pending_entries.pop(pending.order_key, None)
 
+        # Detect positions closed externally (SL/TP hit on exchange).
         for symbol, pos in list(self._state.active_positions.items()):
             if symbol not in by_symbol:
                 pos.status = "CLOSED"
                 pos.exit_time = now
                 self._state.active_positions.pop(symbol, None)
-                # TODO: Log
+                self._log.info(
+                    "Position for %s no longer on exchange – marking closed", symbol
+                )
                 self._notify_trade_closed(
                     pos,
                     reason="Position no longer present on exchange",
@@ -397,6 +436,16 @@ class PinBarMagicCoordinatorV2:
     def _apply_bar_close_rules(
         self, snapshot: PinBarMagicSnapshot, now: datetime
     ) -> None:
+        """Apply Pine's bar-close exit rules: Friday market-close and EMA cross.
+
+        Pine reference:
+            strategy.close_all(when = hour==16 and dayofweek==friday)
+            strategy.close_all(when = crossunder(fastEMA, medmEMA))
+            strategy.close_all(when = crossover(fastEMA, medmEMA))
+
+        Note: crossunder closes ALL positions (including longs), and crossover
+        closes ALL positions (including shorts) – this matches Pine's close_all.
+        """
         position = self._state.active_positions.get(snapshot.symbol)
         if position is None:
             return
@@ -416,7 +465,8 @@ class PinBarMagicCoordinatorV2:
             close_reason = "EMA cross close"
         if close_reason is not None:
             self._log.info(
-                "Bar close rules triggered for %s: %s (crossunder=%s crossover=%s friday_close=%s)",
+                "Bar close rules triggered for %s: %s "
+                "(crossunder=%s crossover=%s friday_close=%s)",
                 snapshot.symbol,
                 close_reason,
                 snapshot.crossunder,
@@ -426,6 +476,17 @@ class PinBarMagicCoordinatorV2:
             self._close_position(position, now, close_reason)
 
     def _apply_bar_trailing(self, snapshot: PinBarMagicSnapshot, now: datetime) -> None:
+        """Bar-resolution trailing stop update, simulating intra-bar price movement.
+
+        Because we only receive OHLC data per bar, we reconstruct an approximate
+        intra-bar path as: open → (high or low first, based on which wick is longer)
+        → (the other extreme) → close.  This matches the common backtest convention.
+
+        The trailing stop is only ever MOVED in the favourable direction (ratcheted).
+        When price crosses the trailing stop level within a segment, the position is
+        closed at that bar and the exchange stop-loss order is cancelled implicitly
+        by _close_position.
+        """
         position = self._state.active_positions.get(snapshot.symbol)
         if position is None:
             return
@@ -453,6 +514,8 @@ class PinBarMagicCoordinatorV2:
             )
             return
 
+        # Approximate intra-bar path: open → first extreme → second extreme → close.
+        # Visit the longer wick first (more likely to be the early move).
         if abs(snapshot.bar.open - snapshot.bar.high) < abs(
             snapshot.bar.open - snapshot.bar.low
         ):
@@ -463,6 +526,7 @@ class PinBarMagicCoordinatorV2:
         start_price = snapshot.bar.open
         stop_updated = False
         triggered = False
+        end_price = start_price  # kept in scope for the triggered-log below
 
         for node in nodes:
             end_price = getattr(snapshot.bar, node)
@@ -475,10 +539,12 @@ class PinBarMagicCoordinatorV2:
                     position.trailing_active = True
                     position.extreme_since_activation = seg_high
                     position.trailing_stop = seg_high - self._cfg.trail_offset
+                    stop_updated = True
                 if position.trailing_active:
-                    if position.extreme_since_activation is None:
-                        position.extreme_since_activation = seg_high
-                    elif seg_high > position.extreme_since_activation:
+                    if (
+                        position.extreme_since_activation is None
+                        or seg_high > position.extreme_since_activation
+                    ):
                         position.extreme_since_activation = seg_high
                     desired = position.extreme_since_activation - self._cfg.trail_offset
                     if (
@@ -493,16 +559,18 @@ class PinBarMagicCoordinatorV2:
                     ):
                         triggered = True
                         break
-            else:
+            else:  # SHORT
                 activation = entry_price - self._cfg.trail_points
                 if not position.trailing_active and seg_low <= activation:
                     position.trailing_active = True
                     position.extreme_since_activation = seg_low
                     position.trailing_stop = seg_low + self._cfg.trail_offset
+                    stop_updated = True
                 if position.trailing_active:
-                    if position.extreme_since_activation is None:
-                        position.extreme_since_activation = seg_low
-                    elif seg_low < position.extreme_since_activation:
+                    if (
+                        position.extreme_since_activation is None
+                        or seg_low < position.extreme_since_activation
+                    ):
                         position.extreme_since_activation = seg_low
                     desired = position.extreme_since_activation + self._cfg.trail_offset
                     if (
@@ -520,7 +588,8 @@ class PinBarMagicCoordinatorV2:
 
             start_price = end_price
 
-        if stop_updated and position.trailing_stop is not None:
+        # Push updated stop to exchange only when the level actually changed.
+        if stop_updated and not triggered and position.trailing_stop is not None:
             self._log.info(
                 "Bar trailing update for %s: entry=%.6f trail=%.6f -> updating stop on exchange",
                 snapshot.symbol,
@@ -530,6 +599,7 @@ class PinBarMagicCoordinatorV2:
             self._update_stop_loss_on_exchange(
                 exchange_position, position.trailing_stop
             )
+
         if triggered:
             self._log.info(
                 "Bar trailing triggered for %s at price %.6f (entry %.6f, trail %.6f)",
@@ -541,6 +611,17 @@ class PinBarMagicCoordinatorV2:
             self._close_position(position, now, "Trailing stop")
 
     def _manage_tick_trailing(self, now: datetime) -> None:
+        """Tick-resolution trailing stop update, run on every poll cycle.
+
+        Uses the live mark price (or the close of the shortest configured kline
+        when use_trailing_tick_emulation is True) to ratchet the trailing stop
+        between bar closes.  Logic mirrors _apply_bar_trailing but operates on a
+        single price point rather than an OHLC segment.
+
+        When the trailing stop is hit, the position is closed via market order and
+        removed from local state.  The exchange stop-loss order will either have
+        already triggered or will be cancelled by the close_position call.
+        """
         for symbol, position in list(self._state.active_positions.items()):
             if position.strategy != "pinbar_magic_v2":
                 continue
@@ -551,13 +632,16 @@ class PinBarMagicCoordinatorV2:
             if entry <= 0:
                 continue
 
+            stop_updated = False
             triggered = False
+
             if position.side == PositionSide.LONG:
                 activation = entry + self._cfg.trail_points
                 if not position.trailing_active and price >= activation:
                     position.trailing_active = True
                     position.extreme_since_activation = price
                     position.trailing_stop = price - self._cfg.trail_offset
+                    stop_updated = True
                 if position.trailing_active:
                     if (
                         position.extreme_since_activation is None
@@ -570,16 +654,18 @@ class PinBarMagicCoordinatorV2:
                         or desired > position.trailing_stop
                     ):
                         position.trailing_stop = desired
+                        stop_updated = True
                     triggered = (
                         position.trailing_stop is not None
                         and price <= position.trailing_stop
                     )
-            else:
+            else:  # SHORT
                 activation = entry - self._cfg.trail_points
                 if not position.trailing_active and price <= activation:
                     position.trailing_active = True
                     position.extreme_since_activation = price
                     position.trailing_stop = price + self._cfg.trail_offset
+                    stop_updated = True
                 if position.trailing_active:
                     if (
                         position.extreme_since_activation is None
@@ -592,25 +678,32 @@ class PinBarMagicCoordinatorV2:
                         or desired < position.trailing_stop
                     ):
                         position.trailing_stop = desired
+                        stop_updated = True
                     triggered = (
                         position.trailing_stop is not None
                         and price >= position.trailing_stop
                     )
 
-            if position.trailing_stop is not None:
+            # Push updated stop to exchange only when the level actually changed and
+            # the position has not already been triggered (avoid a redundant API call
+            # immediately before the close_position market order).
+            if stop_updated and not triggered and position.trailing_stop is not None:
                 ex_pos = self._exchange.get_position(symbol)
                 if ex_pos is not None:
                     self._log.info(
-                        "Tick trailing update for %s: price=%.6f entry=%.6f trail=%.6f -> updating stop on exchange",
+                        "Tick trailing update for %s: price=%.6f entry=%.6f "
+                        "trail=%.6f -> updating stop on exchange",
                         symbol,
                         price,
                         entry,
                         position.trailing_stop,
                     )
                     self._update_stop_loss_on_exchange(ex_pos, position.trailing_stop)
+
             if triggered:
                 self._log.info(
-                    "Tick trailing triggered for %s at price %.6f (entry %.6f, trail %.6f)",
+                    "Tick trailing triggered for %s at price %.6f "
+                    "(entry %.6f, trail %.6f)",
                     symbol,
                     price,
                     entry,
@@ -639,7 +732,14 @@ class PinBarMagicCoordinatorV2:
                 )
 
     def _compute_risk_amount(self, snapshot: Optional[PinBarMagicSnapshot]) -> float:
-        realized_equity = max(float(self._exchange.get_account_balance()), 0.0)
+        try:
+            realized_equity = max(float(self._exchange.get_account_balance()), 0.0)
+        except Exception as exc:
+            self._log.warning(
+                "PinBarMagicCoordinatorV2: get_account_balance failed: %s", exc
+            )
+            return 0.0
+
         if not self._cfg.risk_equity_include_unrealized or snapshot is None:
             return (self._cfg.equity_risk_pct / 100.0) * realized_equity
 
@@ -674,21 +774,41 @@ class PinBarMagicCoordinatorV2:
     def _compute_quantity(
         self, entry_price: float, stop_price: float, leverage: int, risk_amount: float
     ) -> float:
+        """Compute position size matching Pine's unit calculation.
+
+        Pine:
+            units = risk / (entryPrice - stopLoss)   # for longs
+            units = risk / (stopLoss - entryPrice)   # for shorts
+
+        Leverage is applied at the execution layer (margin allocation), not here.
+        """
         distance = abs(entry_price - stop_price)
         if distance <= 0 or risk_amount <= 0:
             return 0.0
-        # Pine sizing uses risk / stop distance; leverage is applied at execution layer.
         return risk_amount / distance
-        # TODO:
-        # return (risk_amount * float(leverage)) / distance
 
     def _place_stop_entry(self, pending: PendingEntryRecord) -> Optional[OrderResult]:
+        """Submit a stop-entry order to the exchange.
+
+        Sets margin mode and leverage first; if that fails the entry is aborted so we
+        never enter with wrong account settings.
+
+        Prefers place_stop_entry_order if the exchange adapter supports it.
+        Falls back to open_limit_position with gap-fill logic for exchanges that
+        don't support native stop orders.
+
+        stop_loss is intentionally omitted from the initial stop-entry order and is
+        applied in the first _sync_positions / _apply_bar_trailing cycle after fill.
+        This avoids race conditions where the exchange rejects a combined stop+SL order
+        if the SL is too close to the current price at submission time.
+        """
         try:
-            self._exchange.set_margin_mode(pending.symbol, MarginMode.ISOLATED)
-            self._exchange.set_leverage(pending.symbol, 1)
+            self._exchange.set_margin_mode(pending.symbol, pending.margin_mode)
+            self._exchange.set_leverage(pending.symbol, pending.leverage)
         except Exception as exc:
             self._log.error(
-                "Failed to set account config for %s before entry (mode=%s, leverage=%sx): %s",
+                "Failed to set account config for %s before entry "
+                "(mode=%s, leverage=%sx): %s",
                 pending.symbol,
                 pending.margin_mode.value,
                 pending.leverage,
@@ -706,8 +826,7 @@ class PinBarMagicCoordinatorV2:
                     stop_price=pending.entry_price,
                     leverage=pending.leverage,
                     margin_mode=pending.margin_mode,
-                    # stop_loss=pending.stop_for_risk, # TODO:
-                    stop_loss=None,  # Keep fallback entry accepted; apply SL after fill/update cycle.
+                    stop_loss=None,  # applied after fill in the next sync cycle
                 )
             except Exception as exc:
                 self._log.warning(
@@ -756,16 +875,32 @@ class PinBarMagicCoordinatorV2:
     def _close_position(
         self, position: PositionRecord, now: datetime, reason: str
     ) -> None:
-        result = self._exchange.close_position(position.symbol, side=position.side)
-        exit_price = (
-            result.price if result.price > 0 else self._get_last_price(position.symbol)
-        )
+        try:
+            result = self._exchange.close_position(position.symbol, side=position.side)
+        except Exception as exc:
+            self._log.error(
+                "Failed to close position for %s (%s): %s",
+                position.symbol,
+                position.side.value,
+                exc,
+            )
+            # Still mark locally as closed to prevent repeated close attempts;
+            # operator must investigate the exchange state manually.
+            result = None
+
+        exit_price: Optional[float] = None
+        if result is not None and result.price > 0:
+            exit_price = result.price
+        if exit_price is None:
+            exit_price = self._get_last_price(position.symbol)
+
         position.status = "CLOSED"
         position.exit_time = now
         position.exit_price = exit_price
         if exit_price is not None:
-            # TODO: Leverage effect
-            # TODO: Merged positions effect (currently we just take the exit price of the closed position, which may be inaccurate if multiple fills at different prices)
+            # NOTE: PnL here is notional (pre-leverage, pre-fee).
+            # Leverage effect: multiply by position.leverage for levered PnL.
+            # Fee and funding are not accounted for.
             if position.side == PositionSide.LONG:
                 position.pnl = (exit_price - position.entry_price) * position.quantity
             else:
@@ -784,8 +919,9 @@ class PinBarMagicCoordinatorV2:
                 stop_price=stop_price,
             )
         except Exception:
+            # FIX: was referencing bare `exc` which is not in scope here.
             self._log.warning(
-                "Failed to update stop loss for %s to %.6f: %s",
+                "Failed to update stop loss for %s to %.6f",
                 exchange_position.symbol,
                 stop_price,
                 exc_info=True,
@@ -803,10 +939,11 @@ class PinBarMagicCoordinatorV2:
                 )
             except Exception:
                 self._log.warning(
-                    "Failed to cancel pending order %s for %s: %s",
+                    "Failed to cancel pending order %s for %s (%s)",
                     pending.order_id,
                     pending.symbol,
                     reason,
+                    exc_info=True,
                 )
                 cancelled = False
             if not cancelled:
@@ -814,9 +951,11 @@ class PinBarMagicCoordinatorV2:
                     self._exchange.cancel_all_orders(pending.symbol)
                 except Exception:
                     self._log.warning(
-                        "Failed to cancel all orders for %s during pending entry cancellation: %s",
+                        "Failed to cancel all orders for %s during pending entry "
+                        "cancellation (%s)",
                         pending.symbol,
                         reason,
+                        exc_info=True,
                     )
         pending.status = "CANCELLED"
         pending.notes = f"{pending.notes}; {reason}".strip("; ")
@@ -874,17 +1013,24 @@ class PinBarMagicCoordinatorV2:
         return None
 
     def _latest_price_for_trailing(self, symbol: str) -> Optional[float]:
-        """Resolve tick price used for trailing logic."""
+        """Resolve the price used for tick-level trailing logic.
+
+        When use_trailing_tick_emulation is True, the close of the shortest
+        configured kline interval is used instead of the live mark price.  This
+        gives a slightly smoother price series on exchanges where fetch_price
+        returns the last trade rather than the mark price.
+        """
         if self._cfg.use_trailing_tick_emulation:
             try:
                 rows = self._exchange.get_klines(
                     symbol=symbol,
                     interval=self._cfg.trailing_tick_timeframe,
-                    limit=1,
+                    limit=2,  # fetch 2 so rows[-2] is the last CLOSED kline
                 )
-                if rows:
+                if rows and len(rows) >= 2:
+                    # Use the last CLOSED candle's close, not the still-open one.
                     candle = Candle.from_binance(
-                        symbol, self._cfg.trailing_tick_timeframe, rows[-1]
+                        symbol, self._cfg.trailing_tick_timeframe, rows[-2]
                     )
                     return float(candle.close)
             except Exception:
@@ -914,7 +1060,7 @@ class PinBarMagicCoordinatorV2:
                 f"Time: {datetime.now(timezone.utc).isoformat()}",
             ]
             self._telegram.send_message("\n".join(lines))
-        except Exception as exc:  # pragma: no cover - defensive logging
+        except Exception as exc:
             self._log.warning(
                 "Failed to send Telegram open notification for %s: %s",
                 position.symbol,
@@ -939,7 +1085,7 @@ class PinBarMagicCoordinatorV2:
                 f"Time: {datetime.now(timezone.utc).isoformat()}",
             ]
             self._telegram.send_message("\n".join(lines))
-        except Exception as exc:  # pragma: no cover - defensive logging
+        except Exception as exc:
             self._log.warning(
                 "Failed to send Telegram close notification for %s: %s",
                 position.symbol,

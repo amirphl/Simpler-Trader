@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -14,6 +15,9 @@ from candle_downloader.models import Candle
 from .exchange import PositionSide
 from .models import PinBarMagicSnapshot, SymbolInfo, TradingSignal
 from .strategy_shared import BaseLiveTradingStrategy
+
+_KLINES_RETRIES = 3
+_KLINES_RETRY_DELAY_SECONDS = 1.0
 
 
 class PinBarMagicLiveStrategy(BaseLiveTradingStrategy):
@@ -84,11 +88,15 @@ class PinBarMagicLiveStrategy(BaseLiveTradingStrategy):
             )
             + 2
         )
+        # Returns None on total failure, empty list when exchange returned no rows.
         raw = self._fetch_strategy_klines(
             symbol=symbol,
             interval=cfg.timeframe,
             limit=max(min_history + 1, 256),
         )
+        if raw is None:
+            # Hard fetch failure already logged inside _fetch_strategy_klines.
+            return None
         if len(raw) < min_history:
             self._log.debug(
                 "PinBarMagic: insufficient klines for %s (%s < %s)",
@@ -99,6 +107,7 @@ class PinBarMagicLiveStrategy(BaseLiveTradingStrategy):
             return None
 
         candles = [Candle.from_binance(symbol, cfg.timeframe, row) for row in raw]
+        # Drop the still-open candle; all signal logic runs on closed bars.
         closed = candles[:-1]
         if len(closed) < min_history:
             return None
@@ -174,31 +183,75 @@ class PinBarMagicLiveStrategy(BaseLiveTradingStrategy):
 
     def _fetch_strategy_klines(
         self, symbol: str, interval: str, limit: int
-    ) -> List[List]:
-        """Fetch klines through the active exchange adapter."""
+    ) -> Optional[List[List]]:
+        """Fetch klines with retry logic and a legacy fallback.
+
+        Returns:
+            A non-empty list of raw kline rows on success.
+            None if every attempt (including the legacy fallback) failed – the
+            caller should treat None as a hard failure and skip the symbol.
+        """
+        last_exc: Optional[Exception] = None
+
+        for attempt in range(1, _KLINES_RETRIES + 1):
+            try:
+                rows = self._exchange.get_klines(
+                    symbol=symbol,
+                    interval=interval,
+                    limit=limit,
+                )
+                if rows:
+                    return rows
+                self._log.warning(
+                    "PinBarMagic: exchange.get_klines returned no data for %s (%s) "
+                    "(attempt %d/%d)",
+                    symbol,
+                    interval,
+                    attempt,
+                    _KLINES_RETRIES,
+                )
+            except Exception as exc:
+                last_exc = exc
+                self._log.warning(
+                    "PinBarMagic: exchange.get_klines raised for %s (%s) "
+                    "(attempt %d/%d): %s",
+                    symbol,
+                    interval,
+                    attempt,
+                    _KLINES_RETRIES,
+                    exc,
+                )
+            if attempt < _KLINES_RETRIES:
+                time.sleep(_KLINES_RETRY_DELAY_SECONDS)
+
+        # Compatibility fallback to legacy direct-fetch path.
+        self._log.info(
+            "PinBarMagic: falling back to legacy klines fetch for %s (%s)",
+            symbol,
+            interval,
+        )
         try:
-            rows = self._exchange.get_klines(
-                symbol=symbol,
-                interval=interval,
-                limit=limit,
+            rows = self._fetch_binance_klines(
+                symbol=symbol, interval=interval, limit=limit
             )
             if rows:
                 return rows
-            self._log.warning(
-                "PinBarMagic: exchange.get_klines returned no data for %s (%s)",
-                symbol,
-                interval,
-            )
         except Exception as exc:
             self._log.warning(
-                "PinBarMagic: exchange.get_klines failed for %s (%s): %s",
+                "PinBarMagic: legacy klines fallback also failed for %s (%s): %s",
                 symbol,
                 interval,
                 exc,
             )
 
-        # Compatibility fallback to legacy direct-fetch path.
-        return self._fetch_binance_klines(symbol=symbol, interval=interval, limit=limit)
+        self._log.error(
+            "PinBarMagic: all klines fetch attempts failed for %s (%s). "
+            "Last primary error: %s",
+            symbol,
+            interval,
+            last_exc,
+        )
+        return None
 
     def _build_entry_signal(
         self,
@@ -206,17 +259,48 @@ class PinBarMagicLiveStrategy(BaseLiveTradingStrategy):
         snapshot: PinBarMagicSnapshot,
         side: PositionSide,
     ) -> Optional[TradingSignal]:
+        """Build an entry signal matching the Pine enterlong / entershort functions.
+
+        Pine reference:
+            entryPrice = high[1]  /  low[1]          (stop-entry trigger)
+            stopLoss   = low[1]  - atr[1] * atr_mult
+                       / high[1] + atr[1] * atr_mult  (initial hard stop)
+
+        stop_loss here is the INITIAL hard risk stop only.  The coordinator
+        manages trailing separately in _apply_bar_trailing / _manage_tick_trailing
+        and pushes updated levels to the exchange via _update_stop_loss_on_exchange.
+        Overwriting stop_loss with a trailing value here would corrupt that logic.
+
+        take_profit is intentionally None: the Pine strategy exits exclusively via
+        trailing stop (strategy.exit trail_points/trail_offset).  Placing a fixed TP
+        order would conflict with the trailing mechanism.
+        """
         cfg = self._config
         prev = snapshot.previous_bar
+
         if side == PositionSide.LONG:
-            entry_price = prev.high
-            stop_for_risk = prev.low - snapshot.atr_prev * cfg.atr_multiple
-            if entry_price <= stop_for_risk:
+            entry_price = float(prev.high)
+            stop_for_risk = float(prev.low) - snapshot.atr_prev * cfg.atr_multiple
+            if stop_for_risk >= entry_price:
+                self._log.debug(
+                    "PinBarMagic: LONG signal rejected for %s – "
+                    "stop (%.6f) >= entry (%.6f)",
+                    snapshot.symbol,
+                    stop_for_risk,
+                    entry_price,
+                )
                 return None
         else:
-            entry_price = prev.low
-            stop_for_risk = prev.high + snapshot.atr_prev * cfg.atr_multiple
+            entry_price = float(prev.low)
+            stop_for_risk = float(prev.high) + snapshot.atr_prev * cfg.atr_multiple
             if stop_for_risk <= entry_price:
+                self._log.debug(
+                    "PinBarMagic: SHORT signal rejected for %s – "
+                    "stop (%.6f) <= entry (%.6f)",
+                    snapshot.symbol,
+                    stop_for_risk,
+                    entry_price,
+                )
                 return None
 
         return TradingSignal(
@@ -224,8 +308,8 @@ class PinBarMagicLiveStrategy(BaseLiveTradingStrategy):
             symbol=snapshot.symbol,
             side=side,
             entry_price=entry_price,
-            stop_loss=stop_for_risk,
-            take_profit=None,
+            stop_loss=stop_for_risk,  # initial hard stop only – NOT the trailing level
+            take_profit=None,  # exits via trailing stop, not a fixed TP
             leverage=cfg.leverage,
             margin_mode=cfg.margin_mode,
             reason=f"PinBarMagic v2 {'LONG' if side == PositionSide.LONG else 'SHORT'}",
@@ -245,6 +329,10 @@ class PinBarMagicLiveStrategy(BaseLiveTradingStrategy):
                 "atr_multiple": cfg.atr_multiple,
             },
         )
+
+    # ------------------------------------------------------------------
+    # Pin-bar geometry helpers – aligned with Pine Script definitions
+    # ------------------------------------------------------------------
 
     def _is_bullish_pinbar(self, candle: Candle) -> bool:
         rng = candle.high - candle.low

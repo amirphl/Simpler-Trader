@@ -19,10 +19,13 @@ from ...exchange import (
 from .client import BitunixClient
 from .utils import infer_margin_coin_from_symbol, interval_to_milliseconds
 
+
 class BitunixExchange(Exchange):
     """Bitunix futures exchange adapter."""
 
-    def __init__(self, config: ExchangeConfig, logger: Optional[logging.Logger] = None) -> None:
+    def __init__(
+        self, config: ExchangeConfig, logger: Optional[logging.Logger] = None
+    ) -> None:
         self._config = config
         self._log = logger or logging.getLogger(__name__)
         self._client = BitunixClient(config, self._log)
@@ -66,7 +69,9 @@ class BitunixExchange(Exchange):
             )
         return normalized_qty
 
-    def _normalize_limit_price(self, symbol: str, side: PositionSide, price: float) -> float:
+    def _normalize_limit_price(
+        self, symbol: str, side: PositionSide, price: float
+    ) -> float:
         px = float(price)
         if px <= 0:
             raise RuntimeError(f"Invalid order price for {symbol}: {price}")
@@ -88,13 +93,15 @@ class BitunixExchange(Exchange):
                 adjusted = max(adjusted, min_sell + tick_size)
 
         rounding = ROUND_DOWN if side == PositionSide.LONG else ROUND_UP
-        normalized_price = self._quantize(adjusted, quote_precision, rounding_mode=rounding)
+        normalized_price = self._quantize(
+            adjusted, quote_precision, rounding_mode=rounding
+        )
 
         if normalized_price <= 0:
             raise RuntimeError(
                 f"Normalized order price is invalid for {symbol}: raw={price} normalized={normalized_price}"
             )
-        if abs(normalized_price - px) > 0:
+        if abs(normalized_price - px) > 1e-12:
             self._log.info(
                 "Bitunix: normalized %s limit price for %s from %.10f to %.10f",
                 side.value,
@@ -104,7 +111,9 @@ class BitunixExchange(Exchange):
             )
         return normalized_price
 
-    def _normalize_stop_loss_price(self, position: Position, stop_price: float) -> float:
+    def _normalize_stop_loss_price(
+        self, position: Position, stop_price: float
+    ) -> float:
         """Normalize SL to symbol precision and keep it on valid side of last price."""
         meta = self._get_symbol_meta(position.symbol)
         quote_precision = int(meta.get("quotePrecision", 8) or 8)
@@ -141,12 +150,16 @@ class BitunixExchange(Exchange):
         ticks = self._client.fetch_tickers()
         return list(ticks.values())
 
-    def get_trading_pairs(self, symbols: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    def get_trading_pairs(
+        self, symbols: Optional[List[str]] = None
+    ) -> List[Dict[str, Any]]:
         """Fetch trading pair metadata."""
         pairs = self._client.get_trading_pairs(symbols=symbols)
         return list(pairs.values())
 
-    def get_depth(self, symbol: str, limit: Optional[str | int] = None) -> Dict[str, Any]:
+    def get_depth(
+        self, symbol: str, limit: Optional[str | int] = None
+    ) -> Dict[str, Any]:
         """Fetch order book depth for a symbol."""
         return self._client.get_depth(symbol=symbol, limit=limit)
 
@@ -194,7 +207,9 @@ class BitunixExchange(Exchange):
                 side = PositionSide.SHORT if side_str == "SHORT" else PositionSide.LONG
                 margin_mode_str = str(pos.get("marginMode", "")).upper()
                 margin_mode = (
-                    MarginMode.ISOLATED if margin_mode_str == "ISOLATION" else MarginMode.CROSS
+                    MarginMode.ISOLATED
+                    if margin_mode_str == "ISOLATION"
+                    else MarginMode.CROSS
                 )
                 entry_price = float(pos.get("avgOpenPrice", 0) or 0)
                 unrealized = float(pos.get("unrealizedPNL", 0) or 0)
@@ -324,7 +339,9 @@ class BitunixExchange(Exchange):
             sl_price=stop_loss,
         )
         if not response or not response.get("orderId"):
-            raise RuntimeError("Bitunix open limit position failed: no order id returned")
+            raise RuntimeError(
+                "Bitunix open limit position failed: no order id returned"
+            )
         order_id = str(response.get("orderId") or "")
         return OrderResult(
             order_id=order_id,
@@ -343,19 +360,25 @@ class BitunixExchange(Exchange):
         side: Optional[PositionSide] = None,
     ) -> OrderResult:
         position = self.get_position(symbol)
-        if position:
-            close_qty = position.size
-            side_to_send = PositionSide.SHORT if position.side == PositionSide.LONG else PositionSide.LONG
-        else:
-            close_qty = 0.0
-            side_to_send = PositionSide.SHORT if side == PositionSide.LONG else PositionSide.LONG
+        if not position:
+            raise RuntimeError(
+                f"Bitunix close position failed: no open position found for {symbol}"
+            )
+
+        close_qty = position.size
+        side_to_send = (
+            PositionSide.SHORT
+            if position.side == PositionSide.LONG
+            else PositionSide.LONG
+        )
 
         response = self._client.place_order(
             symbol=symbol,
             side="BUY" if side_to_send == PositionSide.LONG else "SELL",
-            qty=close_qty or 0.001,
+            qty=close_qty,
             order_type=OrderType.MARKET.value,
             trade_side="CLOSE",
+            position_id=position.position_id if position.position_id else None,
             reduce_only=True,
         )
         if not response or not response.get("orderId"):
@@ -373,9 +396,10 @@ class BitunixExchange(Exchange):
         )
 
     def cancel_all_orders(self, symbol: str) -> None:
-        result = self._client.cancel_all_orders(symbol=symbol)
-        if not result:
-            raise RuntimeError(f"Failed to cancel all orders for {symbol}")
+        try:
+            self._client.cancel_all_orders(symbol=symbol)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to cancel all orders for {symbol}") from exc
 
     def close_all_position(self, symbol: Optional[str] = None) -> None:
         """Close all positions, optionally scoped to a symbol."""
@@ -562,15 +586,17 @@ class BitunixExchange(Exchange):
         """Place/replace a stop-loss (used for trailing stops)."""
         if not position.position_id:
             self._log.warning(
-                "Bitunix: cannot set stop loss for %s without position_id", position.symbol
+                "Bitunix: cannot set stop loss for %s without position_id",
+                position.symbol,
             )
             return False
 
         try:
+            normalized_sl = self._normalize_stop_loss_price(position, stop_price)
             result = self._client.modify_position_tpsl_order(
                 symbol=position.symbol,
                 position_id=position.position_id,
-                sl_price=self._normalize_stop_loss_price(position, stop_price),
+                sl_price=normalized_sl,
                 sl_stop_type="MARK_PRICE",
             )
             if not result:
@@ -578,7 +604,7 @@ class BitunixExchange(Exchange):
                 result = self._client.place_tpsl_order(
                     symbol=position.symbol,
                     position_id=position.position_id,
-                    sl_price=self._normalize_stop_loss_price(position, stop_price),
+                    sl_price=normalized_sl,
                     sl_stop_type="MARK_PRICE",
                     sl_order_type="MARKET",
                     sl_qty=position.size,
@@ -597,7 +623,9 @@ class BitunixExchange(Exchange):
             )
             return True
         except Exception as exc:
-            self._log.warning("Bitunix: failed to update stop loss for %s: %s", position.symbol, exc)
+            self._log.warning(
+                "Bitunix: failed to update stop loss for %s: %s", position.symbol, exc
+            )
             return False
 
     # ------------------------------------------------------------------
@@ -641,7 +669,9 @@ class BitunixExchange(Exchange):
         try:
             normalized_order_id = str(order_id).strip()
             if not normalized_order_id:
-                self._log.warning("Bitunix: cancel_order rejected: order_id is required")
+                self._log.warning(
+                    "Bitunix: cancel_order rejected: order_id is required"
+                )
                 return False
 
             result = self._client.cancel_orders(
@@ -689,9 +719,9 @@ class BitunixExchange(Exchange):
             return False
 
     def get_open_orders(self, symbol: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Placeholder for open-order retrieval."""
-        self._log.warning(
-            "Bitunix: get_open_orders placeholder not implemented (symbol=%s)",
-            symbol,
-        )
+        """Return currently open (pending) orders, optionally filtered by symbol."""
+        result = self._client.get_pending_orders(symbol=symbol)
+        order_list = result.get("orderList")
+        if isinstance(order_list, list):
+            return [o for o in order_list if isinstance(o, dict)]
         return []
