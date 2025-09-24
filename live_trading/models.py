@@ -79,6 +79,7 @@ class LiveTradingConfig:
     margin_mode: MarginMode = MarginMode.ISOLATED
     disable_symbol_hours: float = 24  # hours to disable after trade (0 = no disable)
     position_size_usdt: float = 100.0  # Position size in USDT
+    max_entry_notional_usdt: float = 15.0  # Per-entry notional cap (pre-leverage)
 
     # Risk management
     max_concurrent_positions: int = 5
@@ -161,6 +162,8 @@ class LiveTradingConfig:
             raise ValueError("disable_symbol_hours must be non-negative")
         if self.position_size_usdt <= 0:
             raise ValueError("position_size_usdt must be positive")
+        if self.max_entry_notional_usdt <= 0:
+            raise ValueError("max_entry_notional_usdt must be positive")
         if self.max_concurrent_positions <= 0:
             raise ValueError("max_concurrent_positions must be positive")
         if self.max_position_size_pct <= 0 or self.max_position_size_pct > 100:

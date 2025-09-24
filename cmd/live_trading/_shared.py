@@ -231,6 +231,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Position size in USDT",
     )
     parser.add_argument(
+        "--max-entry-notional-usdt",
+        type=float,
+        default=15.0,
+        help="Maximum entry notional in USDT before leverage is applied",
+    )
+    parser.add_argument(
         "--max-concurrent-positions",
         type=int,
         default=5,
@@ -463,6 +469,9 @@ def load_env_config(config_file: Optional[Path] = None) -> Dict[str, str]:
         "margin_mode": read_env("MARGIN_MODE"),
         "disable_symbol_hours": read_env("DISABLE_SYMBOL_HOURS"),
         "position_size_usdt": read_env("POSITION_SIZE_USDT"),
+        "max_entry_notional_usdt": read_env(
+            "MAX_ENTRY_NOTIONAL_USDT", "STRATEGY_MAX_ENTRY_NOTIONAL_USDT"
+        ),
         "max_concurrent_positions": read_env("MAX_CONCURRENT_POSITIONS"),
         "max_position_size_pct": read_env("MAX_POSITION_SIZE_PCT"),
         "state_file": read_env("STATE_FILE"),
@@ -581,6 +590,10 @@ def apply_env_defaults(
     if config["position_size_usdt"]:
         args.position_size_usdt = _parse_float(
             config["position_size_usdt"], "POSITION_SIZE_USDT"
+        )
+    if config["max_entry_notional_usdt"]:
+        args.max_entry_notional_usdt = _parse_float(
+            config["max_entry_notional_usdt"], "MAX_ENTRY_NOTIONAL_USDT"
         )
     if config["max_concurrent_positions"]:
         args.max_concurrent_positions = _parse_int(
@@ -817,6 +830,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             margin_mode=margin_mode,
             disable_symbol_hours=args.disable_symbol_hours,
             position_size_usdt=args.position_size_usdt,
+            max_entry_notional_usdt=args.max_entry_notional_usdt,
             max_concurrent_positions=args.max_concurrent_positions,
             max_position_size_pct=args.max_position_size_pct,
             state_file=args.state_file,
@@ -854,6 +868,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 leverage=config.leverage,
                 margin_mode=config.margin_mode,
                 max_concurrent_positions=config.max_concurrent_positions,
+                max_entry_notional_usdt=config.max_entry_notional_usdt,
                 equity_risk_pct=config.equity_risk_pct,
                 atr_multiple=config.atr_multiple,
                 trail_points=config.trail_points,

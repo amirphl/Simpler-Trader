@@ -28,6 +28,12 @@ class PinBarMagicLiveStrategy(BaseLiveTradingStrategy):
         symbols: List[SymbolInfo],
         current_time: datetime,
     ) -> Tuple[List[TradingSignal], Dict[str, PinBarMagicSnapshot]]:
+        if not self._has_sufficient_balance():
+            self._log.warning(
+                "PinBarMagic: skipping signal generation due to insufficient balance"
+            )
+            return [], {}
+
         snapshots: Dict[str, PinBarMagicSnapshot] = {}
         signals: List[TradingSignal] = []
 
@@ -72,6 +78,35 @@ class PinBarMagicLiveStrategy(BaseLiveTradingStrategy):
             len(signals),
         )
         return signals, snapshots
+
+    def _has_sufficient_balance(self) -> bool:
+        try:
+            balance = float(self._exchange.get_account_balance())
+        except Exception as exc:
+            if self._is_insufficient_balance_error(exc):
+                self._log.warning(
+                    "PinBarMagic: get_account_balance indicates insufficient balance: %s",
+                    exc,
+                )
+                return False
+            # Non-balance retrieval errors should not block signal generation.
+            return True
+        return balance > 0
+
+    @staticmethod
+    def _is_insufficient_balance_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        markers = (
+            "insufficient balance",
+            "insufficient margin",
+            "insufficient available",
+            "not enough balance",
+            "not enough margin",
+            "balance not enough",
+            "margin not enough",
+            "available balance",
+        )
+        return any(marker in text for marker in markers)
 
     def _build_snapshot(
         self,

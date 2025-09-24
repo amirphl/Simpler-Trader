@@ -32,6 +32,10 @@ from .models import (
 from .pinbar_magic_strategy import PinBarMagicLiveStrategy
 
 
+class _InsufficientBalanceError(RuntimeError):
+    """Raised when exchange rejects an action due to insufficient balance/margin."""
+
+
 @dataclass(frozen=True)
 class PinBarMagicCoordinatorV2Config:
     symbols: tuple[str, ...] = ("ETHUSDT",)
@@ -43,6 +47,7 @@ class PinBarMagicCoordinatorV2Config:
     leverage: int = 10
     margin_mode: MarginMode = MarginMode.ISOLATED
     max_concurrent_positions: int = 1
+    max_entry_notional_usdt: float = 15.0
     equity_risk_pct: float = 3.0
     atr_multiple: float = 0.5
     trail_points: float = 1.0
@@ -118,6 +123,7 @@ class PinBarMagicCoordinatorV2:
             risk_equity_mark_source=cfg.risk_equity_mark_source,  # type: ignore[arg-type]
             use_stop_fill_open_gap=cfg.use_stop_fill_open_gap,
             max_concurrent_positions=cfg.max_concurrent_positions,
+            max_entry_notional_usdt=cfg.max_entry_notional_usdt,
             disable_symbol_hours=cfg.disable_symbol_hours,
             margin_mode=cfg.margin_mode,
         )
@@ -305,6 +311,8 @@ class PinBarMagicCoordinatorV2:
 
         entry_price = float(signal.entry_price)
         stop_price = float(stop_for_risk)
+        if entry_price <= 0:
+            return False
         if side == PositionSide.LONG and stop_price >= entry_price:
             return False
         if side == PositionSide.SHORT and stop_price <= entry_price:
@@ -316,6 +324,21 @@ class PinBarMagicCoordinatorV2:
         )
         if qty <= 0:
             return False
+        entry_notional = entry_price * qty
+        max_notional = float(self._cfg.max_entry_notional_usdt)
+        if entry_notional > max_notional:
+            qty = max_notional / entry_price
+            if qty <= 0:
+                return False
+            self._log.info(
+                "Clamped entry notional for %s from %.6f to %.6f USDT "
+                "(leverage=%sx, effective exposure=%.6f)",
+                symbol,
+                entry_notional,
+                max_notional,
+                signal.leverage,
+                max_notional * float(signal.leverage),
+            )
 
         signal_time = self._ensure_aware(signal.timestamp)
         key = self._pending_key(symbol, side)
@@ -426,7 +449,20 @@ class PinBarMagicCoordinatorV2:
                 continue
             if now < pending.activate_time:
                 continue
-            order = self._place_stop_entry(pending)
+            try:
+                order = self._place_stop_entry(pending)
+            except _InsufficientBalanceError as exc:
+                pending.status = "PENDING"
+                pending.notes = (
+                    f"{pending.notes}; insufficient balance: {exc}"
+                ).strip("; ")
+                self._log.warning(
+                    "Insufficient balance for %s %s entry; keeping pending for retry: %s",
+                    pending.symbol,
+                    pending.side.value,
+                    exc,
+                )
+                continue
             if order is None:
                 pending.status = "ERROR"
                 continue
@@ -806,6 +842,8 @@ class PinBarMagicCoordinatorV2:
             self._exchange.set_margin_mode(pending.symbol, pending.margin_mode)
             self._exchange.set_leverage(pending.symbol, pending.leverage)
         except Exception as exc:
+            if self._is_insufficient_balance_error(exc):
+                raise _InsufficientBalanceError(str(exc)) from exc
             self._log.error(
                 "Failed to set account config for %s before entry "
                 "(mode=%s, leverage=%sx): %s",
@@ -829,6 +867,8 @@ class PinBarMagicCoordinatorV2:
                     stop_loss=None,  # applied after fill in the next sync cycle
                 )
             except Exception as exc:
+                if self._is_insufficient_balance_error(exc):
+                    raise _InsufficientBalanceError(str(exc)) from exc
                 self._log.warning(
                     "place_stop_entry_order failed for %s (%s): %s",
                     pending.symbol,
@@ -864,6 +904,8 @@ class PinBarMagicCoordinatorV2:
                 stop_loss=pending.stop_for_risk,
             )
         except Exception as exc:
+            if self._is_insufficient_balance_error(exc):
+                raise _InsufficientBalanceError(str(exc)) from exc
             self._log.warning(
                 "open_limit_position fallback failed for %s (%s): %s",
                 pending.symbol,
@@ -871,6 +913,21 @@ class PinBarMagicCoordinatorV2:
                 exc,
             )
             return None
+
+    @staticmethod
+    def _is_insufficient_balance_error(exc: Exception) -> bool:
+        text = str(exc).lower()
+        markers = (
+            "insufficient balance",
+            "insufficient margin",
+            "insufficient available",
+            "not enough balance",
+            "not enough margin",
+            "balance not enough",
+            "margin not enough",
+            "available balance",
+        )
+        return any(marker in text for marker in markers)
 
     def _close_position(
         self, position: PositionRecord, now: datetime, reason: str
