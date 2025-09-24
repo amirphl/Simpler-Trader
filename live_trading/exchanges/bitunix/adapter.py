@@ -74,6 +74,7 @@ class BitunixExchange(Exchange):
         meta = self._get_symbol_meta(symbol)
         quote_precision = int(meta.get("quotePrecision", 8) or 8)
         price_protect_scope = float(meta.get("priceProtectScope", 0) or 0)
+        tick_size = 10 ** (-max(quote_precision, 0))
         mark_price = self.fetch_price(symbol)
         adjusted = px
 
@@ -81,10 +82,10 @@ class BitunixExchange(Exchange):
         if mark_price is not None and mark_price > 0 and price_protect_scope > 0:
             if side == PositionSide.LONG:
                 max_buy = mark_price * (1.0 + price_protect_scope)
-                adjusted = min(adjusted, max_buy)
+                adjusted = min(adjusted, max_buy - tick_size)
             else:
                 min_sell = mark_price * (1.0 - price_protect_scope)
-                adjusted = max(adjusted, min_sell)
+                adjusted = max(adjusted, min_sell + tick_size)
 
         rounding = ROUND_DOWN if side == PositionSide.LONG else ROUND_UP
         normalized_price = self._quantize(adjusted, quote_precision, rounding_mode=rounding)
@@ -102,6 +103,28 @@ class BitunixExchange(Exchange):
                 normalized_price,
             )
         return normalized_price
+
+    def _normalize_stop_loss_price(self, position: Position, stop_price: float) -> float:
+        """Normalize SL to symbol precision and keep it on valid side of last price."""
+        meta = self._get_symbol_meta(position.symbol)
+        quote_precision = int(meta.get("quotePrecision", 8) or 8)
+        tick_size = 10 ** (-max(quote_precision, 0))
+        last_price = self.fetch_price(position.symbol)
+
+        adjusted = float(stop_price)
+        if last_price is not None and last_price > 0:
+            if position.side == PositionSide.LONG:
+                adjusted = min(adjusted, last_price - tick_size)
+            else:
+                adjusted = max(adjusted, last_price + tick_size)
+
+        rounding = ROUND_DOWN if position.side == PositionSide.LONG else ROUND_UP
+        normalized = self._quantize(adjusted, quote_precision, rounding_mode=rounding)
+        if normalized <= 0:
+            raise RuntimeError(
+                f"Normalized stop loss is invalid for {position.symbol}: raw={stop_price} normalized={normalized}"
+            )
+        return normalized
 
     def fetch_price(self, symbol: str) -> Optional[float]:
         """Fetch last price for a symbol (public endpoint)."""
@@ -547,7 +570,7 @@ class BitunixExchange(Exchange):
             result = self._client.modify_position_tpsl_order(
                 symbol=position.symbol,
                 position_id=position.position_id,
-                sl_price=stop_price,
+                sl_price=self._normalize_stop_loss_price(position, stop_price),
                 sl_stop_type="MARK_PRICE",
             )
             if not result:
@@ -555,7 +578,7 @@ class BitunixExchange(Exchange):
                 result = self._client.place_tpsl_order(
                     symbol=position.symbol,
                     position_id=position.position_id,
-                    sl_price=stop_price,
+                    sl_price=self._normalize_stop_loss_price(position, stop_price),
                     sl_stop_type="MARK_PRICE",
                     sl_order_type="MARKET",
                     sl_qty=position.size,

@@ -693,7 +693,8 @@ class PinBarMagicCoordinatorV2:
                     stop_price=pending.entry_price,
                     leverage=pending.leverage,
                     margin_mode=pending.margin_mode,
-                    stop_loss=pending.stop_for_risk,
+                    # stop_loss=pending.stop_for_risk, # TODO:
+                    stop_loss=None,  # Keep fallback entry accepted; apply SL after fill/update cycle.
                 )
             except Exception as exc:
                 self._log.warning(
