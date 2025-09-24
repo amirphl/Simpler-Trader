@@ -1,5 +1,0 @@
-Margin Mode
-Field	Value	Field Description
-UNKNOWN_MARGIN_MODE	0	None
-SHARED	1	Cross Mode
-ISOLATED	3	Isolated Mode
