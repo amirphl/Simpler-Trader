@@ -1,0 +1,38 @@
+Adjust Position Margin
+Rate Limit: 5 req/sec/uid
+
+Description
+Add or reduce the margin（only for isolated margin mode）
+
+HTTP Request
+POST /api/v1/futures/account/adjust_position_margin
+Request Parameters
+Parameter	Type	Required	Description
+symbol	string	true	Trading pair
+marginCoin	string	true	Margin coin
+amount	string	true	Margin amount, positive means increase, and negative means decrease
+side	string	false	Position side
+LONG
+SHORT
+Either side or positionId required
+positionId	string	false	Position id
+Either side or positionId required
+Request Example
+
+
+curl -X 'POST'  --location 'https://fapi.bitunix.com/api/v1/futures/account/adjust_position_margin' \
+   -H "api-key:*******" \
+   -H "sign:*" \
+   -H "nonce:your-nonce" \
+   -H "timestamp:1659076670000" \
+   -H "language:en-US" \
+   -H "Content-Type: application/json" \
+ --data '{"symbol":"BTCUSDT","amount":"-100","marginCoin":"USDT","side":"LONG"}'
+Response Parameters
+Parameter	Type	Description
+N/A		
+Response Example
+
+
+{"code":0,"data":"","msg":"Success"}
+Pager
