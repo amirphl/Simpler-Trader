@@ -1,0 +1,150 @@
+//@version=6
+strategy(
+     title = "Strong Trend + $1 Stair Trailing (Free TV)",
+     overlay = true,
+     initial_capital = 1000,
+     currency = currency.USD,
+     pyramiding = 0,
+     default_qty_type = strategy.fixed,
+     default_qty_value = 0,
+     margin_long = 1,     // 1% margin ~= 100x leverage
+     margin_short = 1,    // 1% margin ~= 100x leverage
+     calc_on_order_fills = false,
+     calc_on_every_tick = true,
+     process_orders_on_close = false
+)
+
+// =====================================================
+// Inputs
+// =====================================================
+tradeNotional = input.float(100.0, "Position notional (USD)", minval = 1, step = 1)
+hardLossUsd   = input.float(5.0,   "Initial / hard stop loss (USD)", minval = 0.1, step = 0.1)
+trailStartUsd = input.float(2.0,   "Start trailing at profit (USD)", minval = 0.1, step = 0.1)
+
+emaFastLen    = input.int(50,  "Fast EMA", minval = 1)
+emaMidLen     = input.int(100, "Mid EMA", minval = 1)
+emaSlowLen    = input.int(200, "Slow EMA", minval = 1)
+slopeLookback = input.int(10,  "Slow EMA slope lookback", minval = 1)
+
+stAtrLen      = input.int(10,   "Supertrend ATR Length", minval = 1)
+stFactor      = input.float(3.0, "Supertrend Factor", minval = 0.1, step = 0.1)
+
+diLen         = input.int(14, "DI Length", minval = 1)
+adxSmooth     = input.int(14, "ADX Smoothing", minval = 1)
+adxMin        = input.float(20.0, "Minimum ADX", minval = 1, step = 0.5)
+
+// =====================================================
+// Strong trend detection
+// =====================================================
+emaFast = ta.ema(close, emaFastLen)
+emaMid  = ta.ema(close, emaMidLen)
+emaSlow = ta.ema(close, emaSlowLen)
+
+[stLine, _] = ta.supertrend(stFactor, stAtrLen)
+[diPlus, diMinus, adx] = ta.dmi(diLen, adxSmooth)
+
+emaSlopeUp = emaSlow > emaSlow[slopeLookback]
+emaSlopeDn = emaSlow < emaSlow[slopeLookback]
+
+bullTrend =
+     close > stLine and
+     close > emaSlow and
+     emaFast > emaMid and
+     emaMid > emaSlow and
+     emaSlopeUp and
+     adx >= adxMin and
+     diPlus > diMinus
+
+bearTrend =
+     close < stLine and
+     close < emaSlow and
+     emaFast < emaMid and
+     emaMid < emaSlow and
+     emaSlopeDn and
+     adx >= adxMin and
+     diMinus > diPlus
+
+// =====================================================
+// Position sizing
+// $100 notional each trade, which at 1% margin is ~$1 used
+// =====================================================
+qtyNow = tradeNotional / close
+
+// =====================================================
+// Persistent stop state
+// =====================================================
+var float activeStop = na
+
+// Reset stop when flat
+if strategy.position_size == 0
+    activeStop := na
+
+// =====================================================
+// Entries
+// We place an estimated hard stop immediately with the entry,
+// then keep updating it once the position exists.
+// =====================================================
+if bullTrend and strategy.position_size <= 0
+    estQty      = tradeNotional / close
+    estHardStop = close - hardLossUsd / estQty
+    strategy.entry("L", strategy.long, qty = estQty)
+    strategy.exit("XL", from_entry = "L", stop = estHardStop)
+
+if bearTrend and strategy.position_size >= 0
+    estQty      = tradeNotional / close
+    estHardStop = close + hardLossUsd / estQty
+    strategy.entry("S", strategy.short, qty = estQty)
+    strategy.exit("XS", from_entry = "S", stop = estHardStop)
+
+// =====================================================
+// Stop logic
+// 1) hard stop = -$5
+// 2) once open profit >= $2, lock floor(openProfit) - 1 dollars
+//    so:
+//    +2.xx -> lock +1
+//    +3.xx -> lock +2
+//    +4.xx -> lock +3
+// =====================================================
+posSize  = strategy.position_size
+avgPrice = strategy.position_avg_price
+absPos   = math.abs(posSize)
+openPnl  = strategy.openprofit
+
+if posSize != 0 and absPos > 0
+    hardStop = posSize > 0
+         ? avgPrice - hardLossUsd / absPos
+         : avgPrice + hardLossUsd / absPos
+
+    // initialize stop on a newly opened/reversed position
+    if na(activeStop) or (posSize > 0 and strategy.position_size[1] <= 0) or (posSize < 0 and strategy.position_size[1] >= 0)
+        activeStop := hardStop
+
+    candidateStop = hardStop
+
+    if openPnl >= trailStartUsd
+        lockedUsd = math.floor(openPnl) - 1.0
+        candidateStop := posSize > 0
+             ? avgPrice + lockedUsd / absPos
+             : avgPrice - lockedUsd / absPos
+
+    // ratchet only in favorable direction
+    activeStop := posSize > 0
+         ? math.max(activeStop, candidateStop)
+         : math.min(activeStop, candidateStop)
+
+    if posSize > 0
+        strategy.exit("XL", from_entry = "L", stop = activeStop)
+
+    if posSize < 0
+        strategy.exit("XS", from_entry = "S", stop = activeStop)
+
+// =====================================================
+// Plots
+// =====================================================
+plot(emaFast, "EMA Fast", color = color.orange)
+plot(emaMid,  "EMA Mid",  color = color.yellow)
+plot(emaSlow, "EMA Slow", color = color.blue)
+plot(stLine,  "Supertrend", color = color.new(color.green, 0), linewidth = 2)
+plot(strategy.position_size != 0 ? activeStop : na, "Active Stop", color = color.red, linewidth = 2, style = plot.style_linebr)
+
+bgcolor(bullTrend ? color.new(color.green, 92) : bearTrend ? color.new(color.red, 92) : na)
