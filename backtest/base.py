@@ -329,8 +329,16 @@ class BaseBacktester:
             avg_return = mean(returns)
             variance = mean((r - avg_return) ** 2 for r in returns)
             std_dev = math.sqrt(variance)
-            rf = config.risk_free_rate
-            stats.sharpe_ratio = (avg_return - rf) / std_dev if std_dev else 0.0
+
+            # Convert annual risk-free rate to per-trade using average trade duration,
+            # then annualize Sharpe by trades-per-year to avoid mixing time bases.
+            avg_trade_years = stats.average_trade_duration_sec / (365.25 * 24 * 3600)
+            trades_per_year = (1.0 / avg_trade_years) if avg_trade_years > 0 else len(trades)
+            rf_per_trade = config.risk_free_rate * avg_trade_years if avg_trade_years > 0 else 0.0
+
+            excess_return = avg_return - rf_per_trade
+            sharpe = (excess_return / std_dev) if std_dev else 0.0
+            stats.sharpe_ratio = sharpe * math.sqrt(trades_per_year) if trades_per_year > 0 else 0.0
         else:
             stats.sharpe_ratio = 0.0
 
