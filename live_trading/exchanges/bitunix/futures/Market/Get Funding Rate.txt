@@ -1,0 +1,28 @@
+Get Funding Rate
+Rate Limit: 10 req/sec/ip
+
+Description
+Get the current funding rate of the contract
+
+HTTP Request
+GET /api/v1/futures/market/funding_rate
+Request Parameters
+Parameter	Type	Required	Description
+symbol	string	true	Trading pair, based on the symbolName, i.e. BTCUSDT
+Request Example
+
+
+curl -X 'GET'  --location 'https://fapi.bitunix.com/api/v1/futures/market/funding_rate?symbol=BTCUSDT'
+Response Parameters
+Parameter	Type	Description
+symbol	string	Coin pair
+markPrice	decimal	mark price
+lastPrice	decimal	last price
+fundingRate	decimal	Current funding rates
+nextFundingTime	int64	next Funding settlement time(ms)
+fundingInterval	int32	funding settlement interval(hour)
+Response Example
+
+
+{"code":0,"data":[{"symbol":"BTCUSDT","markPrice":"60000","lastPrice":"60001","fundingRate":"0.0005","fundingInterval":8,"nextFundingTime":"1770710400000"}],"msg":"Success"}
+Pager
