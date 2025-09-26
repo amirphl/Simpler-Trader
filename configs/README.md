@@ -6,8 +6,10 @@ This directory contains runtime configuration files.
 
 - `live_trading.heiken_ashi.env.example`: template for Heiken Ashi strategy
 - `live_trading.pinbar_magic_v2.env.example`: template for PinBar Magic v2 strategy
+- `live_trading.strong_trend_stair.env.example`: template for Strong Trend Stair strategy
 - `live_trading.heiken_ashi.env`: local runtime config for Heiken Ashi (do not commit secrets)
 - `live_trading.pinbar_magic_v2.env`: local runtime config for PinBar Magic v2 (do not commit secrets)
+- `live_trading.strong_trend_stair.env`: local runtime config for Strong Trend Stair (do not commit secrets)
 
 ## Live Trading Config
 
@@ -16,6 +18,7 @@ Use strategy-specific templates:
 ```bash
 cp configs/live_trading.heiken_ashi.env.example configs/live_trading.heiken_ashi.env
 cp configs/live_trading.pinbar_magic_v2.env.example configs/live_trading.pinbar_magic_v2.env
+cp configs/live_trading.strong_trend_stair.env.example configs/live_trading.strong_trend_stair.env
 ```
 
 Then run:
@@ -25,6 +28,7 @@ Then run:
 # or
 python -m cmd.live_trading.main --strategy-name heiken_ashi
 python -m cmd.live_trading.main --strategy-name pinbar_magic_v2
+python -m cmd.live_trading.main --strategy-name strong_trend_stair
 # explicit file override:
 python -m cmd.live_trading.main --strategy-name pinbar_magic_v2 --config-file ./configs/live_trading.pinbar_magic_v2.env
 ```
@@ -41,7 +45,7 @@ In `cmd.live_trading.main`, values are resolved in this order:
 
 ### Strategy Selection
 
-- `STRATEGY_NAME=heiken_ashi` or `pinbar_magic_v2`
+- `STRATEGY_NAME=heiken_ashi` or `pinbar_magic_v2` or `strong_trend_stair`
 - `TIMEFRAME=...`
 
 ### Pin Bar Magic v2 Variables
@@ -75,6 +79,17 @@ Note:
 - `POSITION_SIZE_USDT`, `MAX_CONCURRENT_POSITIONS`, `MAX_POSITION_SIZE_PCT`
 - `MARGIN_MODE`, `DISABLE_SYMBOL_HOURS`
 - `CANDLE_READY_DELAY_SECONDS`, `EXECUTION_INTERVAL_MINUTES`
+
+### Strong Trend Stair Variables
+
+- `SYMBOL` (single symbol)
+- `TICK_INTERVAL_SECONDS`
+- `HARD_LOSS_USD`
+- `TRAIL_START_USD`
+- `EMA_FAST_LEN`, `EMA_MID_LEN`, `EMA_SLOW_LEN`
+- `SLOPE_LOOKBACK`
+- `ST_ATR_LEN`, `ST_FACTOR`
+- `DI_LEN`, `ADX_SMOOTH`, `ADX_MIN`
 
 ### Candle DB (PostgreSQL)
 
@@ -123,3 +138,4 @@ python3 scripts/check_missing_candles.py \
 Never commit real credentials in:
 - `configs/live_trading.heiken_ashi.env`
 - `configs/live_trading.pinbar_magic_v2.env`
+- `configs/live_trading.strong_trend_stair.env`
