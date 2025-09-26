@@ -7,7 +7,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
 
 from signal_notifier import TelegramClient, TelegramConfig
 
@@ -18,11 +18,17 @@ from live_trading.pinbar_magic_coordinator import (
     PinBarMagicCoordinatorV2,
     PinBarMagicCoordinatorV2Config,
 )
+from live_trading.strong_trend_stair_coordinator import (
+    StrongTrendStairConfig,
+    StrongTrendStairCoordinator,
+)
 
 DEFAULT_CONFIG_BY_STRATEGY: Dict[str, Path] = {
     "heiken_ashi": Path("./configs/live_trading.heiken_ashi.env"),
     "pinbar_magic_v2": Path("./configs/live_trading.pinbar_magic_v2.env"),
+    "strong_trend_stair": Path("./configs/live_trading.strong_trend_stair.env"),
 }
+ALLOWED_STRATEGIES = tuple(DEFAULT_CONFIG_BY_STRATEGY.keys())
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -79,9 +85,98 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--strategy-name",
-        choices=["heiken_ashi", "pinbar_magic_v2"],
+        choices=["heiken_ashi", "pinbar_magic_v2", "strong_trend_stair"],
         default="pinbar_magic_v2",
         help="Live strategy implementation to execute",
+    )
+    parser.add_argument(
+        "--symbol",
+        default="ETHUSDT",
+        help="Single symbol for strong_trend_stair strategy.",
+    )
+    parser.add_argument(
+        "--tick-interval-seconds",
+        type=float,
+        default=1.0,
+        help="Tick loop interval for strong_trend_stair strategy.",
+    )
+    parser.add_argument(
+        "--hard-stop-loss-pct",
+        type=float,
+        default=5.0,
+        help="Hard stop loss percent on price move for strong_trend_stair strategy.",
+    )
+    parser.add_argument(
+        "--trail-start-pct",
+        type=float,
+        default=2.0,
+        help="Profit threshold percent where stair trailing starts.",
+    )
+    parser.add_argument(
+        "--trail-offset-pct",
+        type=float,
+        default=1.0,
+        help="Trailing offset percent from favorable move.",
+    )
+    parser.add_argument(
+        "--ema-fast-len",
+        type=int,
+        default=50,
+        help="Fast EMA length for trend filter.",
+    )
+    parser.add_argument(
+        "--ema-mid-len",
+        type=int,
+        default=100,
+        help="Mid EMA length for trend filter.",
+    )
+    parser.add_argument(
+        "--ema-slow-len",
+        type=int,
+        default=200,
+        help="Slow EMA length for trend filter.",
+    )
+    parser.add_argument(
+        "--slope-lookback",
+        type=int,
+        default=10,
+        help="Lookback candles for slow EMA slope check.",
+    )
+    parser.add_argument(
+        "--st-atr-len",
+        type=int,
+        default=10,
+        help="Supertrend ATR length.",
+    )
+    parser.add_argument(
+        "--st-factor",
+        type=float,
+        default=3.0,
+        help="Supertrend factor.",
+    )
+    parser.add_argument(
+        "--di-len",
+        type=int,
+        default=14,
+        help="DI length.",
+    )
+    parser.add_argument(
+        "--adx-smooth",
+        type=int,
+        default=14,
+        help="ADX smoothing length.",
+    )
+    parser.add_argument(
+        "--adx-min",
+        type=float,
+        default=20.0,
+        help="Minimum ADX threshold for trend qualification.",
+    )
+    parser.add_argument(
+        "--reverse-on-opposite-signal",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable immediate reversal when opposite trend signal appears.",
     )
     parser.add_argument(
         "--top-m-symbols",
@@ -389,26 +484,34 @@ def resolve_config_file(args: argparse.Namespace) -> Path:
     return DEFAULT_CONFIG_BY_STRATEGY["pinbar_magic_v2"]
 
 
-def load_env_config(config_file: Optional[Path] = None) -> Dict[str, str]:
-    """Load configuration from config file and environment variables.
+def _normalize_strategy_name(value: str) -> str:
+    normalized = str(value).strip().lower()
+    if normalized in DEFAULT_CONFIG_BY_STRATEGY:
+        return normalized
+    return "pinbar_magic_v2"
 
-    Precedence: OS environment > config file > empty.
-    """
-    file_values = _load_env_file(config_file)
-    env = os.getenv
 
-    def read_env(*keys: str) -> str:
-        # Global precedence is OS env > config file across all aliases.
-        for key in keys:
-            value = env(key, "")
-            if value != "":
-                return value
-        for key in keys:
-            file_value = file_values.get(key, "")
-            if file_value != "":
-                return file_value
-        return ""
+def _discover_strategy(pre_args: argparse.Namespace) -> str:
+    if getattr(pre_args, "strategy_name", None):
+        return _normalize_strategy_name(pre_args.strategy_name)
 
+    env_strategy = os.getenv("STRATEGY_NAME", "") or os.getenv(
+        "LIVE_STRATEGY_NAME", ""
+    )
+    if env_strategy:
+        return _normalize_strategy_name(env_strategy)
+
+    cfg = getattr(pre_args, "config_file", None)
+    if isinstance(cfg, Path) and cfg.exists():
+        values = _load_env_file(cfg)
+        file_strategy = values.get("STRATEGY_NAME") or values.get("LIVE_STRATEGY_NAME")
+        if file_strategy:
+            return _normalize_strategy_name(file_strategy)
+
+    return "pinbar_magic_v2"
+
+
+def _load_shared_env_config(read_env: Callable[..., str]) -> Dict[str, str]:
     return {
         "exchange": read_env("EXCHANGE"),
         "trading_mode": read_env("TRADING_MODE"),
@@ -418,60 +521,12 @@ def load_env_config(config_file: Optional[Path] = None) -> Dict[str, str]:
         "testnet": read_env("TESTNET"),
         "timeframe": read_env("TIMEFRAME"),
         "strategy_name": read_env("STRATEGY_NAME", "LIVE_STRATEGY_NAME"),
-        "pinbar_symbols": read_env("PINBAR_SYMBOLS"),
-        "top_m_symbols": read_env("TOP_M_SYMBOLS"),
-        "top_n_signals": read_env("TOP_N_SIGNALS"),
-        "price_change_threshold": read_env("PRICE_CHANGE_THRESHOLD"),
-        "heiken_ashi_candles": read_env("HEIKEN_ASHI_CANDLES"),
         "leverage": read_env("LEVERAGE"),
         "take_profit_pct": read_env("TAKE_PROFIT_PCT"),
-        "equity_risk_pct": read_env("EQUITY_RISK_PCT", "STRATEGY_EQUITY_RISK_PCT"),
-        "atr_multiple": read_env("ATR_MULTIPLE", "STRATEGY_ATR_MULTIPLE"),
-        "trail_points": read_env("TRAIL_POINTS", "STRATEGY_TRAIL_POINTS"),
-        "trail_offset": read_env("TRAIL_OFFSET", "STRATEGY_TRAIL_OFFSET"),
-        "slow_sma_period": read_env("SLOW_SMA_PERIOD", "STRATEGY_SLOW_SMA_PERIOD"),
-        "medium_ema_period": read_env(
-            "MEDIUM_EMA_PERIOD", "STRATEGY_MEDIUM_EMA_PERIOD"
-        ),
-        "fast_ema_period": read_env("FAST_EMA_PERIOD", "STRATEGY_FAST_EMA_PERIOD"),
-        "atr_period": read_env("ATR_PERIOD", "STRATEGY_ATR_PERIOD"),
-        "entry_cancel_bars": read_env(
-            "ENTRY_CANCEL_BARS", "STRATEGY_ENTRY_CANCEL_BARS"
-        ),
-        "entry_activation_mode": read_env(
-            "ENTRY_ACTIVATION_MODE", "STRATEGY_ENTRY_ACTIVATION_MODE"
-        ),
-        "trailing_tick_timeframe": read_env(
-            "TRAILING_TICK_TIMEFRAME", "STRATEGY_TRAILING_TICK_TIMEFRAME"
-        ),
-        "use_trailing_tick_emulation": read_env(
-            "USE_TRAILING_TICK_EMULATION", "STRATEGY_USE_TRAILING_TICK_EMULATION"
-        ),
-        "use_stop_fill_open_gap": read_env(
-            "USE_STOP_FILL_OPEN_GAP", "STRATEGY_USE_STOP_FILL_OPEN_GAP"
-        ),
-        "enable_friday_close": read_env(
-            "ENABLE_FRIDAY_CLOSE", "STRATEGY_ENABLE_FRIDAY_CLOSE"
-        ),
-        "friday_close_hour_utc": read_env(
-            "FRIDAY_CLOSE_HOUR_UTC", "STRATEGY_FRIDAY_CLOSE_HOUR_UTC"
-        ),
-        "enable_ema_cross_close": read_env(
-            "ENABLE_EMA_CROSS_CLOSE", "STRATEGY_ENABLE_EMA_CROSS_CLOSE"
-        ),
-        "risk_equity_include_unrealized": read_env(
-            "RISK_EQUITY_INCLUDE_UNREALIZED",
-            "STRATEGY_RISK_EQUITY_INCLUDE_UNREALIZED",
-        ),
-        "risk_equity_mark_source": read_env(
-            "RISK_EQUITY_MARK_SOURCE", "STRATEGY_RISK_EQUITY_MARK_SOURCE"
-        ),
         "margin_mode": read_env("MARGIN_MODE"),
         "disable_symbol_hours": read_env("DISABLE_SYMBOL_HOURS"),
         "position_size_usdt": read_env("POSITION_SIZE_USDT"),
-        "max_entry_notional_usdt": read_env(
-            "MAX_ENTRY_NOTIONAL_USDT", "STRATEGY_MAX_ENTRY_NOTIONAL_USDT"
-        ),
+        "max_entry_notional_usdt": read_env("MAX_ENTRY_NOTIONAL_USDT"),
         "max_concurrent_positions": read_env("MAX_CONCURRENT_POSITIONS"),
         "max_position_size_pct": read_env("MAX_POSITION_SIZE_PCT"),
         "state_file": read_env("STATE_FILE"),
@@ -493,10 +548,124 @@ def load_env_config(config_file: Optional[Path] = None) -> Dict[str, str]:
     }
 
 
-def apply_env_defaults(
-    args: argparse.Namespace, config: Dict[str, str]
-) -> argparse.Namespace:
-    """Apply environment variable defaults to arguments."""
+def _load_heiken_ashi_env_config(read_env: Callable[..., str]) -> Dict[str, str]:
+    return {
+        "top_m_symbols": read_env("TOP_M_SYMBOLS"),
+        "top_n_signals": read_env("TOP_N_SIGNALS"),
+        "price_change_threshold": read_env("PRICE_CHANGE_THRESHOLD"),
+        "heiken_ashi_candles": read_env("HEIKEN_ASHI_CANDLES"),
+    }
+
+
+def _load_pinbar_magic_v2_env_config(read_env: Callable[..., str]) -> Dict[str, str]:
+    return {
+        "pinbar_symbols": read_env("PINBAR_SYMBOLS"),
+        "equity_risk_pct": read_env("EQUITY_RISK_PCT", "STRATEGY_EQUITY_RISK_PCT"),
+        "atr_multiple": read_env("ATR_MULTIPLE", "STRATEGY_ATR_MULTIPLE"),
+        "trail_points": read_env("TRAIL_POINTS", "STRATEGY_TRAIL_POINTS"),
+        "trail_offset": read_env("TRAIL_OFFSET", "STRATEGY_TRAIL_OFFSET"),
+        "slow_sma_period": read_env("SLOW_SMA_PERIOD", "STRATEGY_SLOW_SMA_PERIOD"),
+        "medium_ema_period": read_env(
+            "MEDIUM_EMA_PERIOD", "STRATEGY_MEDIUM_EMA_PERIOD"
+        ),
+        "fast_ema_period": read_env("FAST_EMA_PERIOD", "STRATEGY_FAST_EMA_PERIOD"),
+        "atr_period": read_env("ATR_PERIOD", "STRATEGY_ATR_PERIOD"),
+        "entry_cancel_bars": read_env("ENTRY_CANCEL_BARS", "STRATEGY_ENTRY_CANCEL_BARS"),
+        "entry_activation_mode": read_env(
+            "ENTRY_ACTIVATION_MODE", "STRATEGY_ENTRY_ACTIVATION_MODE"
+        ),
+        "trailing_tick_timeframe": read_env(
+            "TRAILING_TICK_TIMEFRAME", "STRATEGY_TRAILING_TICK_TIMEFRAME"
+        ),
+        "use_trailing_tick_emulation": read_env(
+            "USE_TRAILING_TICK_EMULATION",
+            "STRATEGY_USE_TRAILING_TICK_EMULATION",
+        ),
+        "use_stop_fill_open_gap": read_env(
+            "USE_STOP_FILL_OPEN_GAP", "STRATEGY_USE_STOP_FILL_OPEN_GAP"
+        ),
+        "enable_friday_close": read_env(
+            "ENABLE_FRIDAY_CLOSE", "STRATEGY_ENABLE_FRIDAY_CLOSE"
+        ),
+        "friday_close_hour_utc": read_env(
+            "FRIDAY_CLOSE_HOUR_UTC", "STRATEGY_FRIDAY_CLOSE_HOUR_UTC"
+        ),
+        "enable_ema_cross_close": read_env(
+            "ENABLE_EMA_CROSS_CLOSE", "STRATEGY_ENABLE_EMA_CROSS_CLOSE"
+        ),
+        "risk_equity_include_unrealized": read_env(
+            "RISK_EQUITY_INCLUDE_UNREALIZED",
+            "STRATEGY_RISK_EQUITY_INCLUDE_UNREALIZED",
+        ),
+        "risk_equity_mark_source": read_env(
+            "RISK_EQUITY_MARK_SOURCE", "STRATEGY_RISK_EQUITY_MARK_SOURCE"
+        ),
+        "max_entry_notional_usdt": read_env(
+            "MAX_ENTRY_NOTIONAL_USDT", "STRATEGY_MAX_ENTRY_NOTIONAL_USDT"
+        ),
+    }
+
+
+def _load_strong_trend_stair_env_config(read_env: Callable[..., str]) -> Dict[str, str]:
+    return {
+        "symbol": read_env("SYMBOL"),
+        "tick_interval_seconds": read_env("TICK_INTERVAL_SECONDS"),
+        "hard_stop_loss_pct": read_env("HARD_STOP_LOSS_PCT", "STRATEGY_HARD_STOP_LOSS_PCT"),
+        "trail_start_pct": read_env("TRAIL_START_PCT", "STRATEGY_TRAIL_START_PCT"),
+        "trail_offset_pct": read_env("TRAIL_OFFSET_PCT", "STRATEGY_TRAIL_OFFSET_PCT"),
+        "ema_fast_len": read_env("EMA_FAST_LEN"),
+        "ema_mid_len": read_env("EMA_MID_LEN"),
+        "ema_slow_len": read_env("EMA_SLOW_LEN"),
+        "slope_lookback": read_env("SLOPE_LOOKBACK"),
+        "st_atr_len": read_env("ST_ATR_LEN"),
+        "st_factor": read_env("ST_FACTOR"),
+        "di_len": read_env("DI_LEN"),
+        "adx_smooth": read_env("ADX_SMOOTH"),
+        "adx_min": read_env("ADX_MIN"),
+        "reverse_on_opposite_signal": read_env("REVERSE_ON_OPPOSITE_SIGNAL"),
+    }
+
+
+STRATEGY_ENV_LOADERS: Dict[str, Callable[[Callable[..., str]], Dict[str, str]]] = {
+    "heiken_ashi": _load_heiken_ashi_env_config,
+    "pinbar_magic_v2": _load_pinbar_magic_v2_env_config,
+    "strong_trend_stair": _load_strong_trend_stair_env_config,
+}
+
+
+def load_env_config(
+    config_file: Optional[Path] = None,
+    strategy_name: str = "pinbar_magic_v2",
+) -> Dict[str, str]:
+    """Load configuration from config file and environment variables.
+
+    Precedence: OS environment > config file > empty.
+    """
+    file_values = _load_env_file(config_file)
+    env = os.getenv
+
+    def read_env(*keys: str) -> str:
+        # Global precedence is OS env > config file across all aliases.
+        for key in keys:
+            value = env(key, "")
+            if value != "":
+                return value
+        for key in keys:
+            file_value = file_values.get(key, "")
+            if file_value != "":
+                return file_value
+        return ""
+
+    config = _load_shared_env_config(read_env)
+
+    selected = _normalize_strategy_name(strategy_name)
+    strategy_loader = STRATEGY_ENV_LOADERS.get(selected)
+    if strategy_loader is not None:
+        config.update(strategy_loader(read_env))
+    return config
+
+
+def _apply_shared_env_defaults(args: argparse.Namespace, config: Dict[str, str]) -> None:
     if config["exchange"]:
         args.exchange = config["exchange"].strip().lower()
     if config["trading_mode"]:
@@ -513,96 +682,24 @@ def apply_env_defaults(
         args.timeframe = config["timeframe"].strip().lower()
     if config["strategy_name"]:
         args.strategy_name = config["strategy_name"].strip().lower()
-    if config["pinbar_symbols"]:
-        args.pinbar_symbols = config["pinbar_symbols"]
-    if config["top_m_symbols"]:
-        args.top_m_symbols = _parse_int(config["top_m_symbols"], "TOP_M_SYMBOLS")
-    if config["top_n_signals"]:
-        args.top_n_signals = _parse_int(config["top_n_signals"], "TOP_N_SIGNALS")
-    if config["price_change_threshold"]:
-        args.price_change_threshold = _parse_float(
-            config["price_change_threshold"], "PRICE_CHANGE_THRESHOLD"
-        )
-    if config["heiken_ashi_candles"]:
-        args.heiken_ashi_candles = _parse_int(
-            config["heiken_ashi_candles"], "HEIKEN_ASHI_CANDLES"
-        )
     if config["leverage"]:
         args.leverage = _parse_int(config["leverage"], "LEVERAGE")
     if config["take_profit_pct"]:
-        args.take_profit_pct = _parse_float(
-            config["take_profit_pct"], "TAKE_PROFIT_PCT"
-        )
-    if config["equity_risk_pct"]:
-        args.equity_risk_pct = _parse_float(
-            config["equity_risk_pct"], "EQUITY_RISK_PCT"
-        )
-    if config["atr_multiple"]:
-        args.atr_multiple = _parse_float(config["atr_multiple"], "ATR_MULTIPLE")
-    if config["trail_points"]:
-        args.trail_points = _parse_float(config["trail_points"], "TRAIL_POINTS")
-    if config["trail_offset"]:
-        args.trail_offset = _parse_float(config["trail_offset"], "TRAIL_OFFSET")
-    if config["slow_sma_period"]:
-        args.slow_sma_period = _parse_int(config["slow_sma_period"], "SLOW_SMA_PERIOD")
-    if config["medium_ema_period"]:
-        args.medium_ema_period = _parse_int(
-            config["medium_ema_period"], "MEDIUM_EMA_PERIOD"
-        )
-    if config["fast_ema_period"]:
-        args.fast_ema_period = _parse_int(config["fast_ema_period"], "FAST_EMA_PERIOD")
-    if config["atr_period"]:
-        args.atr_period = _parse_int(config["atr_period"], "ATR_PERIOD")
-    if config["entry_cancel_bars"]:
-        args.entry_cancel_bars = _parse_int(
-            config["entry_cancel_bars"], "ENTRY_CANCEL_BARS"
-        )
-    if config["entry_activation_mode"]:
-        args.entry_activation_mode = config["entry_activation_mode"].strip().lower()
-    if config["trailing_tick_timeframe"]:
-        args.trailing_tick_timeframe = config["trailing_tick_timeframe"].strip().lower()
-    if config["use_trailing_tick_emulation"]:
-        args.use_trailing_tick_emulation = _parse_bool(
-            config["use_trailing_tick_emulation"]
-        )
-    if config["use_stop_fill_open_gap"]:
-        args.use_stop_fill_open_gap = _parse_bool(config["use_stop_fill_open_gap"])
-    if config["enable_friday_close"]:
-        args.enable_friday_close = _parse_bool(config["enable_friday_close"])
-    if config["friday_close_hour_utc"]:
-        args.friday_close_hour_utc = _parse_int(
-            config["friday_close_hour_utc"], "FRIDAY_CLOSE_HOUR_UTC"
-        )
-    if config["enable_ema_cross_close"]:
-        args.enable_ema_cross_close = _parse_bool(config["enable_ema_cross_close"])
-    if config["risk_equity_include_unrealized"]:
-        args.risk_equity_include_unrealized = _parse_bool(
-            config["risk_equity_include_unrealized"]
-        )
-    if config["risk_equity_mark_source"]:
-        args.risk_equity_mark_source = config["risk_equity_mark_source"].strip().lower()
+        args.take_profit_pct = _parse_float(config["take_profit_pct"], "TAKE_PROFIT_PCT")
     if config["margin_mode"]:
         args.margin_mode = config["margin_mode"].strip().lower()
     if config["disable_symbol_hours"]:
-        args.disable_symbol_hours = _parse_float(
-            config["disable_symbol_hours"], "DISABLE_SYMBOL_HOURS"
-        )
+        args.disable_symbol_hours = _parse_float(config["disable_symbol_hours"], "DISABLE_SYMBOL_HOURS")
     if config["position_size_usdt"]:
-        args.position_size_usdt = _parse_float(
-            config["position_size_usdt"], "POSITION_SIZE_USDT"
-        )
+        args.position_size_usdt = _parse_float(config["position_size_usdt"], "POSITION_SIZE_USDT")
     if config["max_entry_notional_usdt"]:
         args.max_entry_notional_usdt = _parse_float(
             config["max_entry_notional_usdt"], "MAX_ENTRY_NOTIONAL_USDT"
         )
     if config["max_concurrent_positions"]:
-        args.max_concurrent_positions = _parse_int(
-            config["max_concurrent_positions"], "MAX_CONCURRENT_POSITIONS"
-        )
+        args.max_concurrent_positions = _parse_int(config["max_concurrent_positions"], "MAX_CONCURRENT_POSITIONS")
     if config["max_position_size_pct"]:
-        args.max_position_size_pct = _parse_float(
-            config["max_position_size_pct"], "MAX_POSITION_SIZE_PCT"
-        )
+        args.max_position_size_pct = _parse_float(config["max_position_size_pct"], "MAX_POSITION_SIZE_PCT")
     if config["state_file"]:
         args.state_file = Path(config["state_file"])
     if config["positions_db"]:
@@ -636,12 +733,116 @@ def apply_env_defaults(
     if config["telegram_proxy"]:
         args.telegram_proxy = config["telegram_proxy"]
     if config["telegram_timeout"]:
-        args.telegram_timeout = _parse_float(
-            config["telegram_timeout"], "TELEGRAM_TIMEOUT"
-        )
+        args.telegram_timeout = _parse_float(config["telegram_timeout"], "TELEGRAM_TIMEOUT")
     if config["log_level"]:
         args.log_level = config["log_level"].strip().upper()
 
+
+def _apply_heiken_ashi_env_defaults(args: argparse.Namespace, config: Dict[str, str]) -> None:
+    if config.get("top_m_symbols"):
+        args.top_m_symbols = _parse_int(config["top_m_symbols"], "TOP_M_SYMBOLS")
+    if config.get("top_n_signals"):
+        args.top_n_signals = _parse_int(config["top_n_signals"], "TOP_N_SIGNALS")
+    if config.get("price_change_threshold"):
+        args.price_change_threshold = _parse_float(
+            config["price_change_threshold"], "PRICE_CHANGE_THRESHOLD"
+        )
+    if config.get("heiken_ashi_candles"):
+        args.heiken_ashi_candles = _parse_int(config["heiken_ashi_candles"], "HEIKEN_ASHI_CANDLES")
+
+
+def _apply_pinbar_magic_v2_env_defaults(args: argparse.Namespace, config: Dict[str, str]) -> None:
+    if config.get("pinbar_symbols"):
+        args.pinbar_symbols = config["pinbar_symbols"]
+    if config.get("equity_risk_pct"):
+        args.equity_risk_pct = _parse_float(config["equity_risk_pct"], "EQUITY_RISK_PCT")
+    if config.get("atr_multiple"):
+        args.atr_multiple = _parse_float(config["atr_multiple"], "ATR_MULTIPLE")
+    if config.get("trail_points"):
+        args.trail_points = _parse_float(config["trail_points"], "TRAIL_POINTS")
+    if config.get("trail_offset"):
+        args.trail_offset = _parse_float(config["trail_offset"], "TRAIL_OFFSET")
+    if config.get("slow_sma_period"):
+        args.slow_sma_period = _parse_int(config["slow_sma_period"], "SLOW_SMA_PERIOD")
+    if config.get("medium_ema_period"):
+        args.medium_ema_period = _parse_int(config["medium_ema_period"], "MEDIUM_EMA_PERIOD")
+    if config.get("fast_ema_period"):
+        args.fast_ema_period = _parse_int(config["fast_ema_period"], "FAST_EMA_PERIOD")
+    if config.get("atr_period"):
+        args.atr_period = _parse_int(config["atr_period"], "ATR_PERIOD")
+    if config.get("entry_cancel_bars"):
+        args.entry_cancel_bars = _parse_int(config["entry_cancel_bars"], "ENTRY_CANCEL_BARS")
+    if config.get("entry_activation_mode"):
+        args.entry_activation_mode = config["entry_activation_mode"].strip().lower()
+    if config.get("trailing_tick_timeframe"):
+        args.trailing_tick_timeframe = config["trailing_tick_timeframe"].strip().lower()
+    if config.get("use_trailing_tick_emulation"):
+        args.use_trailing_tick_emulation = _parse_bool(config["use_trailing_tick_emulation"])
+    if config.get("use_stop_fill_open_gap"):
+        args.use_stop_fill_open_gap = _parse_bool(config["use_stop_fill_open_gap"])
+    if config.get("enable_friday_close"):
+        args.enable_friday_close = _parse_bool(config["enable_friday_close"])
+    if config.get("friday_close_hour_utc"):
+        args.friday_close_hour_utc = _parse_int(config["friday_close_hour_utc"], "FRIDAY_CLOSE_HOUR_UTC")
+    if config.get("enable_ema_cross_close"):
+        args.enable_ema_cross_close = _parse_bool(config["enable_ema_cross_close"])
+    if config.get("risk_equity_include_unrealized"):
+        args.risk_equity_include_unrealized = _parse_bool(config["risk_equity_include_unrealized"])
+    if config.get("risk_equity_mark_source"):
+        args.risk_equity_mark_source = config["risk_equity_mark_source"].strip().lower()
+
+
+def _apply_strong_trend_stair_env_defaults(args: argparse.Namespace, config: Dict[str, str]) -> None:
+    if config.get("symbol"):
+        args.symbol = config["symbol"].strip().upper()
+    if config.get("tick_interval_seconds"):
+        args.tick_interval_seconds = _parse_float(config["tick_interval_seconds"], "TICK_INTERVAL_SECONDS")
+    if config.get("hard_stop_loss_pct"):
+        args.hard_stop_loss_pct = _parse_float(
+            config["hard_stop_loss_pct"], "HARD_STOP_LOSS_PCT"
+        )
+    if config.get("trail_start_pct"):
+        args.trail_start_pct = _parse_float(config["trail_start_pct"], "TRAIL_START_PCT")
+    if config.get("trail_offset_pct"):
+        args.trail_offset_pct = _parse_float(config["trail_offset_pct"], "TRAIL_OFFSET_PCT")
+    if config.get("ema_fast_len"):
+        args.ema_fast_len = _parse_int(config["ema_fast_len"], "EMA_FAST_LEN")
+    if config.get("ema_mid_len"):
+        args.ema_mid_len = _parse_int(config["ema_mid_len"], "EMA_MID_LEN")
+    if config.get("ema_slow_len"):
+        args.ema_slow_len = _parse_int(config["ema_slow_len"], "EMA_SLOW_LEN")
+    if config.get("slope_lookback"):
+        args.slope_lookback = _parse_int(config["slope_lookback"], "SLOPE_LOOKBACK")
+    if config.get("st_atr_len"):
+        args.st_atr_len = _parse_int(config["st_atr_len"], "ST_ATR_LEN")
+    if config.get("st_factor"):
+        args.st_factor = _parse_float(config["st_factor"], "ST_FACTOR")
+    if config.get("di_len"):
+        args.di_len = _parse_int(config["di_len"], "DI_LEN")
+    if config.get("adx_smooth"):
+        args.adx_smooth = _parse_int(config["adx_smooth"], "ADX_SMOOTH")
+    if config.get("adx_min"):
+        args.adx_min = _parse_float(config["adx_min"], "ADX_MIN")
+    if config.get("reverse_on_opposite_signal"):
+        args.reverse_on_opposite_signal = _parse_bool(config["reverse_on_opposite_signal"])
+
+
+STRATEGY_DEFAULT_APPLIERS: Dict[str, Callable[[argparse.Namespace, Dict[str, str]], None]] = {
+    "heiken_ashi": _apply_heiken_ashi_env_defaults,
+    "pinbar_magic_v2": _apply_pinbar_magic_v2_env_defaults,
+    "strong_trend_stair": _apply_strong_trend_stair_env_defaults,
+}
+
+
+def apply_env_defaults(
+    args: argparse.Namespace, config: Dict[str, str], strategy_name: str
+) -> argparse.Namespace:
+    """Apply environment variable defaults to arguments."""
+    selected = _normalize_strategy_name(strategy_name)
+    _apply_shared_env_defaults(args, config)
+    strategy_applier = STRATEGY_DEFAULT_APPLIERS.get(selected)
+    if strategy_applier is not None:
+        strategy_applier(args, config)
     return args
 
 
@@ -745,15 +946,90 @@ def create_telegram_client(
     return TelegramClient(telegram_config, telegram_logger)
 
 
+def build_pinbar_magic_coordinator_config(
+    config: LiveTradingConfig,
+) -> PinBarMagicCoordinatorV2Config:
+    symbols = tuple(symbol.upper() for symbol in config.pinbar_symbols if symbol) or (
+        "ETHUSDT",
+    )
+    return PinBarMagicCoordinatorV2Config(
+        symbols=symbols,
+        timeframe=config.timeframe,
+        trailing_tick_timeframe=config.trailing_tick_timeframe,
+        use_trailing_tick_emulation=config.use_trailing_tick_emulation,
+        poll_interval_seconds=5.0,
+        trailing_check_interval_seconds=5.0,
+        leverage=config.leverage,
+        margin_mode=config.margin_mode,
+        max_concurrent_positions=config.max_concurrent_positions,
+        max_entry_notional_usdt=config.max_entry_notional_usdt,
+        equity_risk_pct=config.equity_risk_pct,
+        atr_multiple=config.atr_multiple,
+        trail_points=config.trail_points,
+        trail_offset=config.trail_offset,
+        slow_sma_period=config.slow_sma_period,
+        medium_ema_period=config.medium_ema_period,
+        fast_ema_period=config.fast_ema_period,
+        atr_period=config.atr_period,
+        entry_cancel_bars=config.entry_cancel_bars,
+        entry_activation_mode=config.entry_activation_mode,
+        enable_friday_close=config.enable_friday_close,
+        friday_close_hour_utc=config.friday_close_hour_utc,
+        enable_ema_cross_close=config.enable_ema_cross_close,
+        risk_equity_include_unrealized=config.risk_equity_include_unrealized,
+        risk_equity_mark_source=config.risk_equity_mark_source,
+        use_stop_fill_open_gap=config.use_stop_fill_open_gap,
+        disable_symbol_hours=config.disable_symbol_hours,
+    )
+
+
+def build_strong_trend_stair_config(
+    args: argparse.Namespace, config: LiveTradingConfig
+) -> StrongTrendStairConfig:
+    return StrongTrendStairConfig(
+        symbol=args.symbol.upper(),
+        timeframe=config.timeframe,
+        tick_interval_seconds=args.tick_interval_seconds,
+        leverage=config.leverage,
+        margin_mode=config.margin_mode,
+        trade_notional_usd=config.position_size_usdt,
+        hard_stop_loss_pct=args.hard_stop_loss_pct,
+        trail_start_pct=args.trail_start_pct,
+        trail_offset_pct=args.trail_offset_pct,
+        ema_fast_len=args.ema_fast_len,
+        ema_mid_len=args.ema_mid_len,
+        ema_slow_len=args.ema_slow_len,
+        slope_lookback=args.slope_lookback,
+        st_atr_len=args.st_atr_len,
+        st_factor=args.st_factor,
+        di_len=args.di_len,
+        adx_smooth=args.adx_smooth,
+        adx_min=args.adx_min,
+        reverse_on_opposite_signal=args.reverse_on_opposite_signal,
+    )
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     """Main entry point."""
     parser = build_parser()
-    # Parse once to discover strategy/config-file, then re-parse with env/file defaults
-    pre_args, _ = parser.parse_known_args(argv)
-    resolved_config_file = resolve_config_file(pre_args)
-    env_config = load_env_config(resolved_config_file)
+    # Parse once to discover strategy/config-file, then re-parse with scoped env defaults.
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--strategy-name", choices=ALLOWED_STRATEGIES, default=None)
+    pre_parser.add_argument("--config-file", type=Path, default=None)
+    pre_args, _ = pre_parser.parse_known_args(argv)
+    selected_strategy = _discover_strategy(pre_args)
+    resolved_config_file = (
+        pre_args.config_file
+        if pre_args.config_file is not None
+        else DEFAULT_CONFIG_BY_STRATEGY[selected_strategy]
+    )
+    env_config = load_env_config(
+        resolved_config_file, strategy_name=selected_strategy
+    )
     try:
-        env_defaults = apply_env_defaults(parser.parse_args([]), env_config)
+        env_defaults = apply_env_defaults(
+            parser.parse_args([]), env_config, selected_strategy
+        )
     except ValueError as exc:
         parser.error(str(exc))
     parser.set_defaults(**vars(env_defaults))
@@ -855,41 +1131,19 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         # Create and run coordinator
         if config.strategy_name == "pinbar_magic_v2":
-            pinbar_symbols = tuple(
-                symbol.upper() for symbol in config.pinbar_symbols if symbol
-            ) or ("ETHUSDT",)
-            pinbar_cfg = PinBarMagicCoordinatorV2Config(
-                symbols=pinbar_symbols,
-                timeframe=config.timeframe,
-                trailing_tick_timeframe=config.trailing_tick_timeframe,
-                use_trailing_tick_emulation=config.use_trailing_tick_emulation,
-                poll_interval_seconds=5.0,
-                trailing_check_interval_seconds=5.0,
-                leverage=config.leverage,
-                margin_mode=config.margin_mode,
-                max_concurrent_positions=config.max_concurrent_positions,
-                max_entry_notional_usdt=config.max_entry_notional_usdt,
-                equity_risk_pct=config.equity_risk_pct,
-                atr_multiple=config.atr_multiple,
-                trail_points=config.trail_points,
-                trail_offset=config.trail_offset,
-                slow_sma_period=config.slow_sma_period,
-                medium_ema_period=config.medium_ema_period,
-                fast_ema_period=config.fast_ema_period,
-                atr_period=config.atr_period,
-                entry_cancel_bars=config.entry_cancel_bars,
-                entry_activation_mode=config.entry_activation_mode,
-                enable_friday_close=config.enable_friday_close,
-                friday_close_hour_utc=config.friday_close_hour_utc,
-                enable_ema_cross_close=config.enable_ema_cross_close,
-                risk_equity_include_unrealized=config.risk_equity_include_unrealized,
-                risk_equity_mark_source=config.risk_equity_mark_source,
-                use_stop_fill_open_gap=config.use_stop_fill_open_gap,
-                disable_symbol_hours=config.disable_symbol_hours,
-            )
+            pinbar_cfg = build_pinbar_magic_coordinator_config(config)
             coordinator = PinBarMagicCoordinatorV2(
                 exchange=exchange,
                 config=pinbar_cfg,
+                telegram_client=telegram_client,
+                logger=logger,
+            )
+            coordinator.run_forever()
+        elif config.strategy_name == "strong_trend_stair":
+            strong_cfg = build_strong_trend_stair_config(args, config)
+            coordinator = StrongTrendStairCoordinator(
+                exchange=exchange,
+                config=strong_cfg,
                 telegram_client=telegram_client,
                 logger=logger,
             )
