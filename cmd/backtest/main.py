@@ -16,6 +16,8 @@ from backtest import (
     EngulfingStrategyConfig,
     PinBarMagicStrategyConfigV2,
     PinBarMagicStrategyV2,
+    StrongTrendStairStrategy,
+    StrongTrendStairStrategyConfig,
     StopLossMode,
     StochasticRsiFsmConfig,
     StochasticRsiFsmStrategy,
@@ -41,73 +43,35 @@ def parse_datetime(value: str) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def load_env_config() -> Dict[str, str]:
-    """Load configuration from environment variables."""
+def load_common_env_config() -> Dict[str, str]:
     return {
         "strategy": os.getenv("BACKTEST_STRATEGY", os.getenv("STRATEGY_KIND", "engulfing")),
         "symbol": os.getenv("STRATEGY_SYMBOL", ""),
         "timeframe": os.getenv("STRATEGY_TIMEFRAME", ""),
-        "window_size": os.getenv("STRATEGY_WINDOW_SIZE", ""),
         "leverage": os.getenv("STRATEGY_LEVERAGE", ""),
         "take_profit_pct": os.getenv("STRATEGY_TAKE_PROFIT_PCT", ""),
-        "symbols": os.getenv("STRATEGY_SYMBOLS", ""),
-        "base_timeframe": os.getenv("STRATEGY_BASE_TIMEFRAME", "1h"),
-        "higher_timeframe": os.getenv("STRATEGY_HIGHER_TIMEFRAME", "4h"),
-        "higher_timeframe_2": os.getenv("STRATEGY_HIGHER_TIMEFRAME_2", ""),
-        "k_period": os.getenv("STRATEGY_K_PERIOD", "8"),
-        "k_slowing": os.getenv("STRATEGY_K_SLOWING", "8"),
-        "d_period": os.getenv("STRATEGY_D_PERIOD", "1"),
-        "use_d_line": os.getenv("STRATEGY_USE_D_LINE", "false"),
-        "oversold": os.getenv("STRATEGY_OVERSOLD", "20"),
-        "overbought": os.getenv("STRATEGY_OVERBOUGHT", "80"),
-        "initial_order_usdt": os.getenv("STRATEGY_INITIAL_ORDER_USDT", "100"),
-        "initial_leverage": os.getenv("STRATEGY_INITIAL_LEVERAGE", "3"),
-        "martingale_multiplier": os.getenv("STRATEGY_MARTINGALE_MULTIPLIER", "1.1"),
-        "martingale_multipliers": os.getenv(
-            "STRATEGY_MARTINGALE_MULTIPLIERS", "1.5,2.0,2.5,3.0"
-        ),
-        "martingale_leverages": os.getenv(
-            "STRATEGY_MARTINGALE_LEVERAGES", "3.0,3.0,3.0,3.0"
-        ),
-        "max_positions": os.getenv("STRATEGY_MAX_POSITIONS", "5"),
-        "slippage_pct": os.getenv("STRATEGY_SLIPPAGE_PCT", "0.0002"),
-        "maker_fee_pct": os.getenv("STRATEGY_MAKER_FEE_PCT", "0.0002"),
-        "taker_fee_pct": os.getenv("STRATEGY_TAKER_FEE_PCT", "0.0006"),
-        "funding_rate_pct": os.getenv("STRATEGY_FUNDING_RATE_PCT", "0"),
-        "trailing_activation_pct": os.getenv(
-            "STRATEGY_TRAILING_ACTIVATION_PCT", "1.5"
-        ),
-        "trailing_gap_pct": os.getenv("STRATEGY_TRAILING_GAP_PCT", "1.0"),
-        "trailing_interval": os.getenv("STRATEGY_TRAILING_INTERVAL", "10"),
-        "max_position_days": os.getenv("STRATEGY_MAX_POSITION_DAYS", "30"),
-        "aligned_high_stoch_mode": os.getenv(
-            "STRATEGY_ALIGNED_HIGH_STOCH_MODE", "v3"
-        ),
-        "signal_offset": os.getenv("STRATEGY_SIGNAL_OFFSET", "0"),
-        "enable_take_profit_check": os.getenv(
-            "STRATEGY_ENABLE_TAKE_PROFIT_CHECK", "false"
-        ),
-        "enable_high_exit_cross": os.getenv("STRATEGY_ENABLE_HIGH_EXIT_CROSS", "false"),
-        "use_midsold_filter": os.getenv("STRATEGY_USE_MIDSOLD_FILTER", "false"),
-        "enable_reversal_logic": os.getenv("STRATEGY_ENABLE_REVERSAL_LOGIC", "false"),
-        "enable_reversal_reentry": os.getenv(
-            "STRATEGY_ENABLE_REVERSAL_REENTRY", "false"
-        ),
-        "enable_grid_martingales": os.getenv(
-            "STRATEGY_ENABLE_GRID_MARTINGALES", "true"
-        ),
-        "grid_martingales_percent": os.getenv(
-            "STRATEGY_GRID_MARTINGALES_PERCENT", "3.0"
-        ),
-        "trailing_use_first_entry_price": os.getenv(
-            "STRATEGY_TRAILING_USE_FIRST_ENTRY_PRICE", "true"
-        ),
-        "trailing_use_close_for_stop_activation": os.getenv(
-            "STRATEGY_TRAILING_USE_CLOSE_FOR_STOP_ACTIVATION", "true"
-        ),
-        "take_profit_use_first_entry_price": os.getenv(
-            "STRATEGY_TAKE_PROFIT_USE_FIRST_ENTRY_PRICE", "true"
-        ),
+        "start": os.getenv("BACKTEST_START", ""),
+        "end": os.getenv("BACKTEST_END", ""),
+        "initial_capital": os.getenv("BACKTEST_INITIAL_CAPITAL", ""),
+        "warmup_days": os.getenv("BACKTEST_WARMUP_DAYS", "0"),
+        "override_download": os.getenv("OVERRIDE_DOWNLOAD", "false"),
+        "store_kind": os.getenv("STORE_KIND", "postgres"),
+        "store_path": os.getenv("STORE_PATH", ""),
+        "http_proxy": os.getenv("HTTP_PROXY", ""),
+        "https_proxy": os.getenv("HTTPS_PROXY", ""),
+        "proxy": os.getenv("PROXY", ""),
+        "stats_output": os.getenv("STATS_OUTPUT", "./backtest_stats.json"),
+        "plot_output": os.getenv("PLOT_OUTPUT", ""),
+        "show_plot": os.getenv("SHOW_PLOT", "false"),
+        "show_stochastic": os.getenv("SHOW_STOCHASTIC", "true"),
+        "show_equity": os.getenv("SHOW_EQUITY", "true"),
+        "log_level": os.getenv("LOG_LEVEL", "INFO"),
+    }
+
+
+def load_engulfing_env_config() -> Dict[str, str]:
+    return {
+        "window_size": os.getenv("STRATEGY_WINDOW_SIZE", ""),
         "doji_size": os.getenv("STRATEGY_DOJI_SIZE", "0.05"),
         "stop_loss_mode": os.getenv("STRATEGY_STOP_LOSS_MODE", "percent"),
         "stop_loss_pct": os.getenv("STRATEGY_STOP_LOSS_PCT", "0.005"),
@@ -126,6 +90,11 @@ def load_env_config() -> Dict[str, str]:
         "stoch_second_threshold": os.getenv("STRATEGY_STOCH_SECOND_THRESHOLD", ""),
         "stoch_comparison": os.getenv("STRATEGY_STOCH_COMPARISON", "gt"),
         "stoch_d_smoothing": os.getenv("STRATEGY_STOCH_D_SMOOTHING", "3"),
+    }
+
+
+def load_pinbar_magic_v2_env_config() -> Dict[str, str]:
+    return {
         "equity_risk_pct": os.getenv("STRATEGY_EQUITY_RISK_PCT", "3"),
         "atr_multiple": os.getenv("STRATEGY_ATR_MULTIPLE", "0.5"),
         "trail_points": os.getenv("STRATEGY_TRAIL_POINTS", "1"),
@@ -144,23 +113,77 @@ def load_env_config() -> Dict[str, str]:
         "enable_ema_cross_close": os.getenv("STRATEGY_ENABLE_EMA_CROSS_CLOSE", "true"),
         "risk_equity_include_unrealized": os.getenv("STRATEGY_RISK_EQUITY_INCLUDE_UNREALIZED", "true"),
         "risk_equity_mark_source": os.getenv("STRATEGY_RISK_EQUITY_MARK_SOURCE", "close"),
-        "start": os.getenv("BACKTEST_START", ""),
-        "end": os.getenv("BACKTEST_END", ""),
-        "initial_capital": os.getenv("BACKTEST_INITIAL_CAPITAL", ""),
-        "warmup_days": os.getenv("BACKTEST_WARMUP_DAYS", "0"),
-        "override_download": os.getenv("OVERRIDE_DOWNLOAD", "false"),
-        "store_kind": os.getenv("STORE_KIND", "postgres"),
-        "store_path": os.getenv("STORE_PATH", ""),
-        "http_proxy": os.getenv("HTTP_PROXY", ""),
-        "https_proxy": os.getenv("HTTPS_PROXY", ""),
-        "proxy": os.getenv("PROXY", ""),
-        "stats_output": os.getenv("STATS_OUTPUT", "./backtest_stats.json"),
-        "plot_output": os.getenv("PLOT_OUTPUT", ""),
-        "show_plot": os.getenv("SHOW_PLOT", "false"),
-        "show_stochastic": os.getenv("SHOW_STOCHASTIC", "true"),
-        "show_equity": os.getenv("SHOW_EQUITY", "true"),
-        "log_level": os.getenv("LOG_LEVEL", "INFO"),
     }
+
+
+def load_stochastic_fsm_env_config() -> Dict[str, str]:
+    return {
+        "symbols": os.getenv("STRATEGY_SYMBOLS", ""),
+        "base_timeframe": os.getenv("STRATEGY_BASE_TIMEFRAME", "1h"),
+        "higher_timeframe": os.getenv("STRATEGY_HIGHER_TIMEFRAME", "4h"),
+        "higher_timeframe_2": os.getenv("STRATEGY_HIGHER_TIMEFRAME_2", ""),
+        "k_period": os.getenv("STRATEGY_K_PERIOD", "8"),
+        "k_slowing": os.getenv("STRATEGY_K_SLOWING", "8"),
+        "d_period": os.getenv("STRATEGY_D_PERIOD", "1"),
+        "use_d_line": os.getenv("STRATEGY_USE_D_LINE", "false"),
+        "oversold": os.getenv("STRATEGY_OVERSOLD", "20"),
+        "overbought": os.getenv("STRATEGY_OVERBOUGHT", "80"),
+        "initial_order_usdt": os.getenv("STRATEGY_INITIAL_ORDER_USDT", "100"),
+        "initial_leverage": os.getenv("STRATEGY_INITIAL_LEVERAGE", "3"),
+        "martingale_multiplier": os.getenv("STRATEGY_MARTINGALE_MULTIPLIER", "1.1"),
+        "martingale_multipliers": os.getenv("STRATEGY_MARTINGALE_MULTIPLIERS", "1.5,2.0,2.5,3.0"),
+        "martingale_leverages": os.getenv("STRATEGY_MARTINGALE_LEVERAGES", "3.0,3.0,3.0,3.0"),
+        "max_positions": os.getenv("STRATEGY_MAX_POSITIONS", "5"),
+        "slippage_pct": os.getenv("STRATEGY_SLIPPAGE_PCT", "0.0002"),
+        "maker_fee_pct": os.getenv("STRATEGY_MAKER_FEE_PCT", "0.0002"),
+        "taker_fee_pct": os.getenv("STRATEGY_TAKER_FEE_PCT", "0.0006"),
+        "funding_rate_pct": os.getenv("STRATEGY_FUNDING_RATE_PCT", "0"),
+        "trailing_activation_pct": os.getenv("STRATEGY_TRAILING_ACTIVATION_PCT", "1.5"),
+        "trailing_gap_pct": os.getenv("STRATEGY_TRAILING_GAP_PCT", "1.0"),
+        "trailing_interval": os.getenv("STRATEGY_TRAILING_INTERVAL", "10"),
+        "max_position_days": os.getenv("STRATEGY_MAX_POSITION_DAYS", "30"),
+        "aligned_high_stoch_mode": os.getenv("STRATEGY_ALIGNED_HIGH_STOCH_MODE", "v3"),
+        "signal_offset": os.getenv("STRATEGY_SIGNAL_OFFSET", "0"),
+        "enable_take_profit_check": os.getenv("STRATEGY_ENABLE_TAKE_PROFIT_CHECK", "false"),
+        "enable_high_exit_cross": os.getenv("STRATEGY_ENABLE_HIGH_EXIT_CROSS", "false"),
+        "use_midsold_filter": os.getenv("STRATEGY_USE_MIDSOLD_FILTER", "false"),
+        "enable_reversal_logic": os.getenv("STRATEGY_ENABLE_REVERSAL_LOGIC", "false"),
+        "enable_reversal_reentry": os.getenv("STRATEGY_ENABLE_REVERSAL_REENTRY", "false"),
+        "enable_grid_martingales": os.getenv("STRATEGY_ENABLE_GRID_MARTINGALES", "true"),
+        "grid_martingales_percent": os.getenv("STRATEGY_GRID_MARTINGALES_PERCENT", "3.0"),
+        "trailing_use_first_entry_price": os.getenv("STRATEGY_TRAILING_USE_FIRST_ENTRY_PRICE", "true"),
+        "trailing_use_close_for_stop_activation": os.getenv("STRATEGY_TRAILING_USE_CLOSE_FOR_STOP_ACTIVATION", "true"),
+        "take_profit_use_first_entry_price": os.getenv("STRATEGY_TAKE_PROFIT_USE_FIRST_ENTRY_PRICE", "true"),
+    }
+
+
+def load_strong_trend_stair_env_config() -> Dict[str, str]:
+    return {
+        "initial_amount_usd": os.getenv("STRATEGY_INITIAL_AMOUNT_USD", "1"),
+        "hard_stop_loss_pct": os.getenv("STRATEGY_HARD_STOP_LOSS_PCT", "5"),
+        "trail_start_pct": os.getenv("STRATEGY_TRAIL_START_PCT", "2"),
+        "trail_offset_pct": os.getenv("STRATEGY_TRAIL_OFFSET_PCT", "1"),
+        "ema_fast_len": os.getenv("STRATEGY_EMA_FAST_LEN", "50"),
+        "ema_mid_len": os.getenv("STRATEGY_EMA_MID_LEN", "100"),
+        "ema_slow_len": os.getenv("STRATEGY_EMA_SLOW_LEN", "200"),
+        "slope_lookback": os.getenv("STRATEGY_SLOPE_LOOKBACK", "10"),
+        "st_atr_len": os.getenv("STRATEGY_ST_ATR_LEN", "10"),
+        "st_factor": os.getenv("STRATEGY_ST_FACTOR", "3.0"),
+        "di_len": os.getenv("STRATEGY_DI_LEN", "14"),
+        "adx_smooth": os.getenv("STRATEGY_ADX_SMOOTH", "14"),
+        "adx_min": os.getenv("STRATEGY_ADX_MIN", "20"),
+        "reverse_on_opposite_signal": os.getenv("STRATEGY_REVERSE_ON_OPPOSITE_SIGNAL", "false"),
+    }
+
+
+def load_env_config() -> Dict[str, str]:
+    """Load configuration from environment variables."""
+    config = load_common_env_config()
+    config.update(load_engulfing_env_config())
+    config.update(load_pinbar_magic_v2_env_config())
+    config.update(load_stochastic_fsm_env_config())
+    config.update(load_strong_trend_stair_env_config())
+    return config
 
 
 def str_to_bool(value: str | None, default: bool = False) -> bool:
@@ -222,7 +245,7 @@ Environment variables (can be overridden by CLI args):
     # Strategy parameters
     parser.add_argument(
         "--strategy",
-        choices=("engulfing", "pinbar_magic_v2", "stochastic_fsm"),
+        choices=("engulfing", "pinbar_magic_v2", "stochastic_fsm", "strong_trend_stair"),
         help="Backtest strategy to run",
     )
     parser.add_argument("--symbol", help="Trading pair symbol (e.g., BTCUSDT)")
@@ -554,6 +577,40 @@ Environment variables (can be overridden by CLI args):
         "--risk-equity-mark-source",
         choices=("close", "open", "hl2", "ohlc4"),
         help="Pinbar Magic v2 mark source for unrealized equity",
+    )
+    parser.add_argument(
+        "--initial-amount-usd",
+        type=float,
+        help="Strong trend stair initial margin amount in USD",
+    )
+    parser.add_argument(
+        "--hard-stop-loss-pct",
+        type=float,
+        help="Strong trend stair hard stop loss percent on price move",
+    )
+    parser.add_argument(
+        "--trail-start-pct",
+        type=float,
+        help="Strong trend stair trailing activation percent on price move",
+    )
+    parser.add_argument(
+        "--trail-offset-pct",
+        type=float,
+        help="Strong trend stair trailing offset percent from favorable move",
+    )
+    parser.add_argument("--ema-fast-len", type=int, help="Strong trend stair fast EMA length")
+    parser.add_argument("--ema-mid-len", type=int, help="Strong trend stair mid EMA length")
+    parser.add_argument("--ema-slow-len", type=int, help="Strong trend stair slow EMA length")
+    parser.add_argument("--slope-lookback", type=int, help="Strong trend stair slow EMA slope lookback")
+    parser.add_argument("--st-atr-len", type=int, help="Strong trend stair supertrend ATR length")
+    parser.add_argument("--st-factor", type=float, help="Strong trend stair supertrend factor")
+    parser.add_argument("--di-len", type=int, help="Strong trend stair DI length")
+    parser.add_argument("--adx-smooth", type=int, help="Strong trend stair ADX smoothing")
+    parser.add_argument("--adx-min", type=float, help="Strong trend stair minimum ADX")
+    parser.add_argument(
+        "--reverse-on-opposite-signal",
+        action=argparse.BooleanOptionalAction,
+        help="Strong trend stair reverse when opposite trend appears",
     )
 
     # Backtest parameters
@@ -984,6 +1041,75 @@ def resolve_config(
         args.risk_equity_mark_source
         or env_config.get("risk_equity_mark_source", "close")
     )
+    config["initial_amount_usd"] = (
+        args.initial_amount_usd
+        if args.initial_amount_usd is not None
+        else float(env_config.get("initial_amount_usd", "1"))
+    )
+    config["hard_stop_loss_pct"] = (
+        args.hard_stop_loss_pct
+        if args.hard_stop_loss_pct is not None
+        else float(env_config.get("hard_stop_loss_pct", "5"))
+    )
+    config["trail_start_pct"] = (
+        args.trail_start_pct
+        if args.trail_start_pct is not None
+        else float(env_config.get("trail_start_pct", "2"))
+    )
+    config["trail_offset_pct"] = (
+        args.trail_offset_pct
+        if args.trail_offset_pct is not None
+        else float(env_config.get("trail_offset_pct", "1"))
+    )
+    config["ema_fast_len"] = (
+        args.ema_fast_len
+        if args.ema_fast_len is not None
+        else int(env_config.get("ema_fast_len", "50"))
+    )
+    config["ema_mid_len"] = (
+        args.ema_mid_len
+        if args.ema_mid_len is not None
+        else int(env_config.get("ema_mid_len", "100"))
+    )
+    config["ema_slow_len"] = (
+        args.ema_slow_len
+        if args.ema_slow_len is not None
+        else int(env_config.get("ema_slow_len", "200"))
+    )
+    config["slope_lookback"] = (
+        args.slope_lookback
+        if args.slope_lookback is not None
+        else int(env_config.get("slope_lookback", "10"))
+    )
+    config["st_atr_len"] = (
+        args.st_atr_len
+        if args.st_atr_len is not None
+        else int(env_config.get("st_atr_len", "10"))
+    )
+    config["st_factor"] = (
+        args.st_factor
+        if args.st_factor is not None
+        else float(env_config.get("st_factor", "3.0"))
+    )
+    config["di_len"] = (
+        args.di_len if args.di_len is not None else int(env_config.get("di_len", "14"))
+    )
+    config["adx_smooth"] = (
+        args.adx_smooth
+        if args.adx_smooth is not None
+        else int(env_config.get("adx_smooth", "14"))
+    )
+    config["adx_min"] = (
+        args.adx_min
+        if args.adx_min is not None
+        else float(env_config.get("adx_min", "20"))
+    )
+    if args.reverse_on_opposite_signal is not None:
+        config["reverse_on_opposite_signal"] = args.reverse_on_opposite_signal
+    else:
+        config["reverse_on_opposite_signal"] = str_to_bool(
+            env_config.get("reverse_on_opposite_signal"), False
+        )
 
     # Backtest config
     config["start"] = args.start or (
@@ -1041,10 +1167,12 @@ def validate_config(config: Dict[str, object]) -> None:
         strategy_required = ["symbol", "timeframe", "leverage"]
     elif strategy == "stochastic_fsm":
         strategy_required = ["symbols", "base_timeframe", "higher_timeframe"]
+    elif strategy == "strong_trend_stair":
+        strategy_required = ["symbol", "timeframe", "leverage"]
     else:
         raise ValueError(
             "Unsupported strategy "
-            f"'{strategy}'. Expected one of: engulfing, pinbar_magic_v2, stochastic_fsm"
+            f"'{strategy}'. Expected one of: engulfing, pinbar_magic_v2, stochastic_fsm, strong_trend_stair"
         )
 
     required = common_required + strategy_required
@@ -1076,6 +1204,155 @@ def write_stats(report, output_path: Path) -> None:
     logging.info(f"Statistics written to {output_path}")
 
 
+def build_engulfing_strategy(config: Dict[str, Any]) -> EngulfingStrategy:
+    return EngulfingStrategy(
+        EngulfingStrategyConfig(
+            symbol=str(config["symbol"]),
+            timeframe=str(config["timeframe"]),
+            window_size=int(config["window_size"]),
+            leverage=float(config["leverage"]),
+            take_profit_pct=float(config["take_profit_pct"]),
+            doji_size=float(config["doji_size"]),
+            stop_loss_mode=StopLossMode(str(config["stop_loss_mode"])),
+            stop_loss_pct=float(config["stop_loss_pct"]),
+            skip_large_upper_wick=bool(config["skip_wick_filter"]),
+            skip_bollinger_cross=bool(config["skip_bollinger_cross"]),
+            bollinger_period=int(config["bollinger_period"]),
+            bollinger_stddev=float(config["bollinger_stddev"]),
+            enable_volume_pressure_filter=bool(config["volume_filter_enabled"]),
+            enable_stochastic_filter=bool(config["stoch_enabled"]),
+            stochastic_first_line=str(config["stoch_first_line"]),
+            stochastic_first_period=int(config["stoch_first_period"]),
+            stochastic_first_threshold=(
+                float(config["stoch_first_threshold"])
+                if config["stoch_first_threshold"] is not None
+                else None
+            ),
+            stochastic_second_line=str(config["stoch_second_line"]),
+            stochastic_second_period=int(config["stoch_second_period"]),
+            stochastic_second_threshold=(
+                float(config["stoch_second_threshold"])
+                if config["stoch_second_threshold"] is not None
+                else None
+            ),
+            stochastic_comparison=str(config["stoch_comparison"]),
+            stochastic_d_smoothing=int(config["stoch_d_smoothing"]),
+            exchange_fee_pct=float(config["exchange_fee_pct"]),
+        )
+    )
+
+
+def build_pinbar_magic_v2_strategy(config: Dict[str, Any]) -> PinBarMagicStrategyV2:
+    return PinBarMagicStrategyV2(
+        PinBarMagicStrategyConfigV2(
+            symbol=str(config["symbol"]),
+            timeframe=str(config["timeframe"]),
+            leverage=float(config["leverage"]),
+            equity_risk_pct=float(config["equity_risk_pct"]),
+            atr_multiple=float(config["atr_multiple"]),
+            trail_points=float(config["trail_points"]),
+            trail_offset=float(config["trail_offset"]),
+            slow_sma_period=int(config["slow_sma_period"]),
+            medium_ema_period=int(config["medium_ema_period"]),
+            fast_ema_period=int(config["fast_ema_period"]),
+            atr_period=int(config["atr_period"]),
+            entry_cancel_bars=int(config["entry_cancel_bars"]),
+            trailing_tick_timeframe=str(config["trailing_tick_timeframe"]).strip(),
+            use_trailing_tick_emulation=bool(config["use_trailing_tick_emulation"]),
+            use_stop_fill_open_gap=bool(config["use_stop_fill_open_gap"]),
+            entry_activation_mode=str(config["entry_activation_mode"]).strip().lower(),
+            enable_friday_close=bool(config["enable_friday_close"]),
+            friday_close_hour_utc=int(config["friday_close_hour_utc"]),
+            enable_ema_cross_close=bool(config["enable_ema_cross_close"]),
+            risk_equity_include_unrealized=bool(config["risk_equity_include_unrealized"]),
+            risk_equity_mark_source=str(config["risk_equity_mark_source"]).strip().lower(),
+        )
+    )
+
+
+def build_stochastic_fsm_strategy(config: Dict[str, Any]) -> StochasticRsiFsmStrategy:
+    return StochasticRsiFsmStrategy(
+        StochasticRsiFsmConfig(
+            symbols=list(config["symbols"]),  # type: ignore[arg-type]
+            tf_1=str(config["base_timeframe"]),
+            tf_2=str(config["higher_timeframe"]),
+            tf_3=str(config["higher_timeframe_2"]) if config.get("higher_timeframe_2") else None,
+            k_period=int(config["k_period"]),
+            k_slowing=int(config["k_slowing"]),
+            d_period=int(config["d_period"]),
+            use_d_line=bool(config["use_d_line"]),
+            oversold=float(config["oversold"]),
+            overbought=float(config["overbought"]),
+            initial_order_usdt=float(config["initial_order_usdt"]),
+            initial_leverage=float(config["initial_leverage"]),
+            martingale_multiplier=float(config["martingale_multiplier"]),
+            martingale_multipliers=tuple(config["martingale_multipliers"]),  # type: ignore[arg-type]
+            martingale_leverages=tuple(config["martingale_leverages"]),  # type: ignore[arg-type]
+            max_concurrent_positions=int(config["max_positions"]),
+            take_profit_pct=float(config["take_profit_pct"] or 0.02),
+            slippage_pct=float(config["slippage_pct"]),
+            maker_fee_pct=float(config["maker_fee_pct"]),
+            taker_fee_pct=float(config["taker_fee_pct"]),
+            funding_rate_per_day_pct=float(config["funding_rate_pct"]),
+            trailing_activation_pct=float(config["trailing_activation_pct"]),
+            trailing_gap_pct=float(config["trailing_gap_pct"]),
+            trailing_check_interval_seconds=float(config["trailing_interval"]),
+            max_position_days=float(config["max_position_days"]),
+            aligned_high_stoch_mode=str(config["aligned_high_stoch_mode"]),
+            signal_offset=int(config["signal_offset"]),
+            enable_take_profit_check=bool(config["enable_take_profit_check"]),
+            enable_high_exit_cross=bool(config["enable_high_exit_cross"]),
+            use_midsold_filter=bool(config["use_midsold_filter"]),
+            enable_reversal_logic=bool(config["enable_reversal_logic"]),
+            enable_reversal_reentry=bool(config["enable_reversal_reentry"]),
+            enable_grid_martingales=bool(config["enable_grid_martingales"]),
+            grid_martingales_percent=float(config["grid_martingales_percent"]),
+            trailing_use_first_entry_price=bool(config["trailing_use_first_entry_price"]),
+            trailing_use_close_for_stop_activation=bool(
+                config["trailing_use_close_for_stop_activation"]
+            ),
+            take_profit_use_first_entry_price=bool(config["take_profit_use_first_entry_price"]),
+        )
+    )
+
+
+def build_strong_trend_stair_strategy(config: Dict[str, Any]) -> StrongTrendStairStrategy:
+    return StrongTrendStairStrategy(
+        StrongTrendStairStrategyConfig(
+            symbol=str(config["symbol"]),
+            timeframe=str(config["timeframe"]),
+            leverage=float(config["leverage"]),
+            initial_amount_usd=float(config["initial_amount_usd"]),
+            hard_stop_loss_pct=float(config["hard_stop_loss_pct"]),
+            trail_start_pct=float(config["trail_start_pct"]),
+            trail_offset_pct=float(config["trail_offset_pct"]),
+            ema_fast_len=int(config["ema_fast_len"]),
+            ema_mid_len=int(config["ema_mid_len"]),
+            ema_slow_len=int(config["ema_slow_len"]),
+            slope_lookback=int(config["slope_lookback"]),
+            st_atr_len=int(config["st_atr_len"]),
+            st_factor=float(config["st_factor"]),
+            di_len=int(config["di_len"]),
+            adx_smooth=int(config["adx_smooth"]),
+            adx_min=float(config["adx_min"]),
+            reverse_on_opposite_signal=bool(config["reverse_on_opposite_signal"]),
+        )
+    )
+
+
+def build_strategy(config: Dict[str, Any]) -> Any:
+    strategy_name = str(config["strategy"])
+    if strategy_name == "engulfing":
+        return build_engulfing_strategy(config)
+    if strategy_name == "pinbar_magic_v2":
+        return build_pinbar_magic_v2_strategy(config)
+    if strategy_name == "stochastic_fsm":
+        return build_stochastic_fsm_strategy(config)
+    if strategy_name == "strong_trend_stair":
+        return build_strong_trend_stair_strategy(config)
+    raise ValueError(f"Unsupported strategy: {strategy_name}")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main entry point for backtest runner."""
     parser = build_parser()
@@ -1104,127 +1381,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     downloader = CandleDownloader(client=client, store=store)
 
+    strategy = build_strategy(config)
     strategy_name = str(config["strategy"])
-    if strategy_name == "engulfing":
-        strategy = EngulfingStrategy(
-            EngulfingStrategyConfig(
-                symbol=str(config["symbol"]),
-                timeframe=str(config["timeframe"]),
-                window_size=int(config["window_size"]),
-                leverage=float(config["leverage"]),
-                take_profit_pct=float(config["take_profit_pct"]),
-                doji_size=float(config["doji_size"]),
-                stop_loss_mode=StopLossMode(str(config["stop_loss_mode"])),
-                stop_loss_pct=float(config["stop_loss_pct"]),
-                skip_large_upper_wick=bool(config["skip_wick_filter"]),
-                skip_bollinger_cross=bool(config["skip_bollinger_cross"]),
-                bollinger_period=int(config["bollinger_period"]),
-                bollinger_stddev=float(config["bollinger_stddev"]),
-                enable_volume_pressure_filter=bool(config["volume_filter_enabled"]),
-                enable_stochastic_filter=bool(config["stoch_enabled"]),
-                stochastic_first_line=str(config["stoch_first_line"]),
-                stochastic_first_period=int(config["stoch_first_period"]),
-                stochastic_first_threshold=(
-                    float(config["stoch_first_threshold"])
-                    if config["stoch_first_threshold"] is not None
-                    else None
-                ),
-                stochastic_second_line=str(config["stoch_second_line"]),
-                stochastic_second_period=int(config["stoch_second_period"]),
-                stochastic_second_threshold=(
-                    float(config["stoch_second_threshold"])
-                    if config["stoch_second_threshold"] is not None
-                    else None
-                ),
-                stochastic_comparison=str(config["stoch_comparison"]),
-                stochastic_d_smoothing=int(config["stoch_d_smoothing"]),
-                exchange_fee_pct=float(config["exchange_fee_pct"]),
-            )
-        )
-    elif strategy_name == "pinbar_magic_v2":
-        strategy = PinBarMagicStrategyV2(
-            PinBarMagicStrategyConfigV2(
-                symbol=str(config["symbol"]),
-                timeframe=str(config["timeframe"]),
-                leverage=float(config["leverage"]),
-                equity_risk_pct=float(config["equity_risk_pct"]),
-                atr_multiple=float(config["atr_multiple"]),
-                trail_points=float(config["trail_points"]),
-                trail_offset=float(config["trail_offset"]),
-                slow_sma_period=int(config["slow_sma_period"]),
-                medium_ema_period=int(config["medium_ema_period"]),
-                fast_ema_period=int(config["fast_ema_period"]),
-                atr_period=int(config["atr_period"]),
-                entry_cancel_bars=int(config["entry_cancel_bars"]),
-                trailing_tick_timeframe=str(config["trailing_tick_timeframe"]).strip(),
-                use_trailing_tick_emulation=bool(config["use_trailing_tick_emulation"]),
-                use_stop_fill_open_gap=bool(config["use_stop_fill_open_gap"]),
-                entry_activation_mode=str(config["entry_activation_mode"]).strip().lower(),
-                enable_friday_close=bool(config["enable_friday_close"]),
-                friday_close_hour_utc=int(config["friday_close_hour_utc"]),
-                enable_ema_cross_close=bool(config["enable_ema_cross_close"]),
-                risk_equity_include_unrealized=bool(
-                    config["risk_equity_include_unrealized"]
-                ),
-                risk_equity_mark_source=str(config["risk_equity_mark_source"])
-                .strip()
-                .lower(),
-            )
-        )
-    elif strategy_name == "stochastic_fsm":
-        strategy = StochasticRsiFsmStrategy(
-            StochasticRsiFsmConfig(
-                symbols=list(config["symbols"]),  # type: ignore[arg-type]
-                tf_1=str(config["base_timeframe"]),
-                tf_2=str(config["higher_timeframe"]),
-                tf_3=(
-                    str(config["higher_timeframe_2"])
-                    if config.get("higher_timeframe_2")
-                    else None
-                ),
-                k_period=int(config["k_period"]),
-                k_slowing=int(config["k_slowing"]),
-                d_period=int(config["d_period"]),
-                use_d_line=bool(config["use_d_line"]),
-                oversold=float(config["oversold"]),
-                overbought=float(config["overbought"]),
-                initial_order_usdt=float(config["initial_order_usdt"]),
-                initial_leverage=float(config["initial_leverage"]),
-                martingale_multiplier=float(config["martingale_multiplier"]),
-                martingale_multipliers=tuple(config["martingale_multipliers"]),  # type: ignore[arg-type]
-                martingale_leverages=tuple(config["martingale_leverages"]),  # type: ignore[arg-type]
-                max_concurrent_positions=int(config["max_positions"]),
-                take_profit_pct=float(config["take_profit_pct"] or 0.02),
-                slippage_pct=float(config["slippage_pct"]),
-                maker_fee_pct=float(config["maker_fee_pct"]),
-                taker_fee_pct=float(config["taker_fee_pct"]),
-                funding_rate_per_day_pct=float(config["funding_rate_pct"]),
-                trailing_activation_pct=float(config["trailing_activation_pct"]),
-                trailing_gap_pct=float(config["trailing_gap_pct"]),
-                trailing_check_interval_seconds=float(config["trailing_interval"]),
-                max_position_days=float(config["max_position_days"]),
-                aligned_high_stoch_mode=str(config["aligned_high_stoch_mode"]),
-                signal_offset=int(config["signal_offset"]),
-                enable_take_profit_check=bool(config["enable_take_profit_check"]),
-                enable_high_exit_cross=bool(config["enable_high_exit_cross"]),
-                use_midsold_filter=bool(config["use_midsold_filter"]),
-                enable_reversal_logic=bool(config["enable_reversal_logic"]),
-                enable_reversal_reentry=bool(config["enable_reversal_reentry"]),
-                enable_grid_martingales=bool(config["enable_grid_martingales"]),
-                grid_martingales_percent=float(config["grid_martingales_percent"]),
-                trailing_use_first_entry_price=bool(
-                    config["trailing_use_first_entry_price"]
-                ),
-                trailing_use_close_for_stop_activation=bool(
-                    config["trailing_use_close_for_stop_activation"]
-                ),
-                take_profit_use_first_entry_price=bool(
-                    config["take_profit_use_first_entry_price"]
-                ),
-            )
-        )
-    else:  # pragma: no cover - guarded by parser/validation
-        raise ValueError(f"Unsupported strategy: {strategy_name}")
 
     # Create backtester
     backtester = BaseBacktester(strategy=strategy, downloader=downloader, store=store)
