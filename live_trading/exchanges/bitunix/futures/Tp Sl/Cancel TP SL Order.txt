@@ -1,0 +1,32 @@
+Cancel TP/SL Order
+Rate Limit: 10 req/sec/UID
+
+Description
+Cancel TP/SL Order
+Successful interface response is not necessarily equal to the success of the operation, please use the websocket push message as an accurate judgment of the success of the operation.
+
+HTTP Request
+POST /api/v1/futures/tpsl/cancel_order
+Request Parameters
+Parameter	Type	Required	Description
+symbol	string	true	coin Pair
+orderId	string	true	TP/SL Order ID
+Request Example
+
+
+curl -X 'POST'  --location 'https://fapi.bitunix.com/api/v1/futures/tpsl/cancel_order' \
+   -H "api-key:*******" \
+   -H "sign:*" \
+   -H "nonce:your-nonce" \
+   -H "timestamp:1659076670000" \
+   -H "language:en-US" \
+   -H "Content-Type: application/json" \
+ --data '{"symbol":"BTCUSDT","orderId":"12"}'
+Response Parameters
+Parameter	Type	Description
+orderId	string	TP/SL Order ID
+Response Example
+
+
+{"code":0,"data":{"orderId":"11111"},"msg":"Success"}
+Pager
