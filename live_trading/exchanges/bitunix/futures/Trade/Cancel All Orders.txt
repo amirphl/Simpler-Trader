@@ -1,0 +1,38 @@
+Cancel All Orders
+Rate Limit: 10 req/sec/uid
+
+Description
+cancel all orders
+Successful interface response is not necessarily equal to the success of the operation, please use the websocket push message as an accurate judgment of the success of the operation.
+
+HTTP Request
+POST /api/v1/futures/trade/cancel_all_orders
+Request Parameters
+Parameter	Type	Required	Description
+symbol	string	false	Trading pair
+Request Example
+
+
+curl -X 'POST'  --location 'https://fapi.bitunix.com/api/v1/futures/trade/cancel_all_orders' \
+   -H "api-key:*******" \
+   -H "sign:*" \
+   -H "nonce:your-nonce" \
+   -H "timestamp:1659076670000" \
+   -H "language:en-US" \
+   -H "Content-Type: application/json" \
+ --data '{"symbol":"BTCUSDT"}'
+Response Parameters
+Parameter	Type	Description
+successList	list	Successful order list
+>id	string	order id
+>clientId	string	client id
+failureList	list	Failed order list
+>id	string	order id
+>clientId	string	client id
+>errorMsg	string	error msg
+>errorCode	string	error code
+Response Example
+
+
+{"code":0,"data":{"successList":[{"orderId":"11111","clientId":"22222"}],"failureList":[{"orderId":"11112","clientId":"22223","errorMsg":"Order status error","errorCode":10013}]},"msg":"Success"}
+Pager
