@@ -18,6 +18,10 @@ from .stochastic_fsm_strategy import (
     StochasticRsiFsmConfig,
     StochasticRsiFsmStrategy,
 )
+from .strong_trend_stair_strategy import (
+    StrongTrendStairStrategy,
+    StrongTrendStairStrategyConfig,
+)
 
 __all__ = [
     "BacktestContext",
@@ -41,6 +45,8 @@ __all__ = [
     "PositionDirection",
     "StochasticRsiFsmConfig",
     "StochasticRsiFsmStrategy",
+    "StrongTrendStairStrategy",
+    "StrongTrendStairStrategyConfig",
     "plot_backtest",
     "plot_backtest_from_store",
     "save_plot",
