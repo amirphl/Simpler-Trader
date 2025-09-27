@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from datetime import datetime, timezone
+import threading
 from typing import Any, Dict, List, Optional
 
 from ...exchange import (
@@ -17,6 +18,7 @@ from ...exchange import (
     PositionSide,
 )
 from .client import BitunixClient
+from .websocket_client import BitunixWebsocketClient
 from .utils import infer_margin_coin_from_symbol, interval_to_milliseconds
 
 
@@ -29,8 +31,52 @@ class BitunixExchange(Exchange):
         self._config = config
         self._log = logger or logging.getLogger(__name__)
         self._client = BitunixClient(config, self._log)
+        self._ws_lock = threading.Lock()
+        self._ws_client: Optional[BitunixWebsocketClient] = None
+        self._ws_unavailable = False
+        self._ws_tickers_bootstrap_done = False
         self._default_margin_coin = "USDT"
         self._pair_meta_cache: Dict[str, Dict[str, Any]] = {}
+
+    def _get_ws_client(self) -> Optional[BitunixWebsocketClient]:
+        with self._ws_lock:
+            if self._ws_unavailable:
+                return None
+            if self._ws_client is not None:
+                return self._ws_client
+            try:
+                self._ws_client = BitunixWebsocketClient(self._config, self._log)
+                return self._ws_client
+            except Exception as exc:
+                self._ws_unavailable = True
+                self._log.warning(
+                    "Bitunix WS unavailable, falling back to REST only: %s", exc
+                )
+                return None
+
+    def _bootstrap_ws_tickers(self, ws_client: BitunixWebsocketClient) -> None:
+        """Subscribe tickers channel for known symbols once per adapter lifetime."""
+        if self._ws_tickers_bootstrap_done:
+            return
+        try:
+            symbols = list(self._pair_meta_cache.keys())
+            if not symbols:
+                symbols = [
+                    str(item.get("symbol", "")).strip().upper()
+                    for item in self.get_trading_pairs()
+                    if str(item.get("symbol", "")).strip()
+                ]
+            symbols = [symbol for symbol in symbols if symbol]
+            if not symbols:
+                return
+            ws_client.subscribe_tickers(symbols)
+            self._ws_tickers_bootstrap_done = True
+            self._log.info(
+                "Bitunix WS: bootstrapped tickers subscription for %s symbol(s)",
+                len(symbols),
+            )
+        except Exception as exc:
+            self._log.debug("Bitunix WS tickers bootstrap failed: %s", exc)
 
     @staticmethod
     def _quantize(
@@ -137,6 +183,17 @@ class BitunixExchange(Exchange):
 
     def fetch_price(self, symbol: str) -> Optional[float]:
         """Fetch last price for a symbol (public endpoint)."""
+        ws_client = self._get_ws_client()
+        if ws_client is not None:
+            try:
+                ws_client.subscribe_price([symbol])
+                cached = ws_client.get_latest_price(symbol)
+                if cached is not None and cached > 0:
+                    return cached
+            except Exception as exc:
+                self._log.debug(
+                    "Bitunix WS price fetch failed symbol=%s error=%s", symbol, exc
+                )
         return self._client.fetch_price(symbol)
 
     def get_account_balance(self) -> float:
@@ -147,6 +204,16 @@ class BitunixExchange(Exchange):
         return balance
 
     def get_24h_tickers(self) -> List[Dict[str, Any]]:
+        ws_client = self._get_ws_client()
+        if ws_client is not None:
+            # Use already-streamed websocket tickers when available.
+            try:
+                self._bootstrap_ws_tickers(ws_client)
+                cached = ws_client.get_latest_tickers()
+                if cached:
+                    return cached
+            except Exception as exc:
+                self._log.debug("Bitunix WS tickers fetch failed: %s", exc)
         ticks = self._client.fetch_tickers()
         return list(ticks.values())
 
@@ -535,6 +602,41 @@ class BitunixExchange(Exchange):
             end_time=end_time,
             kline_type="LAST_PRICE",
         )
+        ws_row: Optional[Dict[str, Any]] = None
+        ws_client = self._get_ws_client()
+        if ws_client is not None:
+            try:
+                ws_client.subscribe_kline(symbol=symbol, interval=interval)
+                ws_row = ws_client.get_latest_kline(
+                    symbol=symbol, interval=interval, price_type="market"
+                )
+            except Exception as exc:
+                self._log.debug(
+                    "Bitunix WS kline fetch failed symbol=%s interval=%s error=%s",
+                    symbol,
+                    interval,
+                    exc,
+                )
+        if ws_row:
+            ws_open_time = int(ws_row.get("time", 0) or 0)
+            if ws_open_time > 0:
+                replaced = False
+                for idx, row in enumerate(rows):
+                    try:
+                        if int(row.get("time", 0) or 0) == ws_open_time:
+                            rows[idx] = ws_row
+                            replaced = True
+                            break
+                    except (TypeError, ValueError):
+                        continue
+                if not replaced:
+                    rows.append(ws_row)
+                rows = sorted(
+                    rows,
+                    key=lambda item: int(item.get("time", 0) or 0),
+                )
+                if limit > 0 and len(rows) > limit:
+                    rows = rows[-limit:]
         if not rows:
             return []
 
@@ -577,6 +679,13 @@ class BitunixExchange(Exchange):
             raise RuntimeError(f"Bitunix connection test failed: {exc}") from exc
 
     def close(self) -> None:
+        ws_client = self._ws_client
+        if ws_client is not None:
+            try:
+                ws_client.stop()
+            except Exception:
+                pass
+        self._ws_client = None
         try:
             self._client._session.close()
         except Exception:
