@@ -75,13 +75,16 @@ class PinBarMagicLiveStrategy(BaseLiveTradingStrategy):
         current_time: datetime,
     ) -> Optional[PinBarMagicSnapshot]:
         cfg = self._config
-        min_history = max(
-            cfg.slow_sma_period,
-            cfg.medium_ema_period,
-            cfg.fast_ema_period,
-            cfg.atr_period,
-        ) + 2
-        raw = self._fetch_binance_klines(
+        min_history = (
+            max(
+                cfg.slow_sma_period,
+                cfg.medium_ema_period,
+                cfg.fast_ema_period,
+                cfg.atr_period,
+            )
+            + 2
+        )
+        raw = self._fetch_strategy_klines(
             symbol=symbol,
             interval=cfg.timeframe,
             limit=max(min_history + 1, 256),
@@ -169,6 +172,34 @@ class PinBarMagicLiveStrategy(BaseLiveTradingStrategy):
             friday_close=friday_close,
         )
 
+    def _fetch_strategy_klines(
+        self, symbol: str, interval: str, limit: int
+    ) -> List[List]:
+        """Fetch klines through the active exchange adapter."""
+        try:
+            rows = self._exchange.get_klines(
+                symbol=symbol,
+                interval=interval,
+                limit=limit,
+            )
+            if rows:
+                return rows
+            self._log.warning(
+                "PinBarMagic: exchange.get_klines returned no data for %s (%s)",
+                symbol,
+                interval,
+            )
+        except Exception as exc:
+            self._log.warning(
+                "PinBarMagic: exchange.get_klines failed for %s (%s): %s",
+                symbol,
+                interval,
+                exc,
+            )
+
+        # Compatibility fallback to legacy direct-fetch path.
+        return self._fetch_binance_klines(symbol=symbol, interval=interval, limit=limit)
+
     def _build_entry_signal(
         self,
         *,
@@ -220,26 +251,28 @@ class PinBarMagicLiveStrategy(BaseLiveTradingStrategy):
         if rng <= 0:
             return False
         return (
-            (candle.close > candle.open and (candle.open - candle.low) > 0.66 * rng)
-            or (candle.close < candle.open and (candle.close - candle.low) > 0.66 * rng)
-        )
+            candle.close > candle.open and (candle.open - candle.low) > 0.66 * rng
+        ) or (candle.close < candle.open and (candle.close - candle.low) > 0.66 * rng)
 
     def _is_bearish_pinbar(self, candle: Candle) -> bool:
         rng = candle.high - candle.low
         if rng <= 0:
             return False
         return (
-            (candle.close > candle.open and (candle.high - candle.close) > 0.66 * rng)
-            or (candle.close < candle.open and (candle.high - candle.open) > 0.66 * rng)
-        )
+            candle.close > candle.open and (candle.high - candle.close) > 0.66 * rng
+        ) or (candle.close < candle.open and (candle.high - candle.open) > 0.66 * rng)
 
-    def _bull_pierce(self, candle: Candle, fast: float, med: float, slow: float) -> bool:
+    def _bull_pierce(
+        self, candle: Candle, fast: float, med: float, slow: float
+    ) -> bool:
         return any(
             candle.low < ma and candle.open > ma and candle.close > ma
             for ma in (fast, med, slow)
         )
 
-    def _bear_pierce(self, candle: Candle, fast: float, med: float, slow: float) -> bool:
+    def _bear_pierce(
+        self, candle: Candle, fast: float, med: float, slow: float
+    ) -> bool:
         return any(
             candle.high > ma and candle.open < ma and candle.close < ma
             for ma in (fast, med, slow)
