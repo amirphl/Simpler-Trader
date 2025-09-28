@@ -1,0 +1,51 @@
+Description
+24hr rolling window mini-ticker statistics for all symbols. These are NOT the statistics of the UTC day, but a 24hr rolling window from requestTime to 24hrs before.
+
+Request Parameters
+Parameter	Type	Required	Description
+op	String	Yes	Operation, subscribe unsubscribe
+args	List<Object>	Yes	
+> symbol	String	Yes	Product ID e.g: ETHUSDT
+> ch	String	Yes	Channel, ticker
+request example:
+
+
+{
+    "op":"subscribe",
+    "args":[
+        {
+            "symbol":"BTCUSDT",
+            "ch":"ticker" 
+        }
+    ]
+}
+Push Parameters
+Parameter	Type	Description
+ch	String	Channel name
+symbol	String	Product ID E.g. ETHUSDT
+ts	int64	Time stamp
+data	List<String>	Subscription data
+> o	String	Opening price
+> h	String	Highest price
+> l	String	Lowest price
+> la	String	Last price
+> b	String	Trading volume of the coin
+> q	String	Trading volume of quote currency
+> r	String	24-hour fluctuations
+push data:
+
+
+{ 
+  "ch": "ticker",                   
+  "symbol": "BNBUSDT",
+  "ts": 1732178884994,
+  "data":{
+        "la": "0.0025",                 
+        "o": "0.0010",                 
+        "h": "0.0025",                 
+        "l": "0.0010",                 
+        "b": "10000",                 
+        "q": "1" ,                     
+        "r":"0.98"                    
+   }   
+}
