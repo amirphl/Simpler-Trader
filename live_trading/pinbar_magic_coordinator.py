@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
 
 from candle_downloader.models import Candle
+from signal_notifier import TelegramClient
 
 from .exchange import Exchange, MarginMode, OrderResult, Position, PositionSide
 from .models import (
@@ -32,7 +34,7 @@ from .pinbar_magic_strategy import PinBarMagicLiveStrategy
 
 @dataclass(frozen=True)
 class PinBarMagicCoordinatorV2Config:
-    symbol: str = "ETHUSDT"
+    symbols: tuple[str, ...] = ("ETHUSDT",)
     timeframe: str = "1h"
     poll_interval_seconds: float = 5.0
     trailing_check_interval_seconds: float = 5.0
@@ -65,11 +67,13 @@ class PinBarMagicCoordinatorV2:
         self,
         exchange: Exchange,
         config: PinBarMagicCoordinatorV2Config | None = None,
+        telegram_client: Optional[TelegramClient] = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self._exchange = exchange
         self._cfg = config or PinBarMagicCoordinatorV2Config()
         self._log = logger or logging.getLogger(self.__class__.__name__)
+        self._telegram = telegram_client
         self._state = TradingState()
         self._running = False
         self._last_closed_candle_time_by_symbol: Dict[str, datetime] = {}
@@ -82,14 +86,16 @@ class PinBarMagicCoordinatorV2:
             logger=self._log,
         )
 
-    def _build_strategy_config(self, cfg: PinBarMagicCoordinatorV2Config) -> LiveTradingConfig:
+    def _build_strategy_config(
+        self, cfg: PinBarMagicCoordinatorV2Config
+    ) -> LiveTradingConfig:
         return LiveTradingConfig(
             exchange_name="runtime",
             api_key="",
             api_secret="",
             strategy_name="pinbar_magic_v2",
             timeframe=cfg.timeframe,
-            pinbar_symbols=(cfg.symbol,),
+            pinbar_symbols=cfg.symbols,
             leverage=cfg.leverage,
             equity_risk_pct=cfg.equity_risk_pct,
             atr_multiple=cfg.atr_multiple,
@@ -115,8 +121,8 @@ class PinBarMagicCoordinatorV2:
     def run_forever(self) -> None:
         self._running = True
         self._log.info(
-            "PinBarMagicCoordinatorV2 started (symbol=%s timeframe=%s)",
-            self._cfg.symbol,
+            "PinBarMagicCoordinatorV2 started (symbols=%s timeframe=%s)",
+            ",".join(self._cfg.symbols),
             self._cfg.timeframe,
         )
         while self._running:
@@ -125,7 +131,9 @@ class PinBarMagicCoordinatorV2:
                 self._maybe_process_new_candle(now)
                 self._on_tick(now)
             except Exception as exc:
-                self._log.error("PinBarMagicCoordinatorV2 loop error: %s", exc, exc_info=True)
+                self._log.error(
+                    "PinBarMagicCoordinatorV2 loop error: %s", exc, exc_info=True
+                )
             time.sleep(max(self._cfg.poll_interval_seconds, 0.2))
 
     def stop(self) -> None:
@@ -133,13 +141,32 @@ class PinBarMagicCoordinatorV2:
         self._strategy.close()
 
     def _maybe_process_new_candle(self, now: datetime) -> None:
-        symbol_infos = [self._build_symbol_info(self._cfg.symbol)]
+        symbol_infos = [self._build_symbol_info(symbol) for symbol in self._cfg.symbols]
         if not symbol_infos:
             return
 
+        latest_closed_by_symbol: Dict[str, Candle | None] = {}
+        max_workers = min(8, max(1, len(symbol_infos)))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(self._fetch_latest_closed_candle, symbol_info.symbol): symbol_info.symbol
+                for symbol_info in symbol_infos
+            }
+            for future in as_completed(futures):
+                symbol = futures[future]
+                try:
+                    latest_closed_by_symbol[symbol] = future.result()
+                except Exception as exc:
+                    self._log.warning(
+                        "PinBarMagicCoordinatorV2: latest candle fetch failed for %s: %s",
+                        symbol,
+                        exc,
+                    )
+                    latest_closed_by_symbol[symbol] = None
+
         any_new_candle = False
         for symbol_info in symbol_infos:
-            latest_closed = self._fetch_latest_closed_candle(symbol_info.symbol)
+            latest_closed = latest_closed_by_symbol.get(symbol_info.symbol)
             if latest_closed is None:
                 continue
             last_seen = self._last_closed_candle_time_by_symbol.get(symbol_info.symbol)
@@ -152,7 +179,9 @@ class PinBarMagicCoordinatorV2:
         if not any_new_candle:
             return
 
-        signals, snapshots = self._strategy.generate_signals_for_symbols(symbol_infos, now)
+        signals, snapshots = self._strategy.generate_signals_for_symbols(
+            symbol_infos, now
+        )
         if not snapshots:
             return
 
@@ -174,7 +203,9 @@ class PinBarMagicCoordinatorV2:
         self._cancel_stale_entries(snapshots, now)
 
         # 5) Queue new signals from this candle.
-        snapshot_by_symbol = {snapshot.symbol: snapshot for snapshot in snapshots.values()}
+        snapshot_by_symbol = {
+            snapshot.symbol: snapshot for snapshot in snapshots.values()
+        }
         for signal in signals:
             self._queue_signal(signal, snapshot_by_symbol.get(signal.symbol))
         if self._cfg.entry_activation_mode == "same_bar":
@@ -183,7 +214,9 @@ class PinBarMagicCoordinatorV2:
 
     def _on_tick(self, now: datetime) -> None:
         self._sync_positions(now)
-        if (time.time() - self._last_tick_trailing_check_ts) < self._cfg.trailing_check_interval_seconds:
+        if (
+            time.time() - self._last_tick_trailing_check_ts
+        ) < self._cfg.trailing_check_interval_seconds:
             return
         self._last_tick_trailing_check_ts = time.time()
         self._manage_tick_trailing(now)
@@ -207,11 +240,28 @@ class PinBarMagicCoordinatorV2:
         )
 
     def _fetch_latest_closed_candle(self, symbol: str) -> Candle | None:
-        rows = self._strategy._fetch_binance_klines(  # noqa: SLF001
-            symbol=symbol,
-            interval=self._cfg.timeframe,
-            limit=3,
-        )
+        rows: list = []
+        try:
+            rows = self._exchange.get_klines(
+                symbol=symbol,
+                interval=self._cfg.timeframe,
+                limit=3,
+            )
+        except Exception as exc:
+            self._log.warning(
+                "PinBarMagicCoordinatorV2: exchange.get_klines failed for %s (%s): %s",
+                symbol,
+                self._cfg.timeframe,
+                exc,
+            )
+
+        if not rows:
+            # Compatibility fallback while some exchanges are still on legacy data path.
+            rows = self._strategy._fetch_binance_klines(  # noqa: SLF001
+                symbol=symbol,
+                interval=self._cfg.timeframe,
+                limit=3,
+            )
         if len(rows) < 2:
             return None
         return Candle.from_binance(symbol, self._cfg.timeframe, rows[-2])
@@ -228,7 +278,10 @@ class PinBarMagicCoordinatorV2:
         current = self._state.active_positions.get(symbol)
         if current is not None and current.side == side:
             return False
-        if current is None and len(self._state.active_positions) >= self._cfg.max_concurrent_positions:
+        if (
+            current is None
+            and len(self._state.active_positions) >= self._cfg.max_concurrent_positions
+        ):
             return False
 
         entry_price = float(signal.entry_price)
@@ -239,7 +292,9 @@ class PinBarMagicCoordinatorV2:
             return False
 
         risk_amount = self._compute_risk_amount(snapshot)
-        qty = self._compute_quantity(entry_price, stop_price, signal.leverage, risk_amount)
+        qty = self._compute_quantity(
+            entry_price, stop_price, signal.leverage, risk_amount
+        )
         if qty <= 0:
             return False
 
@@ -301,6 +356,7 @@ class PinBarMagicCoordinatorV2:
                 status="OPEN",
                 notes=f"Filled from pending {pending.order_key}",
             )
+            self._notify_trade_opened(self._state.active_positions[symbol], pending)
             self._state.pending_entries.pop(pending.order_key, None)
 
         for symbol, pos in list(self._state.active_positions.items()):
@@ -308,6 +364,11 @@ class PinBarMagicCoordinatorV2:
                 pos.status = "CLOSED"
                 pos.exit_time = now
                 self._state.active_positions.pop(symbol, None)
+                self._notify_trade_closed(
+                    pos,
+                    reason="Position no longer present on exchange",
+                    exit_price=None,
+                )
 
     def _activate_due_entries(self, now: datetime) -> None:
         for pending in list(self._state.pending_entries.values()):
@@ -322,14 +383,18 @@ class PinBarMagicCoordinatorV2:
             pending.order_id = order.order_id
             pending.status = "PLACED"
 
-    def _apply_bar_close_rules(self, snapshot: PinBarMagicSnapshot, now: datetime) -> None:
+    def _apply_bar_close_rules(
+        self, snapshot: PinBarMagicSnapshot, now: datetime
+    ) -> None:
         position = self._state.active_positions.get(snapshot.symbol)
         if position is None or position.strategy != "pinbar_magic_v2":
             return
         close_reason: str | None = None
         if snapshot.friday_close:
             close_reason = "Market close"
-        elif self._cfg.enable_ema_cross_close and (snapshot.crossunder or snapshot.crossover):
+        elif self._cfg.enable_ema_cross_close and (
+            snapshot.crossunder or snapshot.crossover
+        ):
             close_reason = "EMA cross close"
         if close_reason is not None:
             self._close_position(position, now, close_reason)
@@ -346,7 +411,9 @@ class PinBarMagicCoordinatorV2:
         if entry_price <= 0:
             return
 
-        if abs(snapshot.bar.open - snapshot.bar.high) < abs(snapshot.bar.open - snapshot.bar.low):
+        if abs(snapshot.bar.open - snapshot.bar.high) < abs(
+            snapshot.bar.open - snapshot.bar.low
+        ):
             nodes = ("high", "low", "close")
         else:
             nodes = ("low", "high", "close")
@@ -372,10 +439,16 @@ class PinBarMagicCoordinatorV2:
                     elif seg_high > position.extreme_since_activation:
                         position.extreme_since_activation = seg_high
                     desired = position.extreme_since_activation - self._cfg.trail_offset
-                    if position.trailing_stop is None or desired > position.trailing_stop:
+                    if (
+                        position.trailing_stop is None
+                        or desired > position.trailing_stop
+                    ):
                         position.trailing_stop = desired
                         stop_updated = True
-                    if position.trailing_stop is not None and seg_low <= position.trailing_stop:
+                    if (
+                        position.trailing_stop is not None
+                        and seg_low <= position.trailing_stop
+                    ):
                         triggered = True
                         break
             else:
@@ -390,17 +463,25 @@ class PinBarMagicCoordinatorV2:
                     elif seg_low < position.extreme_since_activation:
                         position.extreme_since_activation = seg_low
                     desired = position.extreme_since_activation + self._cfg.trail_offset
-                    if position.trailing_stop is None or desired < position.trailing_stop:
+                    if (
+                        position.trailing_stop is None
+                        or desired < position.trailing_stop
+                    ):
                         position.trailing_stop = desired
                         stop_updated = True
-                    if position.trailing_stop is not None and seg_high >= position.trailing_stop:
+                    if (
+                        position.trailing_stop is not None
+                        and seg_high >= position.trailing_stop
+                    ):
                         triggered = True
                         break
 
             start_price = end_price
 
         if stop_updated and position.trailing_stop is not None:
-            self._update_stop_loss_on_exchange(exchange_position, position.trailing_stop)
+            self._update_stop_loss_on_exchange(
+                exchange_position, position.trailing_stop
+            )
         if triggered:
             self._close_position(position, now, "Trailing stop")
 
@@ -423,12 +504,21 @@ class PinBarMagicCoordinatorV2:
                     position.extreme_since_activation = price
                     position.trailing_stop = price - self._cfg.trail_offset
                 if position.trailing_active:
-                    if position.extreme_since_activation is None or price > position.extreme_since_activation:
+                    if (
+                        position.extreme_since_activation is None
+                        or price > position.extreme_since_activation
+                    ):
                         position.extreme_since_activation = price
                     desired = position.extreme_since_activation - self._cfg.trail_offset
-                    if position.trailing_stop is None or desired > position.trailing_stop:
+                    if (
+                        position.trailing_stop is None
+                        or desired > position.trailing_stop
+                    ):
                         position.trailing_stop = desired
-                    triggered = position.trailing_stop is not None and price <= position.trailing_stop
+                    triggered = (
+                        position.trailing_stop is not None
+                        and price <= position.trailing_stop
+                    )
             else:
                 activation = entry - self._cfg.trail_points
                 if not position.trailing_active and price <= activation:
@@ -436,12 +526,21 @@ class PinBarMagicCoordinatorV2:
                     position.extreme_since_activation = price
                     position.trailing_stop = price + self._cfg.trail_offset
                 if position.trailing_active:
-                    if position.extreme_since_activation is None or price < position.extreme_since_activation:
+                    if (
+                        position.extreme_since_activation is None
+                        or price < position.extreme_since_activation
+                    ):
                         position.extreme_since_activation = price
                     desired = position.extreme_since_activation + self._cfg.trail_offset
-                    if position.trailing_stop is None or desired < position.trailing_stop:
+                    if (
+                        position.trailing_stop is None
+                        or desired < position.trailing_stop
+                    ):
                         position.trailing_stop = desired
-                    triggered = position.trailing_stop is not None and price >= position.trailing_stop
+                    triggered = (
+                        position.trailing_stop is not None
+                        and price >= position.trailing_stop
+                    )
 
             if position.trailing_stop is not None:
                 ex_pos = self._exchange.get_position(symbol)
@@ -455,12 +554,20 @@ class PinBarMagicCoordinatorV2:
     ) -> None:
         tf_seconds = max(self._timeframe_seconds(), 1)
         for key, pending in list(self._state.pending_entries.items()):
-            signal_time = self._state.last_pinbar_signal_times.get(key, pending.signal_time)
+            signal_time = self._state.last_pinbar_signal_times.get(
+                key, pending.signal_time
+            )
             symbol_snapshot = snapshots.get(pending.symbol)
-            reference = symbol_snapshot.bar.close_time if symbol_snapshot is not None else now
-            bars_since = int(max(0.0, (reference - signal_time).total_seconds()) // tf_seconds)
+            reference = (
+                symbol_snapshot.bar.close_time if symbol_snapshot is not None else now
+            )
+            bars_since = int(
+                max(0.0, (reference - signal_time).total_seconds()) // tf_seconds
+            )
             if bars_since > self._cfg.entry_cancel_bars:
-                self._cancel_pending_entry(pending, f"entry timeout after {bars_since} bars")
+                self._cancel_pending_entry(
+                    pending, f"entry timeout after {bars_since} bars"
+                )
 
     def _compute_risk_amount(self, snapshot: Optional[PinBarMagicSnapshot]) -> float:
         realized_equity = max(float(self._exchange.get_account_balance()), 0.0)
@@ -476,7 +583,9 @@ class PinBarMagicCoordinatorV2:
             unrealized = (mark_price - position.entry_price) * position.quantity
         else:
             unrealized = (position.entry_price - mark_price) * position.quantity
-        return (self._cfg.equity_risk_pct / 100.0) * max(realized_equity + unrealized, 0.0)
+        return (self._cfg.equity_risk_pct / 100.0) * max(
+            realized_equity + unrealized, 0.0
+        )
 
     def _mark_price_for_equity(self, snapshot: PinBarMagicSnapshot) -> float:
         source = self._cfg.risk_equity_mark_source
@@ -517,9 +626,15 @@ class PinBarMagicCoordinatorV2:
         if self._cfg.use_stop_fill_open_gap:
             last_price = self._get_last_price(pending.symbol)
             if last_price is not None:
-                if pending.side == PositionSide.LONG and last_price >= pending.entry_price:
+                if (
+                    pending.side == PositionSide.LONG
+                    and last_price >= pending.entry_price
+                ):
                     fallback_price = last_price
-                elif pending.side == PositionSide.SHORT and last_price <= pending.entry_price:
+                elif (
+                    pending.side == PositionSide.SHORT
+                    and last_price <= pending.entry_price
+                ):
                     fallback_price = last_price
         return self._exchange.open_limit_position(
             symbol=pending.symbol,
@@ -532,9 +647,13 @@ class PinBarMagicCoordinatorV2:
             stop_loss=pending.stop_for_risk,
         )
 
-    def _close_position(self, position: PositionRecord, now: datetime, reason: str) -> None:
+    def _close_position(
+        self, position: PositionRecord, now: datetime, reason: str
+    ) -> None:
         result = self._exchange.close_position(position.symbol, side=position.side)
-        exit_price = result.price if result.price > 0 else self._get_last_price(position.symbol)
+        exit_price = (
+            result.price if result.price > 0 else self._get_last_price(position.symbol)
+        )
         position.status = "CLOSED"
         position.exit_time = now
         position.exit_price = exit_price
@@ -546,8 +665,11 @@ class PinBarMagicCoordinatorV2:
         position.notes = f"{position.notes}; {reason}".strip("; ")
         self._state.active_positions.pop(position.symbol, None)
         self._log.info("Closed %s due to %s", position.symbol, reason)
+        self._notify_trade_closed(position, reason=reason, exit_price=exit_price)
 
-    def _update_stop_loss_on_exchange(self, exchange_position: Position, stop_price: float) -> bool:
+    def _update_stop_loss_on_exchange(
+        self, exchange_position: Position, stop_price: float
+    ) -> bool:
         updater = getattr(self._exchange, "update_stop_loss", None)
         if callable(updater):
             try:
@@ -562,7 +684,9 @@ class PinBarMagicCoordinatorV2:
             cancelled = False
             if callable(cancel):
                 try:
-                    cancelled = bool(cancel(symbol=pending.symbol, order_id=pending.order_id))
+                    cancelled = bool(
+                        cancel(symbol=pending.symbol, order_id=pending.order_id)
+                    )
                 except Exception:
                     cancelled = False
             if not cancelled:
@@ -574,12 +698,16 @@ class PinBarMagicCoordinatorV2:
         pending.notes = f"{pending.notes}; {reason}".strip("; ")
         self._state.pending_entries.pop(pending.order_key, None)
 
-    def _find_matching_pending(self, symbol: str, side: PositionSide) -> Optional[PendingEntryRecord]:
+    def _find_matching_pending(
+        self, symbol: str, side: PositionSide
+    ) -> Optional[PendingEntryRecord]:
         key = self._pending_key(symbol, side)
         pending = self._state.pending_entries.get(key)
         if pending is not None:
             return pending
-        same_symbol = [x for x in self._state.pending_entries.values() if x.symbol == symbol]
+        same_symbol = [
+            x for x in self._state.pending_entries.values() if x.symbol == symbol
+        ]
         if len(same_symbol) == 1:
             return same_symbol[0]
         return None
@@ -624,3 +752,52 @@ class PinBarMagicCoordinatorV2:
         if moment.tzinfo is None:
             return moment.replace(tzinfo=timezone.utc)
         return moment
+
+    def _notify_trade_opened(
+        self, position: PositionRecord, pending: PendingEntryRecord
+    ) -> None:
+        if not self._telegram:
+            return
+        try:
+            lines = [
+                f"[PINBAR OPEN] {position.symbol}",
+                f"Side: {position.side.value.upper()}",
+                f"Entry: {position.entry_price:.8g}",
+                f"Qty: {position.quantity:.8g}",
+                f"Leverage: {position.leverage}x",
+                f"Stop: {pending.stop_for_risk:.8g}",
+                f"Mode: {position.margin_mode.value}",
+                f"Time: {datetime.now(timezone.utc).isoformat()}",
+            ]
+            self._telegram.send_message("\n".join(lines))
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self._log.warning(
+                "Failed to send Telegram open notification for %s: %s",
+                position.symbol,
+                exc,
+            )
+
+    def _notify_trade_closed(
+        self, position: PositionRecord, *, reason: str, exit_price: Optional[float]
+    ) -> None:
+        if not self._telegram:
+            return
+        try:
+            pnl = position.pnl
+            lines = [
+                f"[PINBAR CLOSE] {position.symbol}",
+                f"Side: {position.side.value.upper()}",
+                f"Entry: {position.entry_price:.8g}",
+                f"Exit: {exit_price:.8g}" if exit_price is not None else "Exit: n/a",
+                f"Qty: {position.quantity:.8g}",
+                f"PnL: {pnl:.8g}" if pnl is not None else "PnL: n/a",
+                f"Reason: {reason}",
+                f"Time: {datetime.now(timezone.utc).isoformat()}",
+            ]
+            self._telegram.send_message("\n".join(lines))
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self._log.warning(
+                "Failed to send Telegram close notification for %s: %s",
+                position.symbol,
+                exc,
+            )
