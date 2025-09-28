@@ -1,0 +1,53 @@
+Description
+Retrieve the candlesticks data of a symbol. Data will be pushed every 500 ms.
+
+The channel will push a snapshot after successful subscription, followed by subsequent updates.
+
+To switch K-line intervals without disconnecting the WebSocket, you must first send an "unsubscribe" command to cancel the previous K-line subscription before subscribing to the new interval. For example, if you are currently subscribed to mark_kline_1min and want to switch to mark_kline_15min, you must first unsubscribe from mark_kline_1min and then subscribe to mark_kline_15min.
+
+Request Parameters
+Parameter	Type	Required	Description
+op	String	Yes	Operation, subscribe unsubscribe
+args	List<Object>	Yes	List of channels to request subscription
+> ch	String	Yes	Channel name, The subscription channel is: Price TypeklineTime Interval；The price types include market price and marked price；market_kline_1min,mark_kline_1min,market_kline_3min,mark_kline_3min,market_kline_5min,mark_kline_5min,market_kline_15min,mark_kline_15min,market_kline_30min,mark_kline_30min,market_kline_60min,mark_kline_60min,market_kline_2h,mark_kline_2h,market_kline_4h,mark_kline_4h,market_kline_6h,mark_kline_6h,market_kline_8h,mark_kline_8h,market_kline_12h,mark_kline_12h,market_kline_1day,mark_kline_1day,market_kline_3day,mark_kline_3day,market_kline_1week,mark_kline_1week,market_kline_1month,mark_kline_1month
+> symbol	String	Yes	Product ID E.g. ETHUSDT
+request example:
+
+
+{
+    "op":"subscribe",
+    "args":[
+        {
+            "symbol":"BTCUSDT",
+            "ch":"market_kline_1min" 
+        }
+    ]
+}
+Push Parameters
+Parameter	Type	Description
+ch	String	Channel name
+symbol	String	Product ID E.g. ETHUSDT
+ts	int64	Time stamp
+data	List<String>	Subscription data
+> o	String	Opening price
+> h	String	Highest price
+> l	String	Lowest price
+> c	String	Closing price
+> b	String	Trading volume of the coin
+> q	String	Trading volume of quote currency
+push data:
+
+
+{ 
+  "ch": "mark_kline_1min",
+  "symbol": "BNBUSDT",
+  "ts": 1732178884994,                   
+  "data":{
+      "o": "0.0010",                     
+      "c": "0.0020",                     
+      "h": "0.0025",                     
+      "l": "0.0015",                    
+      "b": "1.01",                     
+      "q": "1.09"                         
+  }
+}
