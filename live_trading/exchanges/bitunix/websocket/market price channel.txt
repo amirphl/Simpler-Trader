@@ -1,0 +1,45 @@
+Description
+Request Parameters
+Parameter	Type	Required	Description
+op	String	Yes	Operation, subscribe unsubscribe
+args	List<Object>	Yes	op list
+> symbol	String	Yes	Product ID e.g: ETHUSDT
+> ch	String	Yes	Channel, price
+request example:
+
+
+{
+    "op":"subscribe",
+    "args":[
+        {
+            "symbol":"BTCUSDT",
+            "ch":"price"  
+        }
+    ]
+}
+Push Parameters
+Parameter	Type	Description
+ch	String	Channel name
+symbol	String	Product ID E.g. ETHUSDT
+ts	int64	Time stamp
+data	List<String>	Subscription data
+> mp	String	Market price
+> ip	String	Index price
+> fr	String	Funding rate
+> ft	String	Funding rate settlement time
+> nft	String	Next funding rate settlement time, Milliseconds format of timestamp Unix, e.g. 1597026383085
+push data:
+
+
+{ 
+  "ch": "price",                   
+  "symbol": "BNBUSDT",
+  "ts": 1732178884994,
+  "data":{
+        "ip": "0.0010",                 
+        "mp": "10000",                  
+        "fr": "0.013461" ,                    
+        "ft": "2024-12-04T11:00:00Z",                 
+        "nft": "2024-12-04T12:00:00Z"                           
+   }   
+}
