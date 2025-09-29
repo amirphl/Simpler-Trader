@@ -24,7 +24,7 @@ ALLOWED_TIMEFRAMES = (
     "12h",
     "1d",
 )
-ALLOWED_STRATEGIES = ("heiken_ashi", "pinbar_magic_v2")
+ALLOWED_STRATEGIES = ("heiken_ashi", "pinbar_magic_v2", "strong_trend_stair")
 
 
 class CandlePattern(Enum):
@@ -43,7 +43,7 @@ class LiveTradingConfig:
     api_key: str
     api_secret: str
     testnet: bool = True
-    strategy_name: Literal["heiken_ashi", "pinbar_magic_v2"] = "pinbar_magic_v2"
+    strategy_name: Literal["heiken_ashi", "pinbar_magic_v2", "strong_trend_stair"] = "pinbar_magic_v2"
 
     # Trading parameters
     timeframe: str = "1h"  # e.g., "15m", "1h"
@@ -111,7 +111,9 @@ class LiveTradingConfig:
         if self.trailing_tick_timeframe not in ALLOWED_TIMEFRAMES:
             raise ValueError(f"Invalid trailing_tick_timeframe: {self.trailing_tick_timeframe}")
         if self.strategy_name not in ALLOWED_STRATEGIES:
-            raise ValueError("strategy_name must be one of: heiken_ashi, pinbar_magic_v2")
+            raise ValueError(
+                "strategy_name must be one of: heiken_ashi, pinbar_magic_v2, strong_trend_stair"
+            )
 
         # Scanner parameters are only required by Heiken Ashi flow.
         if self.strategy_name == "heiken_ashi":
