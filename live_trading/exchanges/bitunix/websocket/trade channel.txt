@@ -1,0 +1,53 @@
+Description
+Get the public trade data
+
+Request Parameters
+Parameter	Type	Required	Description
+op	String	Yes	Operation, subscribe unsubscribe
+args	List<Object>	Yes	op list
+> symbol	String	Yes	Product ID e.g: ETHUSDT
+> ch	String	Yes	Channel, trade
+request example:
+
+
+{
+    "op":"subscribe",
+    "args":[
+        {
+            "symbol":"BTCUSDT",
+            "ch":"trade"  
+        }
+    ]
+}
+Push Parameters
+Parameter	Type	Description
+ch	String	Channel, trade
+symbol	String	Symbol: ETHUSDT
+ts	String	Time stamp
+data	List<Object>	Data
+> p	String	Filled price
+> v	String	Filled amount
+> s	String	Filled side, sell/buy
+> t	String	Time stamp
+push data:
+
+
+{ 
+  "ch": "trade",                   
+  "symbol": "BNBUSDT",
+  "ts": 1732178884994,
+  "data": [
+        {
+            "t": "2024-12-04T11:36:47.959908526Z",   
+            "p": "27000.5",         
+            "v": "0.001",           
+            "s": "buy"             
+        },
+        {
+            "t": "2024-12-04T11:36:47.959908526Z",
+            "p": "27000.0",
+            "v": "0.001",
+            "s": "sell"
+        }
+    ]
+}
