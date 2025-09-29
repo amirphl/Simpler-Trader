@@ -884,12 +884,13 @@ class PinBarMagicCoordinatorV2:
                     raise _InsufficientBalanceError(str(exc)) from exc
                 if self._is_entry_not_triggered_error(exc):
                     raise _EntryDeferredError(str(exc)) from exc
-                self._log.warning(
+                self._log.error(
                     "place_stop_entry_order failed for %s (%s): %s",
                     pending.symbol,
                     pending.side.value,
                     exc,
                 )
+                return None
 
         # Fallback to limit entry with optional gap-fill at current price.
         fallback_price = pending.entry_price
