@@ -161,6 +161,34 @@ class PinbarMagicStrategyParamsV2(BaseModel):
         return value
 
 
+class StrongTrendStairParams(BaseModel):
+    """Parameters for strong trend stair strategy."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    symbol: str = Field(default="BTCUSDT")
+    timeframe: str = Field(default="1m")
+    leverage: float = Field(default=100.0, gt=0.0)
+    initial_amount_usd: float = Field(default=1.0, gt=0.0)
+    hard_stop_loss_pct: float = Field(default=5.0, gt=0.0)
+    trail_start_pct: float = Field(default=2.0, gt=0.0)
+    trail_offset_pct: float = Field(default=1.0, gt=0.0)
+    ema_fast_len: int = Field(default=50, ge=1)
+    ema_mid_len: int = Field(default=100, ge=1)
+    ema_slow_len: int = Field(default=200, ge=1)
+    slope_lookback: int = Field(default=10, ge=1)
+    st_atr_len: int = Field(default=10, ge=1)
+    st_factor: float = Field(default=3.0, gt=0.0)
+    di_len: int = Field(default=14, ge=1)
+    adx_smooth: int = Field(default=14, ge=1)
+    adx_min: float = Field(default=20.0, ge=0.0)
+    reverse_on_opposite_signal: bool = False
+
+    http_proxy: str | None = None
+    https_proxy: str | None = None
+    risk_free_rate: float = 0.0
+
+
 class EngulfingStrategyParams(BaseModel):
     """User-provided parameters for the Engulfing strategy."""
 
@@ -228,6 +256,7 @@ class BacktestSubmission(BaseModel):
         "pinbar_magic",
         "pinbar_magic_v2",
         "stochastic_fsm",
+        "strong_trend_stair",
     ] = Field(default="engulfing")
     start: datetime
     end: datetime
@@ -240,6 +269,7 @@ class BacktestSubmission(BaseModel):
         | PinbarMagicStrategyParams
         | PinbarMagicStrategyParamsV2
         | StochasticFsmParams
+        | StrongTrendStairParams
     )
 
     @model_validator(mode="before")
@@ -259,6 +289,7 @@ class BacktestSubmission(BaseModel):
                 PinbarMagicStrategyParams,
                 PinbarMagicStrategyParamsV2,
                 StochasticFsmParams,
+                StrongTrendStairParams,
             ),
         ):
             return data
@@ -271,6 +302,7 @@ class BacktestSubmission(BaseModel):
             "pinbar_magic": PinbarMagicStrategyParams,
             "pinbar_magic_v2": PinbarMagicStrategyParamsV2,
             "stochastic_fsm": StochasticFsmParams,
+            "strong_trend_stair": StrongTrendStairParams,
         }
         model = strategy_map.get(strategy)
         if model is None:
