@@ -37,17 +37,54 @@
     return false;
   }
 
-  function createChart(container, type, data, options) {
+  function createChart(container, type, data, options, layoutOptions) {
+    const layout = layoutOptions || {};
+    const scrollableX = Boolean(layout.scrollableX);
+    const labelCount = Array.isArray(data?.labels) ? data.labels.length : 0;
+    const pointWidthPx = Math.max(Number(layout.pointWidthPx) || 2, 1);
+    const minWidthPx = Math.max(Number(layout.minWidthPx) || 960, 320);
+    const maxWidthPx = Math.max(Number(layout.maxWidthPx) || 60000, minWidthPx);
+    const chartWidthPx = Math.min(maxWidthPx, Math.max(minWidthPx, Math.ceil(labelCount * pointWidthPx)));
+    const chartHeightPx = Math.max(Number(layout.heightPx) || 220, 180);
+
+    let canvasHost = container;
+    if (scrollableX) {
+      container.style.gridColumn = "1 / -1";
+      container.style.minHeight = `${chartHeightPx + 72}px`;
+      container.style.paddingBottom = "0.75rem";
+
+      const scrollViewport = document.createElement("div");
+      scrollViewport.style.overflowX = "auto";
+      scrollViewport.style.overflowY = "hidden";
+      scrollViewport.style.width = "100%";
+      scrollViewport.style.paddingBottom = "0.25rem";
+
+      const plotHost = document.createElement("div");
+      plotHost.style.width = `${chartWidthPx}px`;
+      plotHost.style.minHeight = `${chartHeightPx}px`;
+      plotHost.style.position = "relative";
+
+      scrollViewport.appendChild(plotHost);
+      container.appendChild(scrollViewport);
+      canvasHost = plotHost;
+    }
+
     const canvas = document.createElement("canvas");
-    canvas.height = 220;
-    container.appendChild(canvas);
+    canvas.height = chartHeightPx;
+    if (scrollableX) {
+      canvas.width = chartWidthPx;
+      canvas.style.width = `${chartWidthPx}px`;
+      canvas.style.height = `${chartHeightPx}px`;
+      canvas.style.display = "block";
+    }
+    canvasHost.appendChild(canvas);
     ensureZoomPlugin();
     const chart = new Chart(canvas.getContext("2d"), {
       type,
       data,
       options: Object.assign(
         {
-          responsive: true,
+          responsive: !scrollableX,
           maintainAspectRatio: false,
           plugins: {
             legend: { display: false },
@@ -280,7 +317,8 @@
                 },
               ],
             },
-            { plugins: { legend: { display: false }, title: { display: true, text: "Drawdown (%)" } } }
+            { plugins: { legend: { display: false }, title: { display: true, text: "Drawdown (%)" } } },
+            { scrollableX: true, heightPx: 420, pointWidthPx: 2, minWidthPx: 1400 }
           );
         }
 
@@ -309,7 +347,8 @@
             },
             {
               plugins: { legend: { display: false }, title: { display: true, text: "Return per Trade (%)" } },
-            }
+            },
+            { scrollableX: true, heightPx: 420, pointWidthPx: 2.2, minWidthPx: 1400 }
           );
 
           const wins = trades.filter((t) => (t.return_pct || 0) >= 0).length;
