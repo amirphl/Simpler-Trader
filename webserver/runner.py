@@ -14,6 +14,8 @@ from backtest import (
     PinBarMagicStrategyConfig,
     PinbarStrategy,
     PinbarStrategyConfig,
+    StrongTrendStairStrategy,
+    StrongTrendStairStrategyConfig,
 )
 from backtest.pinbar_magic_strategy_v2 import (
     PinBarMagicStrategyConfigV2,
@@ -33,6 +35,7 @@ from .models import (
     PinbarMagicStrategyParams,
     PinbarMagicStrategyParamsV2,
     PinbarStrategyParams,
+    StrongTrendStairParams,
     StochasticFsmParams,
 )
 
@@ -190,6 +193,29 @@ def run_backtest_job(
                 stochastic_comparison=engulfing_params.stochastic_comparison,
                 stochastic_d_smoothing=engulfing_params.stochastic_d_smoothing,
                 exchange_fee_pct=engulfing_params.exchange_fee_pct,
+            )
+        )
+    elif submission.strategy == "strong_trend_stair":
+        strong_params = cast(StrongTrendStairParams, params)
+        strategy = StrongTrendStairStrategy(
+            StrongTrendStairStrategyConfig(
+                symbol=strong_params.symbol,
+                timeframe=strong_params.timeframe,
+                leverage=strong_params.leverage,
+                initial_amount_usd=strong_params.initial_amount_usd,
+                hard_stop_loss_pct=strong_params.hard_stop_loss_pct,
+                trail_start_pct=strong_params.trail_start_pct,
+                trail_offset_pct=strong_params.trail_offset_pct,
+                ema_fast_len=strong_params.ema_fast_len,
+                ema_mid_len=strong_params.ema_mid_len,
+                ema_slow_len=strong_params.ema_slow_len,
+                slope_lookback=strong_params.slope_lookback,
+                st_atr_len=strong_params.st_atr_len,
+                st_factor=strong_params.st_factor,
+                di_len=strong_params.di_len,
+                adx_smooth=strong_params.adx_smooth,
+                adx_min=strong_params.adx_min,
+                reverse_on_opposite_signal=strong_params.reverse_on_opposite_signal,
             )
         )
     else:
