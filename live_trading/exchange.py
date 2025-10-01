@@ -270,7 +270,24 @@ class Exchange(ABC):
         pass
 
     @abstractmethod
-    def update_stop_loss(self, position: Position, stop_price: float) -> bool:
+    def place_stop_loss_order(
+        self, position: Position, stop_price: float
+    ) -> Optional[str]:
+        """Place an order-level stop loss and return the created TP/SL order id."""
+        pass
+
+    @abstractmethod
+    def update_stop_loss_order(
+        self, position: Position, order_id: str, stop_price: float
+    ) -> bool:
+        """Update an order-level stop loss by TP/SL order id."""
+        pass
+
+    @abstractmethod
+    def update_position_stop_loss(
+        self, position: Position, stop_price: float
+    ) -> bool:
+        """Update a position-level stop loss using the position id."""
         pass
 
     @abstractmethod
