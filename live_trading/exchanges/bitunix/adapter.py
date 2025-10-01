@@ -164,14 +164,15 @@ class BitunixExchange(Exchange):
         meta = self._get_symbol_meta(position.symbol)
         quote_precision = int(meta.get("quotePrecision", 8) or 8)
         tick_size = 10 ** (-max(quote_precision, 0))
-        last_price = self.fetch_price(position.symbol)
+        mark_price = self.fetch_price(position.symbol)
+        safety_offset = tick_size * 2  # keep a small buffer away from trigger boundary
 
         adjusted = float(stop_price)
-        if last_price is not None and last_price > 0:
+        if mark_price is not None and mark_price > 0:
             if position.side == PositionSide.LONG:
-                adjusted = min(adjusted, last_price - tick_size)
+                adjusted = min(adjusted, mark_price - safety_offset)
             else:
-                adjusted = max(adjusted, last_price + tick_size)
+                adjusted = max(adjusted, mark_price + safety_offset)
 
         rounding = ROUND_DOWN if position.side == PositionSide.LONG else ROUND_UP
         normalized = self._quantize(adjusted, quote_precision, rounding_mode=rounding)
@@ -270,8 +271,8 @@ class BitunixExchange(Exchange):
                 size = float(pos.get("qty", 0) or 0)
                 if size == 0:
                     continue
-                side_str = str(pos.get("side", "LONG")).upper()
-                side = PositionSide.SHORT if side_str == "SHORT" else PositionSide.LONG
+                side_str = str(pos.get("side", "")).upper()
+                side = PositionSide.SHORT if side_str == "SELL" else PositionSide.LONG
                 margin_mode_str = str(pos.get("marginMode", "")).upper()
                 margin_mode = (
                     MarginMode.ISOLATED
@@ -691,11 +692,93 @@ class BitunixExchange(Exchange):
         except Exception:
             pass
 
-    def update_stop_loss(self, position: Position, stop_price: float) -> bool:
-        """Place/replace a stop-loss (used for trailing stops)."""
+    def place_stop_loss_order(
+        self, position: Position, stop_price: float
+    ) -> Optional[str]:
+        """Place an order-level TP/SL for the full position size and return its id."""
         if not position.position_id:
             self._log.warning(
-                "Bitunix: cannot set stop loss for %s without position_id",
+                "Bitunix: cannot place stop loss for %s without position_id",
+                position.symbol,
+            )
+            return None
+
+        try:
+            normalized_sl = self._normalize_stop_loss_price(position, stop_price)
+            sl_qty = abs(float(position.size))
+            result = self._client.place_tpsl_order(
+                symbol=position.symbol,
+                position_id=position.position_id,
+                sl_price=normalized_sl,
+                sl_stop_type="MARK_PRICE",
+                sl_order_type="LIMIT",
+                sl_order_price=normalized_sl,
+                sl_qty=sl_qty,
+            )
+            order_id = str(result.get("orderId") or "").strip() if result else ""
+            if not order_id:
+                self._log.warning(
+                    "Bitunix: stop loss placement returned empty response for %s",
+                    position.symbol,
+                )
+                return None
+            self._log.info(
+                "Bitunix: placed stop loss for %s (position %s) to %.6f order=%s",
+                position.symbol,
+                position.position_id,
+                stop_price,
+                order_id,
+            )
+            return order_id
+        except Exception as exc:
+            self._log.warning(
+                "Bitunix: failed to place stop loss for %s: %s", position.symbol, exc
+            )
+            return None
+
+    def update_stop_loss_order(
+        self, position: Position, order_id: str, stop_price: float
+    ) -> bool:
+        """Update an existing order-level TP/SL by order id."""
+        if not order_id:
+            self._log.warning("Bitunix: cannot update stop loss without order_id")
+            return False
+
+        try:
+            normalized_sl = self._normalize_stop_loss_price(position, stop_price)
+            sl_qty = abs(float(position.size))
+            result = self._client.modify_tpsl_order(
+                order_id=order_id,
+                sl_price=normalized_sl,
+                sl_stop_type="MARK_PRICE",
+                sl_order_type="LIMIT",
+                sl_order_price=normalized_sl,
+                sl_qty=sl_qty,
+            )
+            if not result:
+                self._log.warning(
+                    "Bitunix: stop loss update returned empty response for %s",
+                    position.symbol,
+                )
+                return False
+            self._log.info(
+                "Bitunix: updated stop loss for %s (order %s) to %.6f",
+                position.symbol,
+                order_id,
+                stop_price,
+            )
+            return True
+        except Exception as exc:
+            self._log.warning(
+                "Bitunix: failed to update stop loss for %s: %s", position.symbol, exc
+            )
+            return False
+
+    def update_position_stop_loss(self, position: Position, stop_price: float) -> bool:
+        """Update a position-level TP/SL using positionId (no orderId caching)."""
+        if not position.position_id:
+            self._log.warning(
+                "Bitunix: cannot update position stop loss for %s without position_id",
                 position.symbol,
             )
             return False
@@ -709,23 +792,13 @@ class BitunixExchange(Exchange):
                 sl_stop_type="MARK_PRICE",
             )
             if not result:
-                # Fallback to create TP/SL if modify is unsupported.
-                result = self._client.place_tpsl_order(
-                    symbol=position.symbol,
-                    position_id=position.position_id,
-                    sl_price=normalized_sl,
-                    sl_stop_type="MARK_PRICE",
-                    sl_order_type="MARKET",
-                    sl_qty=position.size,
+                self._log.warning(
+                    "Bitunix: position stop loss update returned empty response for %s",
+                    position.symbol,
                 )
-                if not result:
-                    self._log.warning(
-                        "Bitunix: trailing stop update returned empty response for %s",
-                        position.symbol,
-                    )
-                    return False
+                return False
             self._log.info(
-                "Bitunix: updated stop loss for %s (position %s) to %.6f",
+                "Bitunix: updated position stop loss for %s (position %s) to %.6f",
                 position.symbol,
                 position.position_id,
                 stop_price,
@@ -733,7 +806,9 @@ class BitunixExchange(Exchange):
             return True
         except Exception as exc:
             self._log.warning(
-                "Bitunix: failed to update stop loss for %s: %s", position.symbol, exc
+                "Bitunix: failed to update position stop loss for %s: %s",
+                position.symbol,
+                exc,
             )
             return False
 
