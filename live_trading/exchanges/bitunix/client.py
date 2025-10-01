@@ -1750,7 +1750,7 @@ class BitunixClient:
         if sl_order_price is not None:
             body["slOrderPrice"] = str(sl_order_price)
 
-        self._log.debug(
+        self._log.info(
             "Bitunix: placing order %s", json.dumps(body, separators=(",", ":"))
         )
         data = self._request(
