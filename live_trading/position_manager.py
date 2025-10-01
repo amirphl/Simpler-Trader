@@ -635,7 +635,7 @@ class PositionManager:
         self, exchange_position: Position, stop_price: float
     ) -> bool:
         """Call exchange adapter to update stop loss, with mock fallback."""
-        updater = getattr(self._exchange, "update_stop_loss", None)
+        updater = getattr(self._exchange, "update_position_stop_loss", None)
         if callable(updater):
             try:
                 return bool(updater(exchange_position, stop_price))
