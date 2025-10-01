@@ -1009,7 +1009,7 @@ class PinBarMagicCoordinatorV2:
         self, exchange_position: Position, stop_price: float
     ) -> bool:
         try:
-            return self._exchange.update_stop_loss(
+            return self._exchange.update_position_stop_loss(
                 position=exchange_position,
                 stop_price=stop_price,
             )
