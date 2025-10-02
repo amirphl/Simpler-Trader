@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from candle_downloader.models import Candle
+from candle_downloader.binance import BinanceClient, BinanceClientConfig, MAX_BATCH
 from signal_notifier import TelegramClient
 
 from backtest.scalping_FVG_strategy import ema as calc_ema
@@ -49,6 +50,9 @@ class StrongTrendStairConfig:
     api_retries: int = 3
     api_retry_delay_seconds: float = 1.0
 
+    # Order entry mode: False = limit (default), True = market
+    use_market_entry: bool = False
+
 
 class StrongTrendStairCoordinator:
     """Runs the Strong Trend stair trailing strategy in live mode."""
@@ -68,10 +72,12 @@ class StrongTrendStairCoordinator:
         self._running = False
         self._active_stop: Optional[float] = None
         self._last_stop_sent: Optional[float] = None
+        self._stop_order_id: Optional[str] = None
         self._last_seen_position_id: Optional[str] = None
         self._last_seen_position_side: Optional[PositionSide] = None
         self._symbol_meta_cache: Dict[str, Dict[str, Any]] = {}
         self._last_processed_candle_close_time: Optional[datetime] = None
+        self._binance_client: Optional[BinanceClient] = None
 
     def run_forever(self) -> None:
         """Run the strategy loop continuously until ``stop()`` is called."""
@@ -98,6 +104,7 @@ class StrongTrendStairCoordinator:
         """Process one closed-candle cycle for signal, entry, and position management."""
         snapshot = self._evaluate_snapshot()
         if snapshot is None:
+            self._log.info("StrongTrendStair no data for snapshot; skipping tick")
             return
         candle, signal_side, indicators = snapshot
         if (
@@ -105,6 +112,22 @@ class StrongTrendStairCoordinator:
             and candle.close_time <= self._last_processed_candle_close_time
         ):
             return
+        # Use Binance candles for signals, but Bitunix mark for pricing decisions.
+        mark_price = self._safe_fetch_price(self._cfg.symbol)
+        if mark_price is None or mark_price <= 0:
+            self._log.warning(
+                "StrongTrendStair price unavailable from exchange; skipping tick symbol=%s",
+                self._cfg.symbol,
+            )
+            return
+        self._log.info(
+            "StrongTrendStair tick snapshot symbol=%s close_time=%s signal_side=%s indicators=%s mark=%.8f",
+            self._cfg.symbol,
+            candle.close_time.isoformat(),
+            signal_side.value if signal_side is not None else "n/a",
+            indicators if indicators is not None else "n/a",
+            mark_price,
+        )
         self._last_processed_candle_close_time = candle.close_time
 
         position, position_known = self._safe_get_position_with_status(self._cfg.symbol)
@@ -117,10 +140,10 @@ class StrongTrendStairCoordinator:
         if position is not None:
             self._last_seen_position_id = position.position_id or self._cfg.symbol
             self._last_seen_position_side = position.side
-            self._manage_open_position(position, candle.close)
+            self._manage_open_position(position, mark_price)
             if self._cfg.reverse_on_opposite_signal:
                 self._maybe_reverse_position(
-                    position, candle.close, signal_side, candle
+                    position, mark_price, signal_side, candle
                 )
             return
 
@@ -142,6 +165,7 @@ class StrongTrendStairCoordinator:
         # No open position: reset in-memory trailing state.
         self._active_stop = None
         self._last_stop_sent = None
+        self._stop_order_id = None
         if signal_side is None or indicators is None:
             return
 
@@ -166,7 +190,7 @@ class StrongTrendStairCoordinator:
             indicators[5],
             indicators[6],
         )
-        if not self._has_sufficient_balance_for_entry(candle.close):
+        if not self._has_sufficient_balance_for_entry(mark_price):
             self._log.info(
                 "StrongTrendStair skipping entry due to insufficient balance symbol=%s required≈%.8f (notional=%.2f leverage=%s)",
                 self._cfg.symbol,
@@ -175,7 +199,7 @@ class StrongTrendStairCoordinator:
                 self._cfg.leverage,
             )
             return
-        self._open_new_position(side=side, reference_price=candle.close)
+        self._open_new_position(side=side, reference_price=mark_price)
 
     def _maybe_reverse_position(
         self,
@@ -191,19 +215,21 @@ class StrongTrendStairCoordinator:
             return
 
         self._log.info(
-            "StrongTrendStair reversal signal symbol=%s from=%s to=%s close=%.8f",
+            "StrongTrendStair reversal signal symbol=%s from=%s to=%s binance_close=%.8f mark_price=%.8f",
             self._cfg.symbol,
             position.side.value,
             signal_side.value,
             candle.close,
+            reference_price,
         )
         self._notify(
-            "[STRONG REVERSAL] %s\nFrom: %s\nTo: %s\nSignal Close: %.8f\nTime: %s"
+            "[STRONG REVERSAL] %s\nFrom: %s\nTo: %s\nSignal Close: %.8f\nMark: %.8f\nTime: %s"
             % (
                 self._cfg.symbol,
                 position.side.value,
                 signal_side.value,
                 candle.close,
+                reference_price,
                 datetime.now(timezone.utc).isoformat(),
             )
         )
@@ -347,7 +373,7 @@ class StrongTrendStairCoordinator:
     def _open_new_position(
         self, side: PositionSide, reference_price: Optional[float]
     ) -> None:
-        """Submit protected limit entry and handle full/partial fill outcomes safely."""
+        """Submit protected entry (limit or market) and handle full/partial fill outcomes safely."""
         if reference_price is None or reference_price <= 0:
             return
         qty = self._normalize_quantity_for_symbol(
@@ -357,42 +383,6 @@ class StrongTrendStairCoordinator:
         )
         if qty is None or qty <= 0:
             return
-        offset = max(0.0, float(self._cfg.entry_limit_offset_bps)) / 10_000.0
-        if side == PositionSide.LONG:
-            limit_price = reference_price * (1.0 + offset)
-        else:
-            limit_price = reference_price * (1.0 - offset)
-        if limit_price <= 0:
-            self._log.warning(
-                "StrongTrendStair: abort entry, invalid limit price %.8f",
-                limit_price,
-            )
-            return
-        try:
-            limit_price = self._normalize_price_for_symbol(
-                self._cfg.symbol, limit_price, side
-            )
-        except Exception as exc:
-            self._log.warning(
-                "StrongTrendStair: abort entry, limit price normalization failed symbol=%s raw=%.8f err=%s",
-                self._cfg.symbol,
-                limit_price,
-                exc,
-            )
-            return
-        initial_attached_stop = self._hard_stop_price(limit_price, side)
-        try:
-            initial_attached_stop = self._normalize_price_for_symbol(
-                self._cfg.symbol, initial_attached_stop, side
-            )
-        except Exception as exc:
-            self._log.warning(
-                "StrongTrendStair: abort entry, attached stop normalization failed symbol=%s raw=%.8f err=%s",
-                self._cfg.symbol,
-                initial_attached_stop,
-                exc,
-            )
-            return
 
         if not self._safe_set_margin_mode(self._cfg.symbol, self._cfg.margin_mode):
             self._log.warning("StrongTrendStair: abort entry, set_margin_mode failed")
@@ -400,54 +390,119 @@ class StrongTrendStairCoordinator:
         if not self._safe_set_leverage(self._cfg.symbol, self._cfg.leverage):
             self._log.warning("StrongTrendStair: abort entry, set_leverage failed")
             return
-        result = self._safe_open_limit_position(
-            symbol=self._cfg.symbol,
-            side=side,
-            qty=qty,
-            price=limit_price,
-            stop_loss=initial_attached_stop,
-            leverage=self._cfg.leverage,
-            margin_mode=self._cfg.margin_mode,
-        )
+
+        if self._cfg.use_market_entry:
+            result = self._safe_open_market_position(
+                symbol=self._cfg.symbol,
+                side=side,
+                qty=qty,
+                stop_loss=None,
+                leverage=self._cfg.leverage,
+                margin_mode=self._cfg.margin_mode,
+            )
+        else:
+            offset = max(0.0, float(self._cfg.entry_limit_offset_bps)) / 10_000.0
+            if side == PositionSide.LONG:
+                limit_price = reference_price * (1.0 + offset)
+            else:
+                limit_price = reference_price * (1.0 - offset)
+            if limit_price <= 0:
+                self._log.warning(
+                    "StrongTrendStair: abort entry, invalid limit price %.8f",
+                    limit_price,
+                )
+                return
+            try:
+                limit_price = self._normalize_price_for_symbol(
+                    self._cfg.symbol, limit_price, side
+                )
+            except Exception as exc:
+                self._log.warning(
+                    "StrongTrendStair: abort entry, limit price normalization failed symbol=%s raw=%.8f err=%s",
+                    self._cfg.symbol,
+                    limit_price,
+                    exc,
+                )
+                return
+            initial_attached_stop = self._hard_stop_price(limit_price, side)
+            try:
+                initial_attached_stop = self._normalize_price_for_symbol(
+                    self._cfg.symbol, initial_attached_stop, side
+                )
+            except Exception as exc:
+                self._log.warning(
+                    "StrongTrendStair: abort entry, attached stop normalization failed symbol=%s raw=%.8f err=%s",
+                    self._cfg.symbol,
+                    initial_attached_stop,
+                    exc,
+                )
+                return
+
+            result = self._safe_open_limit_position(
+                symbol=self._cfg.symbol,
+                side=side,
+                qty=qty,
+                price=limit_price,
+                stop_loss=initial_attached_stop,
+                leverage=self._cfg.leverage,
+                margin_mode=self._cfg.margin_mode,
+            )
         if result is None:
             return
 
-        self._log.info(
-            "StrongTrendStair submitted LIMIT entry symbol=%s side=%s order_id=%s qty=%.8f limit=%.8f attached_stop=%.8f",
-            self._cfg.symbol,
-            side.value,
-            result.order_id,
-            result.quantity,
-            result.price,
-            initial_attached_stop,
-        )
+        if self._cfg.use_market_entry:
+            self._log.info(
+                "StrongTrendStair submitted MARKET entry symbol=%s side=%s order_id=%s qty=%.8f",
+                self._cfg.symbol,
+                side.value,
+                result.order_id,
+                result.quantity,
+            )
+        else:
+            self._log.info(
+                "StrongTrendStair submitted LIMIT entry symbol=%s side=%s order_id=%s qty=%.8f limit=%.8f attached_stop=%.8f",
+                self._cfg.symbol,
+                side.value,
+                result.order_id,
+                result.quantity,
+                result.price,
+                initial_attached_stop,
+            )
+
+        timeout_seconds = self._cfg.fill_wait_timeout_seconds
+        if not self._cfg.use_market_entry:
+            timeout_seconds = max(timeout_seconds, 45.0)
 
         position = self._wait_for_full_fill(
             symbol=self._cfg.symbol,
             side=side,
             expected_qty=abs(float(result.quantity)),
             order_id=result.order_id,
-            timeout_seconds=self._cfg.fill_wait_timeout_seconds,
+            timeout_seconds=timeout_seconds,
             poll_seconds=self._cfg.fill_wait_poll_seconds,
         )
         if position is None:
+            entry_mode_label = "market" if self._cfg.use_market_entry else "limit"
             self._log.warning(
-                "StrongTrendStair open order=%s not fully filled in time; canceling",
+                "StrongTrendStair %s entry order=%s not observed as filled in time",
+                entry_mode_label,
                 result.order_id,
             )
-            if not self._safe_cancel_order(self._cfg.symbol, result.order_id):
-                self._log.warning(
-                    "StrongTrendStair failed to cancel unfilled order=%s",
-                    result.order_id,
-                )
+            if not self._cfg.use_market_entry:
+                if not self._safe_cancel_order(self._cfg.symbol, result.order_id):
+                    self._log.warning(
+                        "StrongTrendStair failed to cancel unfilled order=%s",
+                        result.order_id,
+                    )
             self._notify(
                 "[STRONG ENTRY ABORTED] %s\nSide: %s\nOrder: %s\n"
-                "Reason: limit order did not fully fill in %.1fs\nTime: %s"
+                "Reason: %s order not fully confirmed in %.1fs\nTime: %s"
                 % (
                     self._cfg.symbol,
                     side.value,
                     result.order_id,
-                    float(self._cfg.fill_wait_timeout_seconds),
+                    entry_mode_label,
+                    float(timeout_seconds),
                     datetime.now(timezone.utc).isoformat(),
                 )
             )
@@ -620,17 +675,13 @@ class StrongTrendStairCoordinator:
         ]
     ]:
         """Build latest indicator snapshot and return directional signal for the last closed candle."""
-        rows = self._safe_get_klines(
+        candles = self._safe_get_klines(
             symbol=self._cfg.symbol,
             interval=self._cfg.timeframe,
             limit=self._cfg.klines_limit,
         )
-        if not rows:
+        if not candles:
             return None
-        candles = [
-            Candle.from_binance(self._cfg.symbol, self._cfg.timeframe, row)
-            for row in rows
-        ]
         now_utc = datetime.now(timezone.utc)
         closed_candles = [c for c in candles if c.close_time <= now_utc]
         if not closed_candles:
@@ -640,6 +691,9 @@ class StrongTrendStairCoordinator:
         if len(candles) < max(
             self._cfg.ema_slow_len + self._cfg.slope_lookback + 2, 230
         ):
+            self._log.info(
+                "StrongTrendStair insufficient data for snapshot; skipping tick"
+            )
             return last_closed, None, None
 
         closes = [c.close for c in candles]
@@ -1084,6 +1138,65 @@ class StrongTrendStairCoordinator:
         except Exception as exc:
             self._log.warning("StrongTrendStair telegram send failed: %s", exc)
 
+    def _get_binance_client(self) -> BinanceClient:
+        if self._binance_client is None:
+            cfg = BinanceClientConfig(proxies=None)
+            self._binance_client = BinanceClient(
+                cfg, logger=logging.getLogger("binance.client")
+            )
+        return self._binance_client
+
+    @staticmethod
+    def _interval_to_ms(interval: str) -> int:
+        mapping = {
+            "1m": 60_000,
+            "3m": 180_000,
+            "5m": 300_000,
+            "15m": 900_000,
+            "30m": 1_800_000,
+            "1h": 3_600_000,
+            "2h": 7_200_000,
+            "4h": 14_400_000,
+            "6h": 21_600_000,
+            "12h": 43_200_000,
+            "1d": 86_400_000,
+        }
+        return mapping.get(interval, 0)
+
+    def _fetch_binance_klines_recent(
+        self, symbol: str, interval: str, limit: int
+    ) -> List[List]:
+        # Fetch most recent candles from Binance because Bitunix caps at 200.
+        interval_ms = self._interval_to_ms(interval)
+        if interval_ms <= 0:
+            raise ValueError(f"Unsupported interval for Binance fetch: {interval}")
+        capped_limit = min(limit, MAX_BATCH)
+        end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+        start_ms = end_ms - capped_limit * interval_ms
+        client = self._get_binance_client()
+        candles = client.fetch_klines(
+            symbol=symbol,
+            interval=interval,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            limit=capped_limit,
+        )
+        if not candles:
+            return []
+        # Return Binance payload shape (raw kline rows) to keep downstream parsing consistent.
+        return [
+            [
+                c.open_time_ms,
+                c.open,
+                c.high,
+                c.low,
+                c.close,
+                c.volume,
+                int(c.close_time.timestamp() * 1000),
+            ]
+            for c in candles
+        ]
+
     def _safe_fetch_price(self, symbol: str) -> Optional[float]:
         """Fetch symbol price with retry/backoff, returning ``None`` if all attempts fail."""
         for attempt in range(1, self._cfg.api_retries + 1):
@@ -1210,16 +1323,15 @@ class StrongTrendStairCoordinator:
             time.sleep(pause)
         return False
 
-    def _safe_get_klines(self, symbol: str, interval: str, limit: int) -> List[List]:
-        """Fetch raw kline rows with retry/backoff."""
+    def _safe_get_klines(self, symbol: str, interval: str, limit: int) -> List[Candle]:
+        """Fetch klines from Binance (Bitunix REST caps at 200)."""
         for attempt in range(1, self._cfg.api_retries + 1):
             try:
-                return self._exchange.get_klines(
-                    symbol=symbol, interval=interval, limit=limit
-                )
+                rows = self._fetch_binance_klines_recent(symbol, interval, limit)
+                return [Candle.from_binance(symbol, interval, row) for row in rows]
             except Exception as exc:
                 self._log.warning(
-                    "StrongTrendStair get_klines failed symbol=%s interval=%s attempt=%s/%s err=%s",
+                    "StrongTrendStair binance klines failed symbol=%s interval=%s attempt=%s/%s err=%s",
                     symbol,
                     interval,
                     attempt,
@@ -1267,6 +1379,42 @@ class StrongTrendStairCoordinator:
                 if attempt < self._cfg.api_retries:
                     time.sleep(self._cfg.api_retry_delay_seconds)
         return False
+
+    def _safe_open_market_position(
+        self,
+        symbol: str,
+        side: PositionSide,
+        qty: float,
+        stop_loss: Optional[float],
+        leverage: int,
+        margin_mode: MarginMode,
+    ):
+        """Open a market position using retry/backoff semantics."""
+        for attempt in range(1, self._cfg.api_retries + 1):
+            try:
+                return self._exchange.open_market_position(
+                    symbol=symbol,
+                    side=side,
+                    quantity=qty,
+                    leverage=leverage,
+                    margin_mode=margin_mode,
+                    take_profit=None,
+                    stop_loss=stop_loss,
+                )
+            except Exception as exc:
+                self._log.warning(
+                    "StrongTrendStair open_market_position failed symbol=%s side=%s qty=%.8f stop=%.8f attempt=%s/%s err=%s",
+                    symbol,
+                    side.value,
+                    qty,
+                    stop_loss if stop_loss is not None else float('nan'),
+                    attempt,
+                    self._cfg.api_retries,
+                    exc,
+                )
+                if attempt < self._cfg.api_retries:
+                    time.sleep(self._cfg.api_retry_delay_seconds)
+        return None
 
     def _safe_open_limit_position(
         self,
@@ -1350,7 +1498,14 @@ class StrongTrendStairCoordinator:
         return False
 
     def _safe_update_stop_loss(self, position: Position, stop_price: float) -> bool:
-        """Normalize and update stop-loss with retries, returning success state."""
+        """Normalize and place/refresh a position-level stop-loss with retries."""
+        if not position.position_id:
+            self._log.warning(
+                "StrongTrendStair cannot place position stop without position_id symbol=%s",
+                position.symbol,
+            )
+            return False
+
         try:
             normalized_stop = self._normalize_price_for_symbol(
                 position.symbol, stop_price, position.side
@@ -1363,24 +1518,37 @@ class StrongTrendStairCoordinator:
                 exc,
             )
             return False
+
         for attempt in range(1, self._cfg.api_retries + 1):
             try:
-                if self._exchange.update_stop_loss(position, normalized_stop):
+                result = self._exchange.place_position_tpsl_order(
+                    symbol=position.symbol,
+                    position_id=position.position_id,
+                    sl_price=normalized_stop,
+                    sl_stop_type="MARK_PRICE",
+                )
+                if result:
+                    self._stop_order_id = None
+                    order_id = result.get("orderId") if isinstance(result, dict) else None
                     self._log.info(
-                        "StrongTrendStair stop updated symbol=%s side=%s stop=%.8f",
+                        "StrongTrendStair position stop placed/updated symbol=%s side=%s stop=%.8f order=%s",
                         position.symbol,
                         position.side.value,
                         normalized_stop,
+                        order_id or "n/a",
                     )
                     return True
+
                 self._log.warning(
-                    "StrongTrendStair stop update returned False symbol=%s stop=%.8f",
+                    "StrongTrendStair position stop placement returned empty response symbol=%s stop=%.8f attempt=%s/%s",
                     position.symbol,
                     normalized_stop,
+                    attempt,
+                    self._cfg.api_retries,
                 )
             except Exception as exc:
                 self._log.warning(
-                    "StrongTrendStair update_stop_loss failed symbol=%s stop=%.8f attempt=%s/%s err=%s",
+                    "StrongTrendStair position stop placement failed symbol=%s stop=%.8f attempt=%s/%s err=%s",
                     position.symbol,
                     normalized_stop,
                     attempt,
@@ -1398,6 +1566,7 @@ class StrongTrendStairCoordinator:
                 self._exchange.close_position(symbol)
                 self._active_stop = None
                 self._last_stop_sent = None
+                self._stop_order_id = None
                 return True
             except Exception as exc:
                 self._log.warning(
