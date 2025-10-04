@@ -326,7 +326,28 @@ class StrongTrendStairCoordinator:
                 ok,
             )
             if ok:
+                pnl, ret_pct, notional, margin = self._pnl_snapshot(
+                    position, last_price
+                )
                 self._last_stop_sent = self._active_stop
+                self._notify(
+                    "[STRONG TRAIL] %s\nSide: %s\nQty: %.8f\nEntry: %.8f\n"
+                    "New Stop: %.8f\nMark: %.8f\nPnL: %.2f USD (%.2f%%)\n"
+                    "Notional: %.2f\nMargin: %.2f\nTime: %s"
+                    % (
+                        position.symbol,
+                        position.side.value,
+                        qty,
+                        entry,
+                        self._active_stop,
+                        last_price,
+                        pnl,
+                        ret_pct,
+                        notional,
+                        margin,
+                        datetime.now(timezone.utc).isoformat(),
+                    )
+                )
 
         if self._is_hard_stop_breached(entry, last_price, position.side):
             self._log.warning(
