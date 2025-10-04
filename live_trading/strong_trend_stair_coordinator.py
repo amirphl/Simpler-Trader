@@ -57,6 +57,11 @@ class StrongTrendStairConfig:
 class StrongTrendStairCoordinator:
     """Runs the Strong Trend stair trailing strategy in live mode."""
 
+    _LOW_PROFIT_THRESHOLD = 1.0
+    _MID_PROFIT_THRESHOLD = 2.0
+    _MID_TRAIL_OFFSET_PCT = 0.5
+    _HIGH_TRAIL_OFFSET_PCT = 1.0
+
     def __init__(
         self,
         exchange: Exchange,
@@ -278,6 +283,7 @@ class StrongTrendStairCoordinator:
             entry_price=entry,
             favorable_mark=favorable_mark,
             side=position.side,
+            qty=qty,
         )
         if trailing_candidate is not None:
             candidate = trailing_candidate
@@ -341,8 +347,22 @@ class StrongTrendStairCoordinator:
             return entry_price * (1.0 - hard_stop_fraction)
         return entry_price * (1.0 + hard_stop_fraction)
 
+    def _current_return(
+        self, entry_price: float, qty: float, mark_price: float, side: PositionSide
+    ) -> float:
+        """Return multiple on margin (1.0 = 100% return)."""
+        leverage = max(float(self._cfg.leverage), 1.0)
+        margin = (entry_price * qty) / leverage if leverage > 0 else 0.0
+        if margin <= 0:
+            return 0.0
+        if side == PositionSide.LONG:
+            pnl = (mark_price - entry_price) * qty
+        else:
+            pnl = (entry_price - mark_price) * qty
+        return pnl / margin
+
     def _trailing_candidate_price(
-        self, entry_price: float, favorable_mark: float, side: PositionSide
+        self, entry_price: float, favorable_mark: float, side: PositionSide, qty: float
     ) -> Optional[float]:
         """Compute trailing stop candidate once activation threshold is reached."""
         if entry_price <= 0:
@@ -353,7 +373,14 @@ class StrongTrendStairCoordinator:
             favorable_move_pct = ((entry_price - favorable_mark) / entry_price) * 100.0
         if favorable_move_pct < self._cfg.trail_start_pct:
             return None
-        offset_fraction = self._cfg.trail_offset_pct / 100.0
+        trail_offset_pct = self._cfg.trail_offset_pct
+        ret = self._current_return(entry_price, qty, favorable_mark, side)
+        if ret > self._LOW_PROFIT_THRESHOLD:
+            if ret <= self._MID_PROFIT_THRESHOLD:
+                trail_offset_pct = self._MID_TRAIL_OFFSET_PCT
+            else:
+                trail_offset_pct = self._HIGH_TRAIL_OFFSET_PCT
+        offset_fraction = trail_offset_pct / 100.0
         if side == PositionSide.LONG:
             return favorable_mark * (1.0 - offset_fraction)
         return favorable_mark * (1.0 + offset_fraction)

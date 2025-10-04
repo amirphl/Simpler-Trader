@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -17,7 +16,8 @@ class StrongTrendStairStrategyConfig:
     timeframe: str
 
     leverage: float = 100.0
-    initial_amount_usd: float = 1.0
+    position_balance_pct: float = 2.0
+    starting_balance_usd: float | None = None
     hard_stop_loss_pct: float = 5.0
     trail_start_pct: float = 2.0
     trail_offset_pct: float = 1.0
@@ -42,23 +42,28 @@ class StrongTrendStairStrategyConfig:
             raise ValueError("timeframe must not be empty")
         if self.leverage <= 0:
             raise ValueError("leverage must be positive")
-        if self.initial_amount_usd <= 0:
-            raise ValueError("initial_amount_usd must be positive")
+        if self.position_balance_pct <= 0:
+            raise ValueError("position_balance_pct must be positive")
+        if self.starting_balance_usd is not None and self.starting_balance_usd <= 0:
+            raise ValueError("starting_balance_usd must be positive when provided")
         if self.hard_stop_loss_pct <= 0:
             raise ValueError("hard_stop_loss_pct must be positive")
         if self.trail_start_pct <= 0:
             raise ValueError("trail_start_pct must be positive")
         if self.trail_offset_pct <= 0:
             raise ValueError("trail_offset_pct must be positive")
-        if min(
-            self.ema_fast_len,
-            self.ema_mid_len,
-            self.ema_slow_len,
-            self.slope_lookback,
-            self.st_atr_len,
-            self.di_len,
-            self.adx_smooth,
-        ) <= 0:
+        if (
+            min(
+                self.ema_fast_len,
+                self.ema_mid_len,
+                self.ema_slow_len,
+                self.slope_lookback,
+                self.st_atr_len,
+                self.di_len,
+                self.adx_smooth,
+            )
+            <= 0
+        ):
             raise ValueError("period lengths must be positive")
         if self.st_factor <= 0:
             raise ValueError("st_factor must be positive")
@@ -77,8 +82,14 @@ class _PositionState:
 
 
 class StrongTrendStairStrategy(BacktestStrategy):
+    _LOW_PROFIT_THRESHOLD_PCT = 1.0
+    _MID_PROFIT_THRESHOLD_PCT = 2.0
+    _MID_TRAIL_OFFSET_PCT = 0.5
+    _HIGH_TRAIL_OFFSET_PCT = 1.0
+
     def __init__(self, config: StrongTrendStairStrategyConfig) -> None:
         self._config = config
+        self._starting_balance_usd: float | None = None
 
     def name(self) -> str:
         return "StrongTrendStairStrategy"
@@ -112,6 +123,13 @@ class StrongTrendStairStrategy(BacktestStrategy):
         trades: List[TradePerformance] = []
         position: Optional[_PositionState] = None
 
+        account_balance = (
+            cfg.starting_balance_usd
+            if cfg.starting_balance_usd is not None
+            else context.config.initial_capital
+        )
+        self._starting_balance_usd = account_balance
+
         stats: Dict[str, Any] = {
             "entries_long": 0,
             "entries_short": 0,
@@ -143,7 +161,10 @@ class StrongTrendStairStrategy(BacktestStrategy):
             adx_now = adx[idx]
             slow_prev_idx = idx - cfg.slope_lookback
             slow_prev = ema_slow[slow_prev_idx] if slow_prev_idx >= 0 else None
-            if any(v is None for v in (fast, mid, slow, st, plus, minus, adx_now, slow_prev)):
+            if any(
+                v is None
+                for v in (fast, mid, slow, st, plus, minus, adx_now, slow_prev)
+            ):
                 continue
 
             fast_f = float(fast)
@@ -208,14 +229,14 @@ class StrongTrendStairStrategy(BacktestStrategy):
                     ignore_open_gap=updated_this_candle,
                 )
                 if stop_hit:
-                    trades.append(
-                        self._close_trade(
-                            position=position,
-                            exit_price=stop_fill,
-                            exit_time=candle.close_time,
-                            reason="stop_loss",
-                        )
+                    trade = self._close_trade(
+                        position=position,
+                        exit_price=stop_fill,
+                        exit_time=candle.close_time,
+                        reason="stop_loss",
                     )
+                    trades.append(trade)
+                    account_balance += trade.pnl
                     stats["stop_exits"] += 1
                     position = None
                     trailing_active = False
@@ -231,19 +252,19 @@ class StrongTrendStairStrategy(BacktestStrategy):
                         desired_direction is not None
                         and desired_direction != position.direction
                     ):
-                        trades.append(
-                            self._close_trade(
-                                position=position,
-                                exit_price=candle.close,
-                                exit_time=candle.close_time,
-                                reason="reversal",
-                            )
+                        trade = self._close_trade(
+                            position=position,
+                            exit_price=candle.close,
+                            exit_time=candle.close_time,
+                            reason="reversal",
                         )
+                        trades.append(trade)
+                        account_balance += trade.pnl
                         stats["reversal_exits"] += 1
                         position = None
                         trailing_active = False
 
-                        qty = (cfg.initial_amount_usd * cfg.leverage) / candle.close
+                        qty = self._position_qty(candle.close, account_balance)
                         if qty > 0:
                             entry = candle.close
                             if desired_direction == "long":
@@ -272,7 +293,7 @@ class StrongTrendStairStrategy(BacktestStrategy):
                 continue
 
             if bull:
-                qty = (cfg.initial_amount_usd * cfg.leverage) / candle.close
+                qty = self._position_qty(candle.close, account_balance)
                 if qty > 0:
                     entry = candle.close
                     position = _PositionState(
@@ -286,7 +307,7 @@ class StrongTrendStairStrategy(BacktestStrategy):
                     stats["entries_long"] += 1
                     trailing_active = False
             elif bear:
-                qty = (cfg.initial_amount_usd * cfg.leverage) / candle.close
+                qty = self._position_qty(candle.close, account_balance)
                 if qty > 0:
                     entry = candle.close
                     position = _PositionState(
@@ -302,14 +323,14 @@ class StrongTrendStairStrategy(BacktestStrategy):
 
         if position is not None:
             last = candles[-1]
-            trades.append(
-                self._close_trade(
-                    position=position,
-                    exit_price=last.close,
-                    exit_time=last.close_time,
-                    reason="forced_end_close",
-                )
+            trade = self._close_trade(
+                position=position,
+                exit_price=last.close,
+                exit_time=last.close_time,
+                reason="forced_end_close",
             )
+            trades.append(trade)
+            account_balance += trade.pnl
             stats["forced_close_at_end"] += 1
 
         return trades, stats
@@ -318,6 +339,29 @@ class StrongTrendStairStrategy(BacktestStrategy):
         if position.direction == "long":
             return (mark_price - position.entry_price) * position.qty
         return (position.entry_price - mark_price) * position.qty
+
+    def _position_margin_usd(self, balance: float) -> float:
+        # return max(1, balance * (self._config.position_balance_pct / 100.0))
+        return balance * (self._config.position_balance_pct / 100.0)
+
+    def _position_qty(self, price: float, balance: float) -> float:
+        margin_usd = self._position_margin_usd(balance)
+        if price <= 0 or margin_usd <= 0:
+            return 0.0
+        return (margin_usd * self._config.leverage) / price
+
+    def _position_margin_from_qty(self, entry_price: float, qty: float) -> float:
+        if self._config.leverage <= 0:
+            return 0.0
+        return (entry_price * qty) / self._config.leverage
+
+    def _current_return(self, position: _PositionState, mark_price: float) -> float:
+        margin = self._position_margin_from_qty(position.entry_price, position.qty)
+        if margin <= 0:
+            return 0.0
+        pnl = self._open_pnl_usd(position, mark_price)
+        # return (pnl / margin) * 100.0
+        return pnl / margin
 
     def _candidate_stop(
         self, position: _PositionState, favorable_mark: float
@@ -334,9 +378,16 @@ class StrongTrendStairStrategy(BacktestStrategy):
             ) * 100.0
         if favorable_move_pct < self._config.trail_start_pct:
             return None
+        ret = self._current_return(position, favorable_mark)
+        trail_offset_pct = self._config.trail_offset_pct
+        if ret > self._LOW_PROFIT_THRESHOLD_PCT:
+            if ret <= self._MID_PROFIT_THRESHOLD_PCT:
+                trail_offset_pct = self._MID_TRAIL_OFFSET_PCT
+            else:
+                trail_offset_pct = self._HIGH_TRAIL_OFFSET_PCT
         if position.direction == "long":
-            return favorable_mark * (1.0 - self._config.trail_offset_pct / 100.0)
-        return favorable_mark * (1.0 + self._config.trail_offset_pct / 100.0)
+            return favorable_mark * (1.0 - trail_offset_pct / 100.0)
+        return favorable_mark * (1.0 + trail_offset_pct / 100.0)
 
     def _stop_hit_price(
         self,
@@ -366,11 +417,12 @@ class StrongTrendStairStrategy(BacktestStrategy):
         exit_time: datetime,
         reason: str,
     ) -> TradePerformance:
+        notional = position.entry_price * position.qty
+        margin = notional / self._config.leverage if self._config.leverage > 0 else 0.0
         if position.direction == "long":
             pnl = (exit_price - position.entry_price) * position.qty
         else:
             pnl = (position.entry_price - exit_price) * position.qty
-        margin = (position.entry_price * position.qty) / self._config.leverage
         ret_pct = (pnl / margin) * 100 if margin > 0 else 0.0
         return TradePerformance(
             entry_time=position.entry_time,
@@ -384,8 +436,10 @@ class StrongTrendStairStrategy(BacktestStrategy):
                 "exit_price": exit_price,
                 "qty": position.qty,
                 "stop_at_exit": position.stop_price,
-                "initial_amount_usd": self._config.initial_amount_usd,
-                "notional_usd": self._config.initial_amount_usd * self._config.leverage,
+                "position_margin_usd": margin,
+                "position_size_pct": self._config.position_balance_pct,
+                "starting_balance_usd": self._starting_balance_usd,
+                "notional_usd": notional,
                 "leverage": self._config.leverage,
             },
         )
@@ -444,15 +498,27 @@ class StrongTrendStairStrategy(BacktestStrategy):
             prev_fu = float(final_upper[i - 1])
             prev_fl = float(final_lower[i - 1])
             prev_close = candles[i - 1].close
-            final_upper[i] = upper if upper < prev_fu or prev_close > prev_fu else prev_fu
-            final_lower[i] = lower if lower > prev_fl or prev_close < prev_fl else prev_fl
+            final_upper[i] = (
+                upper if upper < prev_fu or prev_close > prev_fu else prev_fu
+            )
+            final_lower[i] = (
+                lower if lower > prev_fl or prev_close < prev_fl else prev_fl
+            )
             prev_st = out[i - 1]
             if prev_st is None:
                 out[i] = final_lower[i]
             elif abs(float(prev_st) - prev_fu) < 1e-12:
-                out[i] = final_upper[i] if candle.close <= float(final_upper[i]) else final_lower[i]
+                out[i] = (
+                    final_upper[i]
+                    if candle.close <= float(final_upper[i])
+                    else final_lower[i]
+                )
             else:
-                out[i] = final_lower[i] if candle.close >= float(final_lower[i]) else final_upper[i]
+                out[i] = (
+                    final_lower[i]
+                    if candle.close >= float(final_lower[i])
+                    else final_upper[i]
+                )
         return out
 
     def _dmi(

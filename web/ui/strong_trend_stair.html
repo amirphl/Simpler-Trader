@@ -143,8 +143,12 @@
               <input name="leverage" type="number" value="100" step="1" min="1" required />
             </label>
             <label>
-              Initial Amount (USD)
-              <input name="initial_amount_usd" type="number" value="1" step="0.1" min="0.1" required />
+              Position Size (% of balance)
+              <input name="position_size_pct" type="number" value="2" step="0.1" min="0.01" required />
+            </label>
+            <label>
+              Starting Balance (USD)
+              <input name="starting_balance_usd" type="number" value="10000" step="1" min="1" required />
             </label>
             <label>
               Hard Stop Loss (%)
@@ -156,7 +160,7 @@
             </label>
             <label>
               Trail Offset (%)
-              <input name="trail_offset_pct" type="number" value="1" step="0.1" min="0.1" required />
+              <input name="trail_offset_pct" type="number" value="1" step="0.01" min="0.01" required />
             </label>
             <label>
               EMA Fast Length

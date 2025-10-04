@@ -159,7 +159,8 @@ def load_stochastic_fsm_env_config() -> Dict[str, str]:
 
 def load_strong_trend_stair_env_config() -> Dict[str, str]:
     return {
-        "initial_amount_usd": os.getenv("STRATEGY_INITIAL_AMOUNT_USD", "1"),
+        "position_size_pct": os.getenv("STRATEGY_POSITION_SIZE_PCT", "2"),
+        "starting_balance_usd": os.getenv("STRATEGY_STARTING_BALANCE_USD", "10000"),
         "hard_stop_loss_pct": os.getenv("STRATEGY_HARD_STOP_LOSS_PCT", "5"),
         "trail_start_pct": os.getenv("STRATEGY_TRAIL_START_PCT", "2"),
         "trail_offset_pct": os.getenv("STRATEGY_TRAIL_OFFSET_PCT", "1"),
@@ -579,9 +580,14 @@ Environment variables (can be overridden by CLI args):
         help="Pinbar Magic v2 mark source for unrealized equity",
     )
     parser.add_argument(
-        "--initial-amount-usd",
+        "--position-size-pct",
         type=float,
-        help="Strong trend stair initial margin amount in USD",
+        help="Strong trend stair position size as percent of account balance",
+    )
+    parser.add_argument(
+        "--starting-balance-usd",
+        type=float,
+        help="Strong trend stair starting balance used for sizing (defaults to backtest initial capital)",
     )
     parser.add_argument(
         "--hard-stop-loss-pct",
@@ -1041,10 +1047,15 @@ def resolve_config(
         args.risk_equity_mark_source
         or env_config.get("risk_equity_mark_source", "close")
     )
-    config["initial_amount_usd"] = (
-        args.initial_amount_usd
-        if args.initial_amount_usd is not None
-        else float(env_config.get("initial_amount_usd", "1"))
+    config["position_size_pct"] = (
+        args.position_size_pct
+        if args.position_size_pct is not None
+        else float(env_config.get("position_size_pct", "2"))
+    )
+    config["starting_balance_usd"] = (
+        args.starting_balance_usd
+        if args.starting_balance_usd is not None
+        else float(env_config.get("starting_balance_usd", "10000"))
     )
     config["hard_stop_loss_pct"] = (
         args.hard_stop_loss_pct
@@ -1322,7 +1333,8 @@ def build_strong_trend_stair_strategy(config: Dict[str, Any]) -> StrongTrendStai
             symbol=str(config["symbol"]),
             timeframe=str(config["timeframe"]),
             leverage=float(config["leverage"]),
-            initial_amount_usd=float(config["initial_amount_usd"]),
+            position_balance_pct=float(config["position_size_pct"]),
+            starting_balance_usd=float(config["starting_balance_usd"]),
             hard_stop_loss_pct=float(config["hard_stop_loss_pct"]),
             trail_start_pct=float(config["trail_start_pct"]),
             trail_offset_pct=float(config["trail_offset_pct"]),
