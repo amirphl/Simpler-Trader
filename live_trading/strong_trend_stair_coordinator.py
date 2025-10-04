@@ -61,6 +61,7 @@ class StrongTrendStairCoordinator:
     _MID_PROFIT_THRESHOLD = 2.0
     _MID_TRAIL_OFFSET_PCT = 0.5
     _HIGH_TRAIL_OFFSET_PCT = 1.0
+    _POSITION_BALANCE_PCT = 2.0
 
     def __init__(
         self,
@@ -227,14 +228,20 @@ class StrongTrendStairCoordinator:
             candle.close,
             reference_price,
         )
+        pnl, ret_pct, notional, margin = self._pnl_snapshot(position, reference_price)
         self._notify(
-            "[STRONG REVERSAL] %s\nFrom: %s\nTo: %s\nSignal Close: %.8f\nMark: %.8f\nTime: %s"
+            "[STRONG REVERSAL] %s\nFrom: %s\nTo: %s\nSignal Close: %.8f\nMark: %.8f\n"
+            "Unrealized PnL: %.2f USD (%.2f%%)\nNotional: %.2f\nMargin: %.2f\nTime: %s"
             % (
                 self._cfg.symbol,
                 position.side.value,
                 signal_side.value,
                 candle.close,
                 reference_price,
+                pnl,
+                ret_pct,
+                notional,
+                margin,
                 datetime.now(timezone.utc).isoformat(),
             )
         )
@@ -337,6 +344,26 @@ class StrongTrendStairCoordinator:
                 ok,
             )
             if ok:
+                pnl, ret_pct, notional, margin = self._pnl_snapshot(
+                    position, last_price
+                )
+                self._notify(
+                    "[STRONG STOP] %s\nSide: %s\nExit: %.8f\nEntry: %.8f\nQty: %.8f\n"
+                    "PnL: %.2f USD (%.2f%%)\nNotional: %.2f\nMargin: %.2f\nReason: hard-stop hit\nTime: %s"
+                    % (
+                        position.symbol,
+                        position.side.value,
+                        last_price,
+                        entry,
+                        qty,
+                        pnl,
+                        ret_pct,
+                        notional,
+                        margin,
+                        datetime.now(timezone.utc).isoformat(),
+                    )
+                )
+            if ok:
                 self._last_seen_position_id = position.position_id or self._cfg.symbol
                 self._last_seen_position_side = position.side
 
@@ -346,6 +373,22 @@ class StrongTrendStairCoordinator:
         if side == PositionSide.LONG:
             return entry_price * (1.0 - hard_stop_fraction)
         return entry_price * (1.0 + hard_stop_fraction)
+
+    def _pnl_snapshot(
+        self, position: Position, mark_price: float
+    ) -> Tuple[float, float, float, float]:
+        """Return (pnl_usd, return_pct, notional_usd, margin_usd) at mark."""
+        qty = abs(float(position.size))
+        entry = float(position.entry_price)
+        notional = entry * qty
+        leverage = max(float(self._cfg.leverage), 1.0)
+        margin = notional / leverage if leverage > 0 else 0.0
+        if position.side == PositionSide.LONG:
+            pnl = (mark_price - entry) * qty
+        else:
+            pnl = (entry - mark_price) * qty
+        ret_pct = (pnl / margin) * 100.0 if margin > 0 else 0.0
+        return pnl, ret_pct, notional, margin
 
     def _current_return(
         self, entry_price: float, qty: float, mark_price: float, side: PositionSide
@@ -403,13 +446,10 @@ class StrongTrendStairCoordinator:
         """Submit protected entry (limit or market) and handle full/partial fill outcomes safely."""
         if reference_price is None or reference_price <= 0:
             return
-        qty = self._normalize_quantity_for_symbol(
-            self._cfg.symbol,
-            self._cfg.trade_notional_usd / reference_price,
-            reference_price=reference_price,
-        )
-        if qty is None or qty <= 0:
+        sizing = self._position_sizing(reference_price)
+        if sizing is None:
             return
+        qty, margin_usd, notional_usd, balance = sizing
 
         if not self._safe_set_margin_mode(self._cfg.symbol, self._cfg.margin_mode):
             self._log.warning("StrongTrendStair: abort entry, set_margin_mode failed")
@@ -479,21 +519,29 @@ class StrongTrendStairCoordinator:
 
         if self._cfg.use_market_entry:
             self._log.info(
-                "StrongTrendStair submitted MARKET entry symbol=%s side=%s order_id=%s qty=%.8f",
+                "StrongTrendStair submitted MARKET entry symbol=%s side=%s order_id=%s qty=%.8f margin=%.2f notional=%.2f balance=%.2f pct=%.2f%%",
                 self._cfg.symbol,
                 side.value,
                 result.order_id,
                 result.quantity,
+                margin_usd,
+                notional_usd,
+                balance,
+                self._POSITION_BALANCE_PCT,
             )
         else:
             self._log.info(
-                "StrongTrendStair submitted LIMIT entry symbol=%s side=%s order_id=%s qty=%.8f limit=%.8f attached_stop=%.8f",
+                "StrongTrendStair submitted LIMIT entry symbol=%s side=%s order_id=%s qty=%.8f limit=%.8f attached_stop=%.8f margin=%.2f notional=%.2f balance=%.2f pct=%.2f%%",
                 self._cfg.symbol,
                 side.value,
                 result.order_id,
                 result.quantity,
                 result.price,
                 initial_attached_stop,
+                margin_usd,
+                notional_usd,
+                balance,
+                self._POSITION_BALANCE_PCT,
             )
 
         timeout_seconds = self._cfg.fill_wait_timeout_seconds
@@ -573,9 +621,13 @@ class StrongTrendStairCoordinator:
             ok = self._safe_update_stop_loss(partial_position, initial_stop)
             if ok:
                 self._last_stop_sent = initial_stop
+                pnl, ret_pct, notional, margin = self._pnl_snapshot(
+                    partial_position, reference_price
+                )
                 self._notify(
                     "[STRONG PARTIAL FILLED] %s\nSide: %s\nOrder: %s\nQty: %.8f\n"
-                    "Entry: %.8f\nInitial Stop: %.8f\nAction: protected and continue managing\nTime: %s"
+                    "Entry: %.8f\nInitial Stop: %.8f\nPnL: %.2f USD (%.2f%%)\n"
+                    "Notional: %.2f\nMargin: %.2f\nAction: protected and continue managing\nTime: %s"
                     % (
                         self._cfg.symbol,
                         partial_position.side.value,
@@ -583,6 +635,10 @@ class StrongTrendStairCoordinator:
                         partial_qty,
                         partial_entry,
                         initial_stop,
+                        pnl,
+                        ret_pct,
+                        notional,
+                        margin,
                         datetime.now(timezone.utc).isoformat(),
                     )
                 )
@@ -676,17 +732,22 @@ class StrongTrendStairCoordinator:
         self._last_seen_position_id = position.position_id or self._cfg.symbol
         self._last_seen_position_side = position.side
 
+        pnl, ret_pct, notional, margin = self._pnl_snapshot(position, entry)
         self._notify(
             "[STRONG OPEN] %s\nSide: %s\nEntry: %.8f\nQty: %.8f\n"
-            "Notional: %.2f\nLeverage: %sx\nMode: %s\nInitial Stop: %.8f\nTime: %s"
+            "Notional: %.2f\nMargin: %.2f\nLeverage: %sx\nMode: %s\n"
+            "Unrealized PnL: %.2f USD (%.2f%%)\nInitial Stop: %.8f\nTime: %s"
             % (
                 self._cfg.symbol,
                 side.value,
                 entry,
                 actual_qty,
-                self._cfg.trade_notional_usd,
+                notional,
+                margin,
                 self._cfg.leverage,
                 self._cfg.margin_mode.value,
+                pnl,
+                ret_pct,
                 initial_stop,
                 datetime.now(timezone.utc).isoformat(),
             )
@@ -808,31 +869,46 @@ class StrongTrendStairCoordinator:
         return None
 
     def _has_sufficient_balance_for_entry(self, reference_price: float) -> bool:
-        """Validate that available margin can support configured notional with a small safety buffer."""
-        if reference_price <= 0:
-            return False
-        balance = self._safe_get_account_balance()
-        if balance is None:
+        """Validate balance for 2% sizing with small buffer."""
+        sizing = self._position_sizing(reference_price)
+        if sizing is None:
             self._log.warning(
-                "StrongTrendStair skip entry on candle %s: account balance unavailable",
+                "StrongTrendStair skip entry on candle %s: account balance unavailable or invalid price",
                 datetime.now(timezone.utc).isoformat(),
             )
             return False
-        required_margin = self._cfg.trade_notional_usd / max(
-            float(self._cfg.leverage), 1.0
-        )
-        # small buffer to reduce edge rejections
-        required_with_buffer = required_margin * 1.02
+        _, margin_required, notional, balance = sizing
+        required_with_buffer = margin_required * 1.02
         if balance < required_with_buffer:
             self._log.warning(
-                "StrongTrendStair skip entry: insufficient balance available=%.8f required≈%.8f (notional=%.2f leverage=%s)",
+                "StrongTrendStair skip entry: balance=%.8f required≈%.8f (notional=%.2f leverage=%s pct=%.2f%%)",
                 balance,
                 required_with_buffer,
-                self._cfg.trade_notional_usd,
+                notional,
                 self._cfg.leverage,
+                self._POSITION_BALANCE_PCT,
             )
             return False
         return True
+
+    def _position_sizing(
+        self, reference_price: float
+    ) -> Optional[Tuple[float, float, float, float]]:
+        """Return qty, margin, notional, balance for 2% sizing; None on failure."""
+        if reference_price <= 0:
+            return None
+        balance = self._safe_get_account_balance()
+        if balance is None or balance <= 0:
+            return None
+        margin_usd = balance * (self._POSITION_BALANCE_PCT / 100.0)
+        leverage = max(float(self._cfg.leverage), 1.0)
+        notional_usd = margin_usd * leverage
+        qty = self._normalize_quantity_for_symbol(
+            self._cfg.symbol, notional_usd / reference_price, reference_price=reference_price
+        )
+        if qty is None or qty <= 0:
+            return None
+        return qty, margin_usd, notional_usd, balance
 
     @staticmethod
     def _true_range(candles: List[Candle]) -> List[float]:
