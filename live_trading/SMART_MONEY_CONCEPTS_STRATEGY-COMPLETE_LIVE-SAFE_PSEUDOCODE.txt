@@ -1,0 +1,499 @@
+# =========================================================
+# SMART MONEY CONCEPTS STRATEGY - COMPLETE LIVE-SAFE PSEUDOCODE
+# =========================================================
+#
+# Core flow:
+#   1) Confirm pivots without future leakage
+#   2) Detect BOS / CHoCH using confirmed swing levels
+#   3) Create Order Blocks from the last opposite candle before the break
+#   4) Track retests and invalidation of Order Blocks
+#   5) Enter in trend direction on retest of a valid OB
+#   6) Exit if price closes beyond the OB boundary
+#
+# Notes:
+# - A pivot at candle k is confirmed only at candle k + pivot_window
+# - Therefore this code does NOT use future candles at decision time
+# - This pseudocode assumes arrays:
+#       open[], high[], low[], close[]
+#   and candles are processed one by one from left to right
+# =========================================================
+
+
+# =========================================================
+# A) GLOBAL CONFIGURATION
+# =========================================================
+
+pivot_window = 5
+default_position_size = 1
+
+
+# =========================================================
+# B) GLOBAL STATE
+# =========================================================
+
+trend_state = "neutral"                  # "neutral", "bullish", "bearish"
+
+last_swing_high_index = null             # confirmed pivot high index
+last_swing_low_index  = null             # confirmed pivot low index
+
+active_order_blocks = []                 # list of OB objects
+next_ob_id = 1
+
+position = {
+    side: "flat",                        # "flat", "long", "short"
+    size: 0,
+    entry_index: null,
+    entry_ob_id: null
+}
+
+
+# =========================================================
+# C) GLOBAL MARK MAPS (FOR VISUALIZATION / DEBUGGING)
+# =========================================================
+
+swing_high_marks = {}                    # candle_index -> true
+swing_low_marks  = {}                    # candle_index -> true
+
+bos_up_marks     = {}                    # candle_index -> true
+bos_down_marks   = {}                    # candle_index -> true
+
+choch_up_marks   = {}                    # candle_index -> true
+choch_down_marks = {}                    # candle_index -> true
+
+bullish_ob_marks = {}                    # source_candle_index -> ob_id
+bearish_ob_marks = {}                    # source_candle_index -> ob_id
+
+entry_marks      = {}                    # candle_index -> "long" or "short"
+exit_marks       = {}                    # candle_index -> "close_long" or "close_short"
+
+
+# =========================================================
+# D) ORDER BLOCK STRUCTURE
+# =========================================================
+#
+# OB = {
+#     id: integer,
+#     type: "bullish" or "bearish",
+#     top: number,
+#     bottom: number,
+#     source_candle: integer,            # candle that defines the OB
+#     created_at: integer,               # break candle index
+#     touched: boolean,                  # true after a retest
+#     valid: boolean                     # false after invalidation
+# }
+#
+
+
+# =========================================================
+# E) HELPER FUNCTIONS
+# =========================================================
+
+function record_swing_high(index):
+    swing_high_marks[index] = true
+
+
+function record_swing_low(index):
+    swing_low_marks[index] = true
+
+
+function mark_BOS_up(index):
+    bos_up_marks[index] = true
+
+
+function mark_BOS_down(index):
+    bos_down_marks[index] = true
+
+
+function mark_CHoCH_up(index):
+    choch_up_marks[index] = true
+
+
+function mark_CHoCH_down(index):
+    choch_down_marks[index] = true
+
+
+function find_last_down_candle_before_break(break_index):
+    j = break_index - 1
+
+    while j >= 0:
+        if close[j] < open[j]:
+            return j
+        j = j - 1
+
+    return null
+
+
+function find_last_up_candle_before_break(break_index):
+    j = break_index - 1
+
+    while j >= 0:
+        if close[j] > open[j]:
+            return j
+        j = j - 1
+
+    return null
+
+
+function register_bullish_orderblock(source_candle_index, created_at_index):
+    global next_ob_id
+
+    ob = {
+        id: next_ob_id,
+        type: "bullish",
+        top: high[source_candle_index],
+        bottom: low[source_candle_index],
+        source_candle: source_candle_index,
+        created_at: created_at_index,
+        touched: false,
+        valid: true
+    }
+
+    active_order_blocks.append(ob)
+    bullish_ob_marks[source_candle_index] = next_ob_id
+    next_ob_id = next_ob_id + 1
+
+    return ob
+
+
+function register_bearish_orderblock(source_candle_index, created_at_index):
+    global next_ob_id
+
+    ob = {
+        id: next_ob_id,
+        type: "bearish",
+        top: high[source_candle_index],
+        bottom: low[source_candle_index],
+        source_candle: source_candle_index,
+        created_at: created_at_index,
+        touched: false,
+        valid: true
+    }
+
+    active_order_blocks.append(ob)
+    bearish_ob_marks[source_candle_index] = next_ob_id
+    next_ob_id = next_ob_id + 1
+
+    return ob
+
+
+function price_range_intersects_zone(candle_index, zone_bottom, zone_top):
+    candle_high = high[candle_index]
+    candle_low  = low[candle_index]
+
+    if candle_high < zone_bottom:
+        return false
+
+    if candle_low > zone_top:
+        return false
+
+    return true
+
+
+function get_ob_by_id(ob_id):
+    for each OB in active_order_blocks:
+        if OB.id == ob_id:
+            return OB
+
+    return null
+
+
+function deactivate_ob(ob_id):
+    OB = get_ob_by_id(ob_id)
+
+    if OB is not null:
+        OB.valid = false
+
+
+function find_most_recent_matching_ob(ob_type, candle_index):
+    j = length(active_order_blocks) - 1
+
+    while j >= 0:
+        OB = active_order_blocks[j]
+
+        if OB.valid == true
+           and OB.touched == true
+           and OB.type == ob_type
+           and candle_index > OB.created_at
+           and price_range_intersects_zone(candle_index, OB.bottom, OB.top):
+            return OB
+
+        j = j - 1
+
+    return null
+
+
+function open_long(size, candle_index, ob_id):
+    position.side = "long"
+    position.size = size
+    position.entry_index = candle_index
+    position.entry_ob_id = ob_id
+
+    entry_marks[candle_index] = "long"
+
+
+function add_to_long(size_to_add):
+    if position.side == "long":
+        position.size = position.size + size_to_add
+
+
+function close_long(candle_index):
+    if position.side == "long":
+        position.side = "flat"
+        position.size = 0
+        position.entry_index = null
+        position.entry_ob_id = null
+
+        exit_marks[candle_index] = "close_long"
+
+
+function open_short(size, candle_index, ob_id):
+    position.side = "short"
+    position.size = size
+    position.entry_index = candle_index
+    position.entry_ob_id = ob_id
+
+    entry_marks[candle_index] = "short"
+
+
+function add_to_short(size_to_add):
+    if position.side == "short":
+        position.size = position.size + size_to_add
+
+
+function close_short(candle_index):
+    if position.side == "short":
+        position.side = "flat"
+        position.size = 0
+        position.entry_index = null
+        position.entry_ob_id = null
+
+        exit_marks[candle_index] = "close_short"
+
+
+function highest_high_between(start_index, end_index):
+    value = high[start_index]
+    j = start_index + 1
+
+    while j <= end_index:
+        if high[j] > value:
+            value = high[j]
+        j = j + 1
+
+    return value
+
+
+function lowest_low_between(start_index, end_index):
+    value = low[start_index]
+    j = start_index + 1
+
+    while j <= end_index:
+        if low[j] < value:
+            value = low[j]
+        j = j + 1
+
+    return value
+
+
+function confirm_pivot_at(candidate_index, current_index):
+    # candidate_index is the candle being tested as pivot
+    # current_index is the live candle now
+    #
+    # To confirm candidate_index as a pivot with pivot_window,
+    # current_index must be at least candidate_index + pivot_window
+
+    left_index  = candidate_index - pivot_window
+    right_index = candidate_index + pivot_window
+
+    if left_index < 0:
+        return
+
+    if right_index > current_index:
+        return
+
+    candidate_high = high[candidate_index]
+    candidate_low  = low[candidate_index]
+
+    max_high = highest_high_between(left_index, right_index)
+    min_low  = lowest_low_between(left_index, right_index)
+
+    is_pivot_high = (candidate_high == max_high)
+    is_pivot_low  = (candidate_low == min_low)
+
+    if is_pivot_high:
+        last_swing_high_index = candidate_index
+        record_swing_high(candidate_index)
+
+    if is_pivot_low:
+        last_swing_low_index = candidate_index
+        record_swing_low(candidate_index)
+
+
+# =========================================================
+# F) MAIN LOOP
+# =========================================================
+
+for each new candle t:
+
+    # -----------------------------------------------------
+    # 1) CONFIRM PIVOTS WITHOUT LOOKAHEAD
+    # -----------------------------------------------------
+    #
+    # At live candle t, the latest candle that can now be confirmed
+    # as a pivot is:
+    #
+    #     candidate = t - pivot_window
+    #
+    # Because only now do we have pivot_window candles to its right.
+    #
+
+    candidate = t - pivot_window
+
+    if candidate >= 0:
+        confirm_pivot_at(candidate, t)
+
+
+    # -----------------------------------------------------
+    # 2) DETECT MARKET STRUCTURE (BOS / CHoCH)
+    # -----------------------------------------------------
+
+    structure_event = "none"
+    previous_trend = trend_state
+
+    new_break_up = false
+    new_break_down = false
+
+    if last_swing_high_index is not null:
+        if close[t] > high[last_swing_high_index]:
+            new_break_up = true
+
+    if last_swing_low_index is not null:
+        if close[t] < low[last_swing_low_index]:
+            new_break_down = true
+
+    if new_break_up and not new_break_down:
+        if previous_trend == "bearish":
+            structure_event = "CHoCH_up"
+            mark_CHoCH_up(t)
+        else:
+            structure_event = "BOS_up"
+            mark_BOS_up(t)
+
+        trend_state = "bullish"
+
+    else if new_break_down and not new_break_up:
+        if previous_trend == "bullish":
+            structure_event = "CHoCH_down"
+            mark_CHoCH_down(t)
+        else:
+            structure_event = "BOS_down"
+            mark_BOS_down(t)
+
+        trend_state = "bearish"
+
+    else:
+        structure_event = "none"
+
+
+    # -----------------------------------------------------
+    # 3) CREATE ORDER BLOCKS AFTER BREAK
+    # -----------------------------------------------------
+
+    if structure_event == "BOS_up" or structure_event == "CHoCH_up":
+        source = find_last_down_candle_before_break(t)
+
+        if source is not null:
+            register_bullish_orderblock(source, t)
+
+    if structure_event == "BOS_down" or structure_event == "CHoCH_down":
+        source = find_last_up_candle_before_break(t)
+
+        if source is not null:
+            register_bearish_orderblock(source, t)
+
+
+    # -----------------------------------------------------
+    # 4) MANAGE / VALIDATE ORDER BLOCKS
+    # -----------------------------------------------------
+
+    for each OB in active_order_blocks:
+
+        if OB.valid == false:
+            continue
+
+        # Allow a retest only after creation candle
+        if t <= OB.created_at:
+            continue
+
+        # Mark retest / touch
+        if price_range_intersects_zone(t, OB.bottom, OB.top):
+            OB.touched = true
+
+        # Invalidate if price closes beyond protected side
+        if OB.type == "bullish":
+            if close[t] < OB.bottom:
+                OB.valid = false
+
+        if OB.type == "bearish":
+            if close[t] > OB.top:
+                OB.valid = false
+
+
+    # -----------------------------------------------------
+    # 5) ENTRY LOGIC
+    # -----------------------------------------------------
+    #
+    # Use the most recent valid touched OB in the direction of trend
+    #
+
+    if trend_state == "bullish":
+        bullish_entry_OB = find_most_recent_matching_ob("bullish", t)
+
+        if bullish_entry_OB is not null:
+            if position.side == "flat":
+                open_long(default_position_size, t, bullish_entry_OB.id)
+
+            else if position.side == "long":
+                add_to_long(default_position_size)
+
+            else if position.side == "short":
+                close_short(t)
+                open_long(default_position_size, t, bullish_entry_OB.id)
+
+
+    if trend_state == "bearish":
+        bearish_entry_OB = find_most_recent_matching_ob("bearish", t)
+
+        if bearish_entry_OB is not null:
+            if position.side == "flat":
+                open_short(default_position_size, t, bearish_entry_OB.id)
+
+            else if position.side == "short":
+                add_to_short(default_position_size)
+
+            else if position.side == "long":
+                close_long(t)
+                open_short(default_position_size, t, bearish_entry_OB.id)
+
+
+    # -----------------------------------------------------
+    # 6) EXIT LOGIC
+    # -----------------------------------------------------
+
+    if position.side == "long":
+        entry_ob = get_ob_by_id(position.entry_ob_id)
+
+        if entry_ob is not null:
+            if close[t] < entry_ob.bottom:
+                close_long(t)
+
+    if position.side == "short":
+        entry_ob = get_ob_by_id(position.entry_ob_id)
+
+        if entry_ob is not null:
+            if close[t] > entry_ob.top:
+                close_short(t)
+
+
+# =========================================================
+# END OF STRATEGY
+# =========================================================
