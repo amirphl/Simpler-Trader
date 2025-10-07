@@ -190,8 +190,12 @@ class BaseBacktester:
         if not timeframes:
             raise ValueError("strategy must provide at least one timeframe")
 
-        start = _ensure_utc(config.start.replace(hour=0, minute=0, second=0, microsecond=0))
-        end = _ensure_utc(config.end.replace(hour=23, minute=59, second=59, microsecond=999999))
+        start = _ensure_utc(
+            config.start.replace(hour=0, minute=0, second=0, microsecond=0)
+        )
+        end = _ensure_utc(
+            config.end.replace(hour=23, minute=59, second=59, microsecond=999999)
+        )
         warmup_start = (
             start - timedelta(days=config.warmup_days) if config.warmup_days else start
         )
@@ -211,8 +215,7 @@ class BaseBacktester:
         )
         result = self._strategy.run(context)
         custom_stats: Mapping[str, Any] | None = None
-        # TODO:
-        if isinstance(result, tuple) and len(result) == 2:
+        if len(result) == 2:
             trades, custom_stats = result  # type: ignore[misc]
         else:
             trades = result  # type: ignore[assignment]
@@ -333,12 +336,18 @@ class BaseBacktester:
             # Convert annual risk-free rate to per-trade using average trade duration,
             # then annualize Sharpe by trades-per-year to avoid mixing time bases.
             avg_trade_years = stats.average_trade_duration_sec / (365.25 * 24 * 3600)
-            trades_per_year = (1.0 / avg_trade_years) if avg_trade_years > 0 else len(trades)
-            rf_per_trade = config.risk_free_rate * avg_trade_years if avg_trade_years > 0 else 0.0
+            trades_per_year = (
+                (1.0 / avg_trade_years) if avg_trade_years > 0 else len(trades)
+            )
+            rf_per_trade = (
+                config.risk_free_rate * avg_trade_years if avg_trade_years > 0 else 0.0
+            )
 
             excess_return = avg_return - rf_per_trade
             sharpe = (excess_return / std_dev) if std_dev else 0.0
-            stats.sharpe_ratio = sharpe * math.sqrt(trades_per_year) if trades_per_year > 0 else 0.0
+            stats.sharpe_ratio = (
+                sharpe * math.sqrt(trades_per_year) if trades_per_year > 0 else 0.0
+            )
         else:
             stats.sharpe_ratio = 0.0
 

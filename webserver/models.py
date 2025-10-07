@@ -246,6 +246,58 @@ class EngulfingStrategyParams(BaseModel):
         return normalized
 
 
+class PivotRequest(BaseModel):
+    """Parameters for pivot detection experiment."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    symbol: str = Field(default="ETHUSDT")
+    timeframe: str = Field(default="1h")
+    start: datetime
+    end: datetime
+    scan_length: int = Field(default=500, ge=1)
+    http_proxy: str | None = None
+    https_proxy: str | None = None
+
+
+class PivotPoint(BaseModel):
+    index: int
+    type: Literal["bullish", "bearish"]
+    high: float
+    low: float
+    haunted: bool
+    time: datetime
+    reference_index: int
+    reference_time: datetime
+    trigger_index: int
+    trigger_time: datetime
+    invalidation_index: int | None = None
+    invalidation_time: datetime | None = None
+    next_bullish_index: int | None = None
+    next_bullish_time: datetime | None = None
+    next_bearish_index: int | None = None
+    next_bearish_time: datetime | None = None
+    previous_bullish_index: int | None = None
+    previous_bullish_time: datetime | None = None
+    previous_bearish_index: int | None = None
+    previous_bearish_time: datetime | None = None
+
+
+class CandleForPivot(BaseModel):
+    open_time: datetime
+    close_time: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: float
+
+
+class PivotResponse(BaseModel):
+    pivots: List[PivotPoint]
+    candles: List[CandleForPivot]
+
+
 class BacktestSubmission(BaseModel):
     """Payload used by the web UI to request a backtest run."""
 
