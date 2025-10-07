@@ -256,6 +256,8 @@ class PivotRequest(BaseModel):
     start: datetime
     end: datetime
     scan_length: int = Field(default=500, ge=1)
+    source: Literal["binance", "csv"] = Field(default="binance")
+    csv_path: str | None = None
     http_proxy: str | None = None
     https_proxy: str | None = None
 

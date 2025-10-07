@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import List, Sequence
 
 from candle_downloader.binance import BinanceClient, BinanceClientConfig, interval_to_milliseconds, MAX_BATCH
-from candle_downloader.models import Candle
+from candle_downloader.models import Candle, to_milliseconds
+from experiments.candle_csv import read_candles_from_csv
 
 
 @dataclass
@@ -207,3 +210,108 @@ def download_candles(
         candles.extend(fetched)
         cursor = fetched[-1].open_time_ms + interval_to_milliseconds(interval)
     return candles
+
+
+def get_candles(
+    *,
+    source: str,
+    symbol: str,
+    interval: str,
+    start_ms: int,
+    end_ms: int,
+    csv_path: str | None = None,
+    proxies: dict | None = None,
+    logger=None,
+) -> List[Candle]:
+    source_normalized = source.strip().lower()
+    if source_normalized == "binance":
+        return download_candles(
+            symbol=symbol,
+            interval=interval,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            proxies=proxies,
+            logger=logger,
+        )
+    if source_normalized == "csv":
+        if not csv_path:
+            raise ValueError("csv_path is required when source='csv'")
+        return read_candles_from_csv(
+            csv_path,
+            symbol=symbol,
+            interval=interval,
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+    raise ValueError("source must be either 'binance' or 'csv'")
+
+
+def parse_datetime(value: str) -> datetime:
+    cleaned = value.strip()
+    if cleaned.endswith("Z"):
+        cleaned = cleaned[:-1] + "+00:00"
+    moment = datetime.fromisoformat(cleaned)
+    if moment.tzinfo is None:
+        return moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run pivot detection on candle data.")
+    parser.add_argument("--symbol", required=True, help="Symbol, e.g. ETHUSDT")
+    parser.add_argument("--timeframe", required=True, help="Timeframe, e.g. 1h")
+    parser.add_argument(
+        "--start",
+        required=True,
+        help="Start datetime in ISO format, e.g. 2026-01-01T00:00:00Z",
+    )
+    parser.add_argument(
+        "--end",
+        required=True,
+        help="End datetime in ISO format, e.g. 2026-01-10T00:00:00Z",
+    )
+    parser.add_argument("--scan-length", type=int, default=500, help="Pivot scan length")
+    parser.add_argument(
+        "--source",
+        choices=["binance", "csv"],
+        default="binance",
+        help="Candle source",
+    )
+    parser.add_argument(
+        "--csv-path",
+        default=None,
+        help="Required when --source csv; path to candle CSV file",
+    )
+    parser.add_argument("--http-proxy", default=None, help="Optional HTTP proxy URL")
+    parser.add_argument("--https-proxy", default=None, help="Optional HTTPS proxy URL")
+    args = parser.parse_args()
+
+    proxies = {}
+    if args.http_proxy:
+        proxies["http"] = args.http_proxy
+    if args.https_proxy:
+        proxies["https"] = args.https_proxy
+
+    candles = get_candles(
+        source=args.source,
+        symbol=args.symbol.strip().upper(),
+        interval=args.timeframe.strip(),
+        start_ms=to_milliseconds(parse_datetime(args.start)),
+        end_ms=to_milliseconds(parse_datetime(args.end)),
+        csv_path=args.csv_path,
+        proxies=proxies or None,
+    )
+    pivots = detect_pivots(candles, args.scan_length)
+    print(f"Candles: {len(candles)}")
+    print(f"Pivots: {len(pivots)}")
+    for pivot in pivots:
+        print(
+            f"{pivot.type} pivot index={pivot.index} "
+            f"ref={pivot.reference_index} trigger={pivot.trigger_index} "
+            f"invalidation={pivot.invalidation_index} haunted={pivot.haunted}"
+        )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

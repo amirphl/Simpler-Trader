@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse  # type: ignore[import-not-found]
 from fastapi.staticfiles import StaticFiles  # type: ignore[import-not-found]
 
 from candle_downloader.models import to_milliseconds
-from experiments.pivot_detection import detect_pivots, download_candles
+from experiments.pivot_detection import detect_pivots, get_candles
 from .models import CandleForPivot, PivotPoint, PivotRequest, PivotResponse
 
 
@@ -69,6 +69,8 @@ FORCE_HTTPS = _bool_env("WEB_FORCE_HTTPS", False)
 PROXY_FALLBACK = os.getenv("WEB_CANDLE_PROXY")
 HTTP_PROXY_FALLBACK = os.getenv("WEB_CANDLE_HTTP_PROXY")
 HTTPS_PROXY_FALLBACK = os.getenv("WEB_CANDLE_HTTPS_PROXY")
+PIVOT_CANDLE_SOURCE = os.getenv("PIVOT_CANDLE_SOURCE", "binance").strip().lower()
+PIVOT_CANDLE_CSV_PATH = os.getenv("PIVOT_CANDLE_CSV_PATH")
 
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=TRUSTED_HOSTS)
 app.add_middleware(
@@ -109,11 +111,15 @@ async def compute_pivots(payload: PivotRequest) -> PivotResponse:
 
     start_ms = to_milliseconds(payload.start)
     end_ms = to_milliseconds(payload.end)
-    candles = download_candles(
+    source = (payload.source or PIVOT_CANDLE_SOURCE or "binance").strip().lower()
+    csv_path = payload.csv_path or PIVOT_CANDLE_CSV_PATH
+    candles = get_candles(
+        source=source,
         symbol=payload.symbol,
         interval=payload.timeframe,
         start_ms=start_ms,
         end_ms=end_ms,
+        csv_path=csv_path,
         proxies=proxies or None,
         logger=logger.getChild("pivots.binance"),
     )
