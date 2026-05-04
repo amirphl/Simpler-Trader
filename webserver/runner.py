@@ -10,17 +10,14 @@ from backtest import (
     BaseBacktester,
     EngulfingStrategy,
     EngulfingStrategyConfig,
-    PinBarMagicStrategy,
-    PinBarMagicStrategyConfig,
+    PinBarMagicStrategyConfigV3,
+    PinBarMagicStrategyV3,
     PinbarStrategy,
     PinbarStrategyConfig,
     StrongTrendStairStrategy,
     StrongTrendStairStrategyConfig,
 )
-from backtest.pinbar_magic_strategy_v2 import (
-    PinBarMagicStrategyConfigV2,
-    PinBarMagicStrategyV2,
-)
+
 from backtest.stochastic_fsm_strategy import (
     StochasticRsiFsmConfig,
     StochasticRsiFsmStrategy,
@@ -32,8 +29,7 @@ from candle_downloader.storage import build_store
 from .models import (
     BacktestSubmission,
     EngulfingStrategyParams,
-    PinbarMagicStrategyParams,
-    PinbarMagicStrategyParamsV2,
+    PinbarMagicStrategyParamsV3,
     PinbarStrategyParams,
     StrongTrendStairParams,
     StochasticFsmParams,
@@ -104,49 +100,32 @@ def run_backtest_job(
                 grid_martingales_percent=stoch_params.grid_martingales_percent,
             )
         )
-    elif submission.strategy == "pinbar_magic_v2":
-        magic_params_v2 = cast(PinbarMagicStrategyParamsV2, params)
-        strategy = PinBarMagicStrategyV2(
-            PinBarMagicStrategyConfigV2(
-                symbol=magic_params_v2.symbol,
-                timeframe=magic_params_v2.timeframe,
-                leverage=magic_params_v2.leverage,
-                equity_risk_pct=magic_params_v2.equity_risk_pct,
-                atr_multiple=magic_params_v2.atr_multiple,
-                trail_points=magic_params_v2.trail_points,
-                trail_offset=magic_params_v2.trail_offset,
-                slow_sma_period=magic_params_v2.slow_sma_period,
-                medium_ema_period=magic_params_v2.medium_ema_period,
-                fast_ema_period=magic_params_v2.fast_ema_period,
-                atr_period=magic_params_v2.atr_period,
-                entry_cancel_bars=magic_params_v2.entry_cancel_bars,
-                trailing_tick_timeframe=magic_params_v2.trailing_tick_timeframe.strip(),
-                use_trailing_tick_emulation=magic_params_v2.use_trailing_tick_emulation,
-                use_stop_fill_open_gap=magic_params_v2.use_stop_fill_open_gap,
-                entry_activation_mode=magic_params_v2.entry_activation_mode.strip().lower(),
-                enable_friday_close=magic_params_v2.enable_friday_close,
-                friday_close_hour_utc=magic_params_v2.friday_close_hour_utc,
-                enable_ema_cross_close=magic_params_v2.enable_ema_cross_close,
-                risk_equity_include_unrealized=magic_params_v2.risk_equity_include_unrealized,
-                risk_equity_mark_source=magic_params_v2.risk_equity_mark_source.strip().lower(),
-            )
-        )
-    elif submission.strategy == "pinbar_magic":
-        magic_params = cast(PinbarMagicStrategyParams, params)
-        strategy = PinBarMagicStrategy(
-            PinBarMagicStrategyConfig(
-                symbol=magic_params.symbol,
-                timeframe=magic_params.timeframe,
-                leverage=magic_params.leverage,
-                equity_risk_pct=magic_params.equity_risk_pct,
-                atr_multiple=magic_params.atr_multiple,
-                trail_points=magic_params.trail_points,
-                trail_offset=magic_params.trail_offset,
-                slow_sma_period=magic_params.slow_sma_period,
-                medium_ema_period=magic_params.medium_ema_period,
-                fast_ema_period=magic_params.fast_ema_period,
-                atr_period=magic_params.atr_period,
-                entry_cancel_bars=magic_params.entry_cancel_bars,
+    elif submission.strategy == "pinbar_magic_v3":
+        magic_params_v3 = cast(PinbarMagicStrategyParamsV3, params)
+        strategy = PinBarMagicStrategyV3(
+            PinBarMagicStrategyConfigV3(
+                symbol=magic_params_v3.symbol,
+                timeframe=magic_params_v3.timeframe,
+                leverage=magic_params_v3.leverage,
+                equity_risk_pct=magic_params_v3.equity_risk_pct,
+                atr_multiple=magic_params_v3.atr_multiple,
+                trail_points=magic_params_v3.trail_points,
+                trail_offset=magic_params_v3.trail_offset,
+                symbol_mintick=magic_params_v3.symbol_mintick,
+                slow_sma_period=magic_params_v3.slow_sma_period,
+                medium_ema_period=magic_params_v3.medium_ema_period,
+                fast_ema_period=magic_params_v3.fast_ema_period,
+                atr_period=magic_params_v3.atr_period,
+                entry_cancel_bars=magic_params_v3.entry_cancel_bars,
+                trailing_tick_timeframe=magic_params_v3.trailing_tick_timeframe.strip(),
+                use_trailing_tick_emulation=magic_params_v3.use_trailing_tick_emulation,
+                use_stop_fill_open_gap=magic_params_v3.use_stop_fill_open_gap,
+                entry_activation_mode=magic_params_v3.entry_activation_mode.strip().lower(),
+                enable_friday_close=magic_params_v3.enable_friday_close,
+                friday_close_hour_utc=magic_params_v3.friday_close_hour_utc,
+                enable_ema_cross_close=magic_params_v3.enable_ema_cross_close,
+                risk_equity_include_unrealized=magic_params_v3.risk_equity_include_unrealized,
+                risk_equity_mark_source=magic_params_v3.risk_equity_mark_source.strip().lower(),
             )
         )
     elif submission.strategy == "pinbar":
