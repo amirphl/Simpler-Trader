@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Liquidity Zone Explorer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #09131a;
+        --panel: rgba(11, 26, 36, 0.88);
+        --panel-2: rgba(8, 18, 25, 0.96);
+        --text: #e7f6ef;
+        --muted: #8cb0a4;
+        --border: rgba(231, 246, 239, 0.08);
+        --up: #31d17c;
+        --down: #ff6b57;
+        --level-2-up: #4fb3ff;
+        --level-2-down: #f5b51f;
+        --segment-up: rgba(49, 209, 124, 0.08);
+        --segment-down: rgba(255, 107, 87, 0.08);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: "Space Grotesk", system-ui, sans-serif;
+        background:
+          radial-gradient(circle at 15% 15%, rgba(49, 209, 124, 0.1), transparent 24%),
+          radial-gradient(circle at 85% 10%, rgba(79, 179, 255, 0.1), transparent 28%),
+          radial-gradient(circle at 70% 90%, rgba(255, 107, 87, 0.1), transparent 24%),
+          linear-gradient(180deg, #071118, #09131a 38%, #081018);
+        color: var(--text);
+      }
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 18px;
+        padding: 18px 22px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(9, 19, 26, 0.8);
+        backdrop-filter: blur(14px);
+      }
+      h1 {
+        margin: 0;
+        font-size: 20px;
+        letter-spacing: 0.02em;
+      }
+      .nav {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .nav a, .tag {
+        color: var(--text);
+        text-decoration: none;
+        font-size: 12px;
+        font-family: "IBM Plex Mono", monospace;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.03);
+      }
+      main {
+        max-width: 1480px;
+        margin: 0 auto;
+        padding: 18px;
+      }
+      .shell {
+        display: grid;
+        grid-template-columns: minmax(320px, 440px) minmax(0, 1fr);
+        gap: 16px;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+      }
+      .controls {
+        padding: 16px;
+      }
+      form {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .wide { grid-column: 1 / -1; }
+      label {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 11px;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+        text-transform: uppercase;
+        font-family: "IBM Plex Mono", monospace;
+      }
+      input, select, button {
+        width: 100%;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+        color: var(--text);
+        padding: 10px 12px;
+        font: inherit;
+      }
+      .check {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 44px;
+        padding: 0 10px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+        font-size: 13px;
+      }
+      .check input {
+        width: auto;
+        margin: 0;
+      }
+      button {
+        background: linear-gradient(135deg, #31d17c, #4fb3ff);
+        color: #041118;
+        font-weight: 700;
+        border: 0;
+        cursor: pointer;
+      }
+      button:hover { filter: brightness(1.04); }
+      .status {
+        margin-top: 12px;
+        min-height: 20px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 14px;
+      }
+      .stat {
+        padding: 12px;
+        border-radius: 14px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.03);
+      }
+      .stat strong {
+        display: block;
+        font-size: 22px;
+        margin-bottom: 4px;
+      }
+      .stat span {
+        font-size: 11px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+        font-family: "IBM Plex Mono", monospace;
+      }
+      .viewport {
+        display: grid;
+        grid-template-rows: auto minmax(0, 1fr);
+        overflow: hidden;
+      }
+      .viewport-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--border);
+      }
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .legend span {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 11px;
+        font-family: "IBM Plex Mono", monospace;
+        color: var(--muted);
+      }
+      .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 999px;
+        display: inline-block;
+      }
+      .line {
+        width: 20px;
+        height: 0;
+        border-top: 3px solid currentColor;
+        display: inline-block;
+      }
+      .line.dashed {
+        border-top-style: dashed;
+      }
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.03);
+        font-size: 11px;
+        font-family: "IBM Plex Mono", monospace;
+      }
+      .chip input {
+        width: auto;
+        margin: 0;
+      }
+      .content {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 340px;
+        min-height: 720px;
+      }
+      .chart-wrap {
+        position: relative;
+        min-height: 720px;
+      }
+      #chart {
+        position: absolute;
+        inset: 0;
+      }
+      .side {
+        border-left: 1px solid var(--border);
+        display: grid;
+        grid-template-rows: 1fr 1fr;
+        min-height: 0;
+      }
+      .side section {
+        padding: 14px;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+      }
+      .side h2 {
+        margin: 0 0 10px;
+        font-size: 13px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+        font-family: "IBM Plex Mono", monospace;
+      }
+      select {
+        flex: 1;
+        min-height: 0;
+      }
+      @media (max-width: 1180px) {
+        .shell { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 980px) {
+        .content { grid-template-columns: 1fr; }
+        .side { border-left: 0; border-top: 1px solid var(--border); }
+        .chart-wrap, #chart { min-height: 520px; }
+      }
+      @media (max-width: 720px) {
+        form { grid-template-columns: 1fr; }
+        .stats { grid-template-columns: 1fr; }
+      }
+    </style>
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <script defer src="/static/js/liquidity_zones.js"></script>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>Liquidity Zone Structure Lab</h1>
+      </div>
+      <div class="nav">
+        <a href="/static/pivots.html">Pivots</a>
+        <a href="/static/bos_choch.html">BOS / CHoCH</a>
+        <span class="tag">Level 1 + Level 2 Zones</span>
+      </div>
+    </header>
+    <main>
+      <div class="shell">
+        <section class="panel controls">
+          <form id="liquidity-zone-form">
+            <div>
+              <label for="symbol">Symbol</label>
+              <input id="symbol" name="symbol" value="ETHUSDT" />
+            </div>
+            <div>
+              <label for="timeframe">Timeframe</label>
+              <input id="timeframe" name="timeframe" value="1h" />
+            </div>
+            <div>
+              <label for="start">Start (UTC)</label>
+              <input id="start" name="start" type="datetime-local" />
+            </div>
+            <div>
+              <label for="end">End (UTC)</label>
+              <input id="end" name="end" type="datetime-local" />
+            </div>
+            <div>
+              <label for="scan_length">Scan Length</label>
+              <input id="scan_length" name="scan_length" type="number" min="50" value="500" />
+            </div>
+            <div>
+              <label for="direction_window">Direction Window</label>
+              <input id="direction_window" name="direction_window" type="number" min="1" value="3" />
+            </div>
+            <div>
+              <label for="hunt_mode">Hunt Mode</label>
+              <select id="hunt_mode" name="hunt_mode">
+                <option value="wick">Wick</option>
+                <option value="close">Close</option>
+              </select>
+            </div>
+            <div>
+              <label for="source">Source</label>
+              <select id="source" name="source">
+                <option value="binance">Binance</option>
+                <option value="csv">CSV</option>
+              </select>
+            </div>
+            <div id="csv-path-field" hidden>
+              <label for="csv_path">CSV Path</label>
+              <input id="csv_path" name="csv_path" placeholder="/abs/path/to/candles.csv" />
+            </div>
+            <div>
+              <label for="maximum_pivot_distance">Max Pivot Distance</label>
+              <input id="maximum_pivot_distance" name="maximum_pivot_distance" type="number" min="1" placeholder="No limit" />
+            </div>
+            <div>
+              <label for="up_pivot_filter">UP Pivot Filter</label>
+              <select id="up_pivot_filter" name="up_pivot_filter">
+                <option value="BULLISH">Bullish</option>
+                <option value="BEARISH">Bearish</option>
+                <option value="ALL">All</option>
+              </select>
+            </div>
+            <div>
+              <label for="down_pivot_filter">DOWN Pivot Filter</label>
+              <select id="down_pivot_filter" name="down_pivot_filter">
+                <option value="BEARISH">Bearish</option>
+                <option value="BULLISH">Bullish</option>
+                <option value="ALL">All</option>
+              </select>
+            </div>
+            <div>
+              <label for="minimum_overlap">Min Overlap</label>
+              <input id="minimum_overlap" name="minimum_overlap" type="number" min="0" step="0.00000001" value="0" />
+            </div>
+            <div>
+              <label for="minimum_overlap_ratio">Min Overlap Ratio</label>
+              <input id="minimum_overlap_ratio" name="minimum_overlap_ratio" type="number" min="0" step="0.0001" value="0" />
+            </div>
+            <div>
+              <label for="slope_epsilon">Slope Epsilon</label>
+              <input id="slope_epsilon" name="slope_epsilon" type="number" min="0" step="0.00000001" value="0" />
+            </div>
+            <div>
+              <label for="epsilon">Epsilon</label>
+              <input id="epsilon" name="epsilon" type="number" min="0.0000000001" step="0.000000001" value="0.000000001" />
+            </div>
+            <div>
+              <label for="http_proxy">HTTP Proxy</label>
+              <input id="http_proxy" name="http_proxy" placeholder="http://127.0.0.1:7890" />
+            </div>
+            <div>
+              <label for="https_proxy">HTTPS Proxy</label>
+              <input id="https_proxy" name="https_proxy" placeholder="http://127.0.0.1:7890" />
+            </div>
+            <label class="check">
+              <input name="include_hunted_pivots" type="checkbox" />
+              Include hunted pivots
+            </label>
+            <label class="check">
+              <input name="representative_include_hunted" type="checkbox" />
+              Representatives may be hunted
+            </label>
+            <label class="check">
+              <input name="allow_reuse" type="checkbox" />
+              Allow pivot reuse
+            </label>
+            <label class="check">
+              <input name="relaxed_slope" type="checkbox" />
+              Relax slope check
+            </label>
+            <label class="check">
+              <input name="include_bos_in_choch_range" type="checkbox" />
+              Include BOS candle
+            </label>
+            <label class="check">
+              <input name="include_hunt_candle_in_choch_range" type="checkbox" checked />
+              Include hunt candle
+            </label>
+            <div class="wide">
+              <button type="submit">Run Liquidity Scan</button>
+            </div>
+          </form>
+          <div id="status" class="status"></div>
+          <div class="stats">
+            <div class="stat">
+              <strong id="segment-count">0</strong>
+              <span>Segments</span>
+            </div>
+            <div class="stat">
+              <strong id="zone-count">0</strong>
+              <span>Zones</span>
+            </div>
+            <div class="stat">
+              <strong id="pivot-count">0</strong>
+              <span>Pivots</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel viewport">
+          <div class="viewport-top">
+            <div class="legend">
+              <span><i class="dot" style="background: var(--up)"></i>L1 UP</span>
+              <span><i class="dot" style="background: var(--down)"></i>L1 DOWN</span>
+              <span><i class="dot" style="background: var(--level-2-up)"></i>L2 UP</span>
+              <span><i class="dot" style="background: var(--level-2-down)"></i>L2 DOWN</span>
+              <span style="color: var(--up)"><i class="line"></i>BOS</span>
+              <span style="color: var(--level-2-up)"><i class="line dashed"></i>CHoCH</span>
+            </div>
+            <span class="tag">Newest to oldest greedy pairing</span>
+          </div>
+          <div class="content">
+            <div class="chart-wrap">
+              <div class="toolbar" style="position:absolute;top:14px;left:14px;z-index:8">
+                <label class="chip">
+                  <input id="show-zone-labels" type="checkbox" checked />
+                  Zone text
+                </label>
+                <label class="chip">
+                  <input id="show-structure-labels" type="checkbox" checked />
+                  BOS/CHoCH text
+                </label>
+                <label class="chip">
+                  <input id="show-pivot-markers" type="checkbox" checked />
+                  Pivots
+                </label>
+              </div>
+              <div id="chart"></div>
+            </div>
+            <div class="side">
+              <section>
+                <h2>Zones</h2>
+                <select id="zone-list" size="16"></select>
+              </section>
+              <section>
+                <h2>Segments</h2>
+                <select id="segment-list" size="16"></select>
+              </section>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </body>
+</html>
