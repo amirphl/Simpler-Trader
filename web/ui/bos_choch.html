@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>BOS / CHoCH Explorer</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #10140f;
+        --panel: #181d16;
+        --panel-2: #0f130e;
+        --text: #edf2e8;
+        --muted: #aeb9a6;
+        --line-up: #22c55e;
+        --line-down: #ef4444;
+        --border: rgba(237, 242, 232, 0.08);
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: ui-monospace, "SFMono-Regular", "Cascadia Mono", "Liberation Mono", monospace;
+        background:
+          linear-gradient(135deg, rgba(34, 197, 94, 0.1), transparent 36%),
+          linear-gradient(315deg, rgba(239, 68, 68, 0.09), transparent 34%),
+          var(--bg);
+        color: var(--text);
+      }
+      header {
+        padding: 16px 20px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        background: rgba(24, 29, 22, 0.88);
+        border-bottom: 1px solid var(--border);
+      }
+      h1 { margin: 0; font-size: 19px; font-weight: 700; }
+      main { padding: 18px; max-width: 1320px; margin: 0 auto; }
+      a { color: var(--text); }
+      form {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+        gap: 10px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 14px;
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+      }
+      label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 5px; }
+      input, select, button {
+        width: 100%;
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 9px 10px;
+        color: var(--text);
+        font: inherit;
+        font-size: 13px;
+      }
+      input[type="checkbox"] {
+        width: auto;
+        margin: 0 8px 0 0;
+      }
+      .check {
+        display: flex;
+        align-items: center;
+        min-height: 35px;
+        color: var(--text);
+      }
+      button {
+        background: linear-gradient(90deg, #1f8a4c, #a82d2d);
+        border: 0;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      button:hover { filter: brightness(1.08); }
+      #status { min-height: 22px; margin-top: 10px; color: var(--muted); font-size: 12px; }
+      .panel {
+        margin-top: 14px;
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 14px;
+        box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
+      }
+      .row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 300px;
+        gap: 14px;
+      }
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.03);
+        font-size: 12px;
+      }
+      .chip input {
+        width: auto;
+        margin: 0;
+      }
+      .swatch {
+        width: 18px;
+        height: 10px;
+        border-radius: 999px;
+        display: inline-block;
+      }
+      .swatch.bos {
+        background: linear-gradient(90deg, var(--line-up), var(--line-down));
+      }
+      .swatch.choch {
+        background: linear-gradient(90deg, #60a5fa, #f59e0b);
+      }
+      #chart {
+        height: 560px;
+        position: relative;
+        overflow: hidden;
+      }
+      #event-list {
+        height: 560px;
+        background: var(--panel-2);
+      }
+      .tag {
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+      }
+      @media (max-width: 980px) {
+        header { align-items: flex-start; flex-direction: column; }
+        .row { grid-template-columns: 1fr; }
+        #chart { height: 500px; }
+        #event-list { height: 260px; }
+      }
+    </style>
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <script defer src="/static/js/bos_choch.js"></script>
+  </head>
+  <body>
+    <header>
+      <h1>BOS / CHoCH Structure Lab</h1>
+      <span class="tag"><a href="/">Pivots</a> · Lightweight Charts · Binance or CSV candles</span>
+    </header>
+    <main>
+      <form id="bos-choch-form">
+        <div>
+          <label for="symbol">Symbol</label>
+          <input id="symbol" name="symbol" value="ETHUSDT" />
+        </div>
+        <div>
+          <label for="timeframe">Timeframe</label>
+          <input id="timeframe" name="timeframe" value="1h" />
+        </div>
+        <div>
+          <label for="start">Start (UTC)</label>
+          <input id="start" name="start" type="datetime-local" />
+        </div>
+        <div>
+          <label for="end">End (UTC)</label>
+          <input id="end" name="end" type="datetime-local" />
+        </div>
+        <div>
+          <label for="direction_window">Direction window</label>
+          <input id="direction_window" name="direction_window" type="number" min="1" value="3" />
+        </div>
+        <div>
+          <label for="hunt_mode">Hunt mode</label>
+          <select id="hunt_mode" name="hunt_mode">
+            <option value="wick">Wick</option>
+            <option value="close">Close</option>
+          </select>
+        </div>
+        <div>
+          <label for="source">Source</label>
+          <select id="source" name="source">
+            <option value="binance">Binance</option>
+            <option value="csv">CSV</option>
+          </select>
+        </div>
+        <div id="csv-path-field" hidden>
+          <label for="csv_path">CSV Path</label>
+          <input id="csv_path" name="csv_path" placeholder="/abs/path/to/candles.csv" />
+        </div>
+        <div>
+          <label for="http_proxy">HTTP Proxy</label>
+          <input id="http_proxy" name="http_proxy" placeholder="http://127.0.0.1:7890" />
+        </div>
+        <div>
+          <label for="https_proxy">HTTPS Proxy</label>
+          <input id="https_proxy" name="https_proxy" placeholder="http://127.0.0.1:7890" />
+        </div>
+        <label class="check">
+          <input name="include_bos_in_choch_range" type="checkbox" />
+          Include BOS in CHoCH range
+        </label>
+        <label class="check">
+          <input name="include_hunt_candle_in_choch_range" type="checkbox" checked />
+          Include hunt candle
+        </label>
+        <div>
+          <label>&nbsp;</label>
+          <button type="submit">Run Structure Scan</button>
+        </div>
+      </form>
+      <div id="status"></div>
+
+      <div class="row panel">
+        <div>
+          <div class="toolbar">
+            <label class="chip">
+              <input id="show-marker-labels" type="checkbox" checked />
+              Show marker text
+            </label>
+            <span class="chip"><i class="swatch bos"></i>BOS = solid line + square</span>
+            <span class="chip"><i class="swatch choch"></i>CHoCH = dashed line + diamond</span>
+          </div>
+          <div id="chart"></div>
+        </div>
+        <div>
+          <label for="event-list">Detected events</label>
+          <select id="event-list" size="22"></select>
+        </div>
+      </div>
+    </main>
+  </body>
+</html>
