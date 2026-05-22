@@ -6,24 +6,38 @@
     <title>BOS / CHoCH Explorer</title>
     <style>
       :root {
-        color-scheme: light;
-        --bg: #10140f;
-        --panel: #181d16;
-        --panel-2: #0f130e;
-        --text: #edf2e8;
-        --muted: #aeb9a6;
-        --line-up: #22c55e;
-        --line-down: #ef4444;
-        --border: rgba(237, 242, 232, 0.08);
+        color-scheme: dark;
+        --bg: #0b1020;
+        --panel: #111827;
+        --panel-2: #090f1d;
+        --chart-bg: #070b14;
+        --text: #f3f6fb;
+        --muted: #a9b4c6;
+        --line-up: #31d17c;
+        --line-down: #ff6b57;
+        --choch-up: #4fb3ff;
+        --choch-down: #f5b51f;
+        --zone-up: rgba(49, 209, 124, 0.15);
+        --zone-down: rgba(255, 107, 87, 0.15);
+        --zone-choch-up: rgba(79, 179, 255, 0.14);
+        --zone-choch-down: rgba(245, 181, 31, 0.14);
+        --pivot-bull: #b6f3cf;
+        --pivot-bear: #ffcc66;
+        --pivot-zone-bull: rgba(182, 243, 207, 0.11);
+        --pivot-zone-bear: rgba(255, 204, 102, 0.11);
+        --reversal: #e879f9;
+        --label-bg: rgba(7, 11, 20, 0.94);
+        --border: rgba(243, 246, 251, 0.1);
       }
-      * { box-sizing: border-box; }
+      * {
+        box-sizing: border-box;
+      }
       body {
         margin: 0;
-        font-family: ui-monospace, "SFMono-Regular", "Cascadia Mono", "Liberation Mono", monospace;
-        background:
-          linear-gradient(135deg, rgba(34, 197, 94, 0.1), transparent 36%),
-          linear-gradient(315deg, rgba(239, 68, 68, 0.09), transparent 34%),
-          var(--bg);
+        font-family:
+          ui-monospace, "SFMono-Regular", "Cascadia Mono", "Liberation Mono",
+          monospace;
+        background: var(--bg);
         color: var(--text);
       }
       header {
@@ -35,9 +49,19 @@
         background: rgba(24, 29, 22, 0.88);
         border-bottom: 1px solid var(--border);
       }
-      h1 { margin: 0; font-size: 19px; font-weight: 700; }
-      main { padding: 18px; max-width: 1320px; margin: 0 auto; }
-      a { color: var(--text); }
+      h1 {
+        margin: 0;
+        font-size: 19px;
+        font-weight: 700;
+      }
+      main {
+        padding: 18px;
+        max-width: 1320px;
+        margin: 0 auto;
+      }
+      a {
+        color: var(--text);
+      }
       form {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
@@ -48,8 +72,15 @@
         padding: 14px;
         box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
       }
-      label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 5px; }
-      input, select, button {
+      label {
+        display: block;
+        font-size: 11px;
+        color: var(--muted);
+        margin-bottom: 5px;
+      }
+      input,
+      select,
+      button {
         width: 100%;
         background: var(--panel-2);
         border: 1px solid var(--border);
@@ -70,13 +101,20 @@
         color: var(--text);
       }
       button {
-        background: linear-gradient(90deg, #1f8a4c, #a82d2d);
+        background: #2563eb;
         border: 0;
         font-weight: 700;
         cursor: pointer;
       }
-      button:hover { filter: brightness(1.08); }
-      #status { min-height: 22px; margin-top: 10px; color: var(--muted); font-size: 12px; }
+      button:hover {
+        filter: brightness(1.08);
+      }
+      #status {
+        min-height: 22px;
+        margin-top: 10px;
+        color: var(--muted);
+        font-size: 12px;
+      }
       .panel {
         margin-top: 14px;
         background: var(--panel);
@@ -85,10 +123,11 @@
         padding: 14px;
         box-shadow: 0 18px 48px rgba(0, 0, 0, 0.28);
       }
-      .row {
+      .events-section {
         display: grid;
-        grid-template-columns: minmax(0, 1fr) 300px;
+        grid-template-columns: minmax(0, 1fr) 400px;
         gap: 14px;
+        margin-top: 14px;
       }
       .toolbar {
         display: flex;
@@ -96,6 +135,32 @@
         gap: 8px;
         align-items: center;
         margin-bottom: 12px;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+      .metric {
+        min-width: 0;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--panel-2);
+        padding: 8px 10px;
+      }
+      .metric strong {
+        display: block;
+        color: var(--text);
+        font-size: 18px;
+        line-height: 1;
+      }
+      .metric span {
+        display: block;
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 11px;
+        white-space: nowrap;
       }
       .chip {
         display: inline-flex;
@@ -121,16 +186,102 @@
         background: linear-gradient(90deg, var(--line-up), var(--line-down));
       }
       .swatch.choch {
-        background: linear-gradient(90deg, #60a5fa, #f59e0b);
+        background: linear-gradient(90deg, var(--choch-up), var(--choch-down));
+      }
+      .swatch.pivot {
+        background: linear-gradient(
+          90deg,
+          var(--pivot-bull),
+          var(--pivot-bear)
+        );
+      }
+      .swatch.reversal {
+        background: var(--reversal);
+        opacity: 0.8;
       }
       #chart {
         height: 560px;
         position: relative;
         overflow: hidden;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--chart-bg);
       }
       #event-list {
-        height: 560px;
+        height: 320px;
+        overflow-y: auto;
         background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        line-height: 1.35;
+      }
+      .event-row {
+        padding: 6px 10px;
+        cursor: pointer;
+        border-bottom: 1px solid rgba(243, 246, 251, 0.05);
+        font-size: 12px;
+        white-space: pre;
+        user-select: none;
+      }
+      .event-row:hover {
+        background: rgba(255, 255, 255, 0.05);
+      }
+      .event-row.selected {
+        background: rgba(255, 255, 255, 0.09);
+        outline: 1px solid rgba(255, 255, 255, 0.15);
+        outline-offset: -1px;
+      }
+      #event-detail {
+        height: 320px;
+        overflow-y: auto;
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 14px;
+      }
+      .sub-panel-list {
+        height: 260px;
+        overflow-y: auto;
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        line-height: 1.35;
+      }
+      .sub-panel-detail {
+        height: 260px;
+        overflow-y: auto;
+        background: var(--panel-2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 14px;
+      }
+      .section-heading {
+        font-size: 11px;
+        color: var(--muted);
+        margin-bottom: 5px;
+      }
+      .detail-placeholder {
+        color: var(--muted);
+        font-size: 12px;
+        text-align: center;
+        margin-top: 50px;
+        margin-bottom: 0;
+      }
+      .detail-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+      .detail-table td {
+        padding: 5px 8px;
+        vertical-align: top;
+        border-bottom: 1px solid rgba(243, 246, 251, 0.06);
+      }
+      .detail-table td.dk {
+        color: var(--muted);
+        white-space: nowrap;
+        padding-right: 16px;
+        width: 44%;
       }
       .tag {
         color: var(--muted);
@@ -138,10 +289,27 @@
         white-space: nowrap;
       }
       @media (max-width: 980px) {
-        header { align-items: flex-start; flex-direction: column; }
-        .row { grid-template-columns: 1fr; }
-        #chart { height: 500px; }
-        #event-list { height: 260px; }
+        header {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+        .events-section {
+          grid-template-columns: 1fr;
+        }
+        .stats {
+          grid-template-columns: repeat(3, minmax(80px, 1fr));
+        }
+        #chart {
+          height: 500px;
+        }
+        #event-list,
+        #event-detail {
+          height: 260px;
+        }
+        .sub-panel-list,
+        .sub-panel-detail {
+          height: 200px;
+        }
       }
     </style>
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
@@ -150,17 +318,17 @@
   <body>
     <header>
       <h1>BOS / CHoCH Structure Lab</h1>
-      <span class="tag"><a href="/">Pivots</a> · Lightweight Charts · Binance or CSV candles</span>
+      <span class="tag">Lightweight Charts · Binance or CSV candles</span>
     </header>
     <main>
       <form id="bos-choch-form">
         <div>
           <label for="symbol">Symbol</label>
-          <input id="symbol" name="symbol" value="ETHUSDT" />
+          <input id="symbol" name="symbol" value="ETHUSDT" required />
         </div>
         <div>
           <label for="timeframe">Timeframe</label>
-          <input id="timeframe" name="timeframe" value="1h" />
+          <input id="timeframe" name="timeframe" value="1h" required />
         </div>
         <div>
           <label for="start">Start (UTC)</label>
@@ -172,13 +340,37 @@
         </div>
         <div>
           <label for="direction_window">Direction window</label>
-          <input id="direction_window" name="direction_window" type="number" min="1" value="3" />
+          <input
+            id="direction_window"
+            name="direction_window"
+            type="number"
+            min="1"
+            value="3"
+          />
+        </div>
+        <div>
+          <label for="scan_length">Pivot scan candles</label>
+          <input
+            id="scan_length"
+            name="scan_length"
+            type="number"
+            min="1"
+            value="500"
+          />
         </div>
         <div>
           <label for="hunt_mode">Hunt mode</label>
           <select id="hunt_mode" name="hunt_mode">
             <option value="wick">Wick</option>
             <option value="close">Close</option>
+          </select>
+        </div>
+        <div>
+          <label for="choch_display_mode">CHoCH display</label>
+          <select id="choch_display_mode" name="choch_display_mode">
+            <option value="all">All</option>
+            <option value="first">First per BOS</option>
+            <option value="last">Last per BOS</option>
           </select>
         </div>
         <div>
@@ -190,23 +382,69 @@
         </div>
         <div id="csv-path-field" hidden>
           <label for="csv_path">CSV Path</label>
-          <input id="csv_path" name="csv_path" placeholder="/abs/path/to/candles.csv" />
+          <input
+            id="csv_path"
+            name="csv_path"
+            placeholder="/abs/path/to/candles.csv"
+          />
         </div>
         <div>
           <label for="http_proxy">HTTP Proxy</label>
-          <input id="http_proxy" name="http_proxy" placeholder="http://127.0.0.1:7890" />
+          <input
+            id="http_proxy"
+            name="http_proxy"
+            placeholder="http://127.0.0.1:7890"
+          />
         </div>
         <div>
           <label for="https_proxy">HTTPS Proxy</label>
-          <input id="https_proxy" name="https_proxy" placeholder="http://127.0.0.1:7890" />
+          <input
+            id="https_proxy"
+            name="https_proxy"
+            placeholder="http://127.0.0.1:7890"
+          />
+        </div>
+        <div>
+          <label for="min_swing_pct"
+            >Min BOS swing % <span style="opacity: 0.55">(0 = off)</span></label
+          >
+          <input
+            id="min_swing_pct"
+            name="min_swing_pct"
+            type="number"
+            min="0"
+            step="0.1"
+            value="0"
+            placeholder="e.g. 0.5"
+          />
         </div>
         <label class="check">
           <input name="include_bos_in_choch_range" type="checkbox" />
           Include BOS in CHoCH range
         </label>
         <label class="check">
-          <input name="include_hunt_candle_in_choch_range" type="checkbox" checked />
+          <input
+            name="include_hunt_candle_in_choch_range"
+            type="checkbox"
+            checked
+          />
           Include hunt candle
+        </label>
+        <label class="check">
+          <input name="include_pullback_in_bos_level" type="checkbox" checked />
+          Include pullback in BOS level
+        </label>
+        <label class="check">
+          <input name="restart_on_invalidation" type="checkbox" />
+          Restart pivots on invalidation
+        </label>
+        <label class="check">
+          <input name="use_structural_left_bound" type="checkbox" />
+          Pivot structural left bound
+        </label>
+        <label class="check">
+          <input name="include_reference_candle" type="checkbox" checked />
+          Include ref candle in pivot
         </label>
         <div>
           <label>&nbsp;</label>
@@ -215,21 +453,114 @@
       </form>
       <div id="status"></div>
 
-      <div class="row panel">
-        <div>
-          <div class="toolbar">
-            <label class="chip">
-              <input id="show-marker-labels" type="checkbox" checked />
-              Show marker text
-            </label>
-            <span class="chip"><i class="swatch bos"></i>BOS = solid line + square</span>
-            <span class="chip"><i class="swatch choch"></i>CHoCH = dashed line + diamond</span>
+      <div class="panel">
+        <div class="stats" aria-live="polite">
+          <div class="metric">
+            <strong id="event-count">0</strong>
+            <span>Events</span>
           </div>
-          <div id="chart"></div>
+          <div class="metric">
+            <strong id="bos-count">0</strong>
+            <span>BOS</span>
+          </div>
+          <div class="metric">
+            <strong id="choch-count">0</strong>
+            <span>CHoCH</span>
+          </div>
+          <div class="metric">
+            <strong id="pivot-count">0</strong>
+            <span>Pivots</span>
+          </div>
+          <div class="metric">
+            <strong id="reversal-count" style="color: var(--reversal)"
+              >0</strong
+            >
+            <span>Reversals</span>
+          </div>
         </div>
-        <div>
-          <label for="event-list">Detected events</label>
-          <select id="event-list" size="22"></select>
+        <div class="toolbar">
+          <label class="chip">
+            <input id="show-marker-labels" type="checkbox" checked />
+            Labels
+          </label>
+          <label class="chip">
+            <input id="show-vertical-labels" type="checkbox" />
+            Vertical labels
+          </label>
+          <label class="chip">
+            <input id="show-event-zones" type="checkbox" checked />
+            Zones
+          </label>
+          <label class="chip">
+            <input id="show-event-points" type="checkbox" checked />
+            Points
+          </label>
+          <label class="chip">
+            <input id="show-pivots" type="checkbox" checked />
+            Pivots
+          </label>
+          <label class="chip">
+            <input id="show-reversals" type="checkbox" checked />
+            Reversals
+          </label>
+          <span class="chip"
+            ><i class="swatch bos"></i>BOS = solid line + square</span
+          >
+          <span class="chip"
+            ><i class="swatch choch"></i>CHoCH = dashed line + diamond</span
+          >
+          <span class="chip"
+            ><i class="swatch pivot"></i>Pivot = range + triangle</span
+          >
+          <span class="chip"
+            ><i class="swatch reversal"></i>Reversal = vertical band</span
+          >
+        </div>
+        <div id="chart"></div>
+        <div class="events-section">
+          <div>
+            <label for="event-list"
+              >Detected events (BOS &amp; CHoCH markers)</label
+            >
+            <div id="event-list" role="listbox" tabindex="0"></div>
+          </div>
+          <div id="event-detail">
+            <p class="detail-placeholder">
+              Click an event to view its full spec
+            </p>
+          </div>
+        </div>
+        <div class="events-section">
+          <div>
+            <p class="section-heading">CHoCH Updates</p>
+            <div
+              id="choch-updates-list"
+              class="sub-panel-list"
+              role="listbox"
+              tabindex="0"
+            ></div>
+          </div>
+          <div id="choch-update-detail" class="sub-panel-detail">
+            <p class="detail-placeholder">
+              Click a CHoCH update to view its full spec
+            </p>
+          </div>
+        </div>
+        <div class="events-section">
+          <div>
+            <p class="section-heading">Detection Events</p>
+            <div
+              id="detection-events-list"
+              class="sub-panel-list"
+              role="listbox"
+              tabindex="0"
+            ></div>
+          </div>
+          <div id="detection-event-detail" class="sub-panel-detail">
+            <p class="detail-placeholder">
+              Click a detection event to view its full spec
+            </p>
+          </div>
         </div>
       </div>
     </main>
