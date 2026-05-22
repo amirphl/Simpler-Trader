@@ -8,8 +8,13 @@
   const zoneCountEl = document.getElementById("zone-count");
   const pivotCountEl = document.getElementById("pivot-count");
   const showZoneLabelsInput = document.getElementById("show-zone-labels");
-  const showStructureLabelsInput = document.getElementById("show-structure-labels");
+  const showStructureLabelsInput = document.getElementById(
+    "show-structure-labels",
+  );
   const showPivotMarkersInput = document.getElementById("show-pivot-markers");
+  const showRepresentativesInput = document.getElementById(
+    "show-representatives",
+  );
 
   const css = getComputedStyle(document.documentElement);
   const COLORS = {
@@ -17,8 +22,15 @@
     down: css.getPropertyValue("--down").trim() || "#ff6b57",
     level2Up: css.getPropertyValue("--level-2-up").trim() || "#4fb3ff",
     level2Down: css.getPropertyValue("--level-2-down").trim() || "#f5b51f",
-    segmentUp: css.getPropertyValue("--segment-up").trim() || "rgba(49, 209, 124, 0.08)",
-    segmentDown: css.getPropertyValue("--segment-down").trim() || "rgba(255, 107, 87, 0.08)",
+    segmentUp:
+      css.getPropertyValue("--segment-up").trim() || "rgba(49, 209, 124, 0.12)",
+    segmentDown:
+      css.getPropertyValue("--segment-down").trim() ||
+      "rgba(255, 107, 87, 0.12)",
+    text: css.getPropertyValue("--text").trim() || "#e7f6ef",
+    panel: css.getPropertyValue("--panel-2").trim() || "rgba(8, 18, 25, 0.96)",
+    borderSoft: "rgba(231, 246, 239, 0.08)",
+    borderHard: "rgba(231, 246, 239, 0.18)",
   };
 
   let chart;
@@ -31,6 +43,7 @@
   let lastSegments = [];
   let lastZones = [];
   let lastMarkers = [];
+  let pivotByIndex = new Map();
 
   function optionalText(value) {
     if (typeof value !== "string") return null;
@@ -43,12 +56,29 @@
     return `${dt.getUTCFullYear()}-${pad(dt.getUTCMonth() + 1)}-${pad(dt.getUTCDate())}T${pad(dt.getUTCHours())}:${pad(dt.getUTCMinutes())}`;
   }
 
-  (() => {
+  function unixTime(value) {
+    if (typeof value === "number") return value;
+    return Math.floor(new Date(value).getTime() / 1000);
+  }
+
+  function timeToX(time) {
+    return chart.timeScale().timeToCoordinate(unixTime(time));
+  }
+
+  function priceToY(price) {
+    return candleSeries.priceToCoordinate(price);
+  }
+
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function setDefaultDates() {
     const end = new Date();
     const start = new Date(end.getTime() - 14 * 24 * 3600 * 1000);
     document.getElementById("start").value = isoInput(start);
     document.getElementById("end").value = isoInput(end);
-  })();
+  }
 
   function syncSourceFields() {
     const source = form?.elements?.source?.value || "binance";
@@ -86,24 +116,28 @@
   function ensureChart() {
     if (chart) return;
     chart = LightweightCharts.createChart(chartContainer, {
-      layout: { background: { color: "#09131a" }, textColor: "#e7f6ef" },
+      layout: { background: { color: "#09131a" }, textColor: COLORS.text },
       grid: {
-        vertLines: { color: "rgba(231,246,239,0.04)" },
-        horzLines: { color: "rgba(231,246,239,0.04)" },
+        vertLines: { color: "rgba(231, 246, 239, 0.05)" },
+        horzLines: { color: "rgba(231, 246, 239, 0.05)" },
       },
       rightPriceScale: { borderVisible: false },
-      timeScale: { borderVisible: false, timeVisible: true, secondsVisible: false },
+      timeScale: {
+        borderVisible: false,
+        timeVisible: true,
+        secondsVisible: false,
+      },
       crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
     });
     candleSeries = chart.addCandlestickSeries({
-      upColor: "#31d17c",
-      downColor: "#ff6b57",
+      upColor: COLORS.up,
+      downColor: COLORS.down,
       borderVisible: false,
-      wickUpColor: "#31d17c",
-      wickDownColor: "#ff6b57",
+      wickUpColor: COLORS.up,
+      wickDownColor: COLORS.down,
     });
     candleSeries.priceScale().applyOptions({
-      scaleMargins: { top: 0.1, bottom: 0.1 },
+      scaleMargins: { top: 0.12, bottom: 0.12 },
     });
     ensureOverlay();
     resizeOverlay();
@@ -119,34 +153,49 @@
     resizeObserver.observe(chartContainer);
   }
 
-  function unixTime(value) {
-    if (typeof value === "number") return value;
-    return Math.floor(new Date(value).getTime() / 1000);
-  }
-
-  function timeToX(time) {
-    return chart.timeScale().timeToCoordinate(unixTime(time));
-  }
-
-  function priceToY(price) {
-    return candleSeries.priceToCoordinate(price);
-  }
-
   function zoneStyle(zone) {
     if (zone.level === 1 && zone.direction === "UPWARD") {
-      return { stroke: COLORS.up, fill: "rgba(49, 209, 124, 0.14)", dash: [], badge: "L1 UP" };
+      return {
+        stroke: COLORS.up,
+        fill: zone.is_hunted
+          ? "rgba(49, 209, 124, 0.09)"
+          : "rgba(49, 209, 124, 0.16)",
+        midline: "rgba(199, 255, 224, 0.68)",
+        badge: "L1 UP",
+        dash: [],
+      };
     }
     if (zone.level === 1) {
-      return { stroke: COLORS.down, fill: "rgba(255, 107, 87, 0.14)", dash: [], badge: "L1 DOWN" };
+      return {
+        stroke: COLORS.down,
+        fill: zone.is_hunted
+          ? "rgba(255, 107, 87, 0.09)"
+          : "rgba(255, 107, 87, 0.16)",
+        midline: "rgba(255, 226, 220, 0.68)",
+        badge: "L1 DOWN",
+        dash: [],
+      };
     }
     if (zone.direction === "UPWARD") {
-      return { stroke: COLORS.level2Up, fill: "rgba(79, 179, 255, 0.12)", dash: [8, 5], badge: "L2 UP" };
+      return {
+        stroke: COLORS.level2Up,
+        fill: zone.is_hunted
+          ? "rgba(79, 179, 255, 0.08)"
+          : "rgba(79, 179, 255, 0.14)",
+        midline: "rgba(214, 238, 255, 0.72)",
+        badge: "L2 UP",
+        dash: [8, 4],
+      };
     }
-    return { stroke: COLORS.level2Down, fill: "rgba(245, 181, 31, 0.14)", dash: [8, 5], badge: "L2 DOWN" };
-  }
-
-  function pivotColor(pivot) {
-    return pivot.type === "bullish" ? COLORS.up : COLORS.down;
+    return {
+      stroke: COLORS.level2Down,
+      fill: zone.is_hunted
+        ? "rgba(245, 181, 31, 0.08)"
+        : "rgba(245, 181, 31, 0.14)",
+      midline: "rgba(255, 244, 201, 0.72)",
+      badge: "L2 DOWN",
+      dash: [8, 4],
+    };
   }
 
   function structureLineColor(marker) {
@@ -156,60 +205,196 @@
     return marker.direction === "UPWARD" ? COLORS.level2Up : COLORS.level2Down;
   }
 
-  function structureIconColor(marker) {
-    return structureLineColor(marker);
+  function pivotColor(pivot) {
+    return pivot.type === "bullish" ? COLORS.up : COLORS.down;
+  }
+
+  function pivotPrice(pivot) {
+    return pivot.type === "bullish" ? pivot.low : pivot.high;
+  }
+
+  function representativePrice(segment) {
+    const pivot = pivotByIndex.get(segment.representative_pivot_index);
+    if (pivot) return pivotPrice(pivot);
+    const candle = lastCandles[segment.representative_pivot_index];
+    return candle ? candle.close : null;
+  }
+
+  function markerLabel(marker) {
+    return `${marker.type} ${marker.index} ${marker.direction === "UPWARD" ? "UP" : "DOWN"}`;
+  }
+
+  function drawTag(
+    text,
+    x,
+    y,
+    borderColor,
+    fillColor = "rgba(8, 18, 25, 0.94)",
+    align = "left",
+  ) {
+    overlayCtx.save();
+    overlayCtx.font = "600 10px 'IBM Plex Mono', monospace";
+    const textWidth = Math.ceil(overlayCtx.measureText(text).width);
+    const boxWidth = textWidth + 12;
+    const boxHeight = 18;
+    const left = align === "right" ? x - boxWidth : x;
+    overlayCtx.fillStyle = fillColor;
+    overlayCtx.fillRect(left, y, boxWidth, boxHeight);
+    overlayCtx.strokeStyle = borderColor;
+    overlayCtx.lineWidth = 1;
+    overlayCtx.strokeRect(left + 0.5, y + 0.5, boxWidth - 1, boxHeight - 1);
+    overlayCtx.fillStyle = borderColor;
+    overlayCtx.textAlign = "left";
+    overlayCtx.textBaseline = "middle";
+    overlayCtx.fillText(text, left + 6, y + boxHeight / 2 + 0.5);
+    overlayCtx.restore();
   }
 
   function drawSegmentBands(width) {
-    const topBandHeight = 16;
+    const bandTop = 0;
+    const bandHeight = 18;
     lastSegments.forEach((segment) => {
       const x0 = timeToX(segment.start_time);
       const x1 = timeToX(segment.end_time);
       if (x0 == null || x1 == null) return;
-      overlayCtx.fillStyle = segment.direction === "UPWARD" ? COLORS.segmentUp : COLORS.segmentDown;
-      overlayCtx.fillRect(Math.min(x0, x1), 0, Math.abs(x1 - x0) || 2, topBandHeight);
+      const left = Math.min(x0, x1);
+      const spanWidth = Math.max(Math.abs(x1 - x0), 2);
+      overlayCtx.fillStyle =
+        segment.direction === "UPWARD" ? COLORS.segmentUp : COLORS.segmentDown;
+      overlayCtx.fillRect(left, bandTop, spanWidth, bandHeight);
+      if (spanWidth > 84) {
+        drawTag(
+          `SEG_${segment.index}`,
+          left + 3,
+          2,
+          segment.direction === "UPWARD" ? COLORS.up : COLORS.down,
+          "rgba(8, 18, 25, 0.88)",
+        );
+      }
     });
-    overlayCtx.strokeStyle = "rgba(231,246,239,0.08)";
+    overlayCtx.strokeStyle = COLORS.borderHard;
     overlayCtx.beginPath();
-    overlayCtx.moveTo(0, topBandHeight + 0.5);
-    overlayCtx.lineTo(width, topBandHeight + 0.5);
+    overlayCtx.moveTo(0, bandHeight + 0.5);
+    overlayCtx.lineTo(width, bandHeight + 0.5);
     overlayCtx.stroke();
+  }
+
+  function drawPivotAnchor(x, y, color) {
+    overlayCtx.save();
+    overlayCtx.fillStyle = color;
+    overlayCtx.beginPath();
+    overlayCtx.arc(x, y, 3.5, 0, Math.PI * 2);
+    overlayCtx.fill();
+    overlayCtx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+    overlayCtx.lineWidth = 1;
+    overlayCtx.stroke();
+    overlayCtx.restore();
   }
 
   function drawZones() {
     lastZones.forEach((zone) => {
       const x0 = timeToX(zone.start_time);
       const x1 = timeToX(zone.end_time);
-      const y0 = priceToY(zone.price_high);
-      const y1 = priceToY(zone.price_low);
-      if (x0 == null || x1 == null || y0 == null || y1 == null) return;
+      const yTop = priceToY(zone.price_high);
+      const yBottom = priceToY(zone.price_low);
+      if (x0 == null || x1 == null || yTop == null || yBottom == null) return;
 
-      const left = Math.min(x0, x1);
-      const top = Math.min(y0, y1);
-      const width = Math.max(Math.abs(x1 - x0), 2);
-      const height = Math.max(Math.abs(y1 - y0), 2);
       const style = zoneStyle(zone);
+      const left = Math.min(x0, x1);
+      const right = Math.max(x0, x1);
+      const top = Math.min(yTop, yBottom);
+      const bottom = Math.max(yTop, yBottom);
+      const width = Math.max(right - left, 2);
+      const height = Math.max(bottom - top, 2);
+      const midY = (top + bottom) / 2;
 
+      overlayCtx.save();
       overlayCtx.fillStyle = style.fill;
       overlayCtx.fillRect(left, top, width, height);
+
       overlayCtx.strokeStyle = style.stroke;
-      overlayCtx.lineWidth = zone.level === 2 ? 2 : 1.5;
+      overlayCtx.lineWidth = zone.level === 2 ? 2.4 : 2;
       overlayCtx.setLineDash(style.dash);
-      overlayCtx.strokeRect(left + 0.5, top + 0.5, Math.max(width - 1, 1), Math.max(height - 1, 1));
+      overlayCtx.strokeRect(
+        left + 0.5,
+        top + 0.5,
+        Math.max(width - 1, 1),
+        Math.max(height - 1, 1),
+      );
       overlayCtx.setLineDash([]);
 
+      overlayCtx.strokeStyle = style.stroke;
+      overlayCtx.lineWidth = zone.level === 2 ? 2.2 : 1.8;
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(left, top);
+      overlayCtx.lineTo(right, top);
+      overlayCtx.moveTo(left, bottom);
+      overlayCtx.lineTo(right, bottom);
+      overlayCtx.stroke();
+
+      overlayCtx.strokeStyle = style.midline;
+      overlayCtx.lineWidth = 1.2;
+      overlayCtx.setLineDash([5, 4]);
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(left, midY);
+      overlayCtx.lineTo(right, midY);
+      overlayCtx.stroke();
+      overlayCtx.setLineDash([]);
+
+      overlayCtx.strokeStyle = style.stroke;
+      overlayCtx.lineWidth = 1;
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(left, top);
+      overlayCtx.lineTo(left, bottom);
+      overlayCtx.moveTo(right, top);
+      overlayCtx.lineTo(right, bottom);
+      overlayCtx.stroke();
+
+      const leftPivot = pivotByIndex.get(zone.left_pivot_index);
+      const rightPivot = pivotByIndex.get(zone.right_pivot_index);
+      if (leftPivot) {
+        const y = priceToY(pivotPrice(leftPivot));
+        if (y != null) drawPivotAnchor(left, y, style.stroke);
+      }
+      if (rightPivot) {
+        const y = priceToY(pivotPrice(rightPivot));
+        if (y != null) drawPivotAnchor(right, y, style.stroke);
+      }
+
+      if (zone.is_hunted) {
+        overlayCtx.strokeStyle = "rgba(255, 255, 255, 0.34)";
+        overlayCtx.lineWidth = 1;
+        overlayCtx.beginPath();
+        overlayCtx.moveTo(left + 4, top + 4);
+        overlayCtx.lineTo(right - 4, bottom - 4);
+        overlayCtx.moveTo(left + 4, bottom - 4);
+        overlayCtx.lineTo(right - 4, top + 4);
+        overlayCtx.stroke();
+      }
+
+      overlayCtx.restore();
+
       if (showZoneLabelsInput?.checked) {
-        overlayCtx.font = "500 11px 'IBM Plex Mono', monospace";
-        const label = `${style.badge} · ${zone.id}${zone.is_hunted ? " *" : ""}`;
-        const textWidth = Math.ceil(overlayCtx.measureText(label).width);
-        const labelX = left + 6;
-        const labelY = Math.max(top - 8, 28);
-        overlayCtx.fillStyle = "rgba(9, 19, 26, 0.9)";
-        overlayCtx.fillRect(labelX - 4, labelY - 11, textWidth + 8, 14);
-        overlayCtx.strokeStyle = style.stroke;
-        overlayCtx.strokeRect(labelX - 3.5, labelY - 10.5, textWidth + 7, 13);
-        overlayCtx.fillStyle = style.stroke;
-        overlayCtx.fillText(label, labelX, labelY);
+        const huntedText = zone.is_hunted ? " H" : "";
+        const label = `${style.badge} ${zone.id}${huntedText}`;
+        const labelY = top + 6;
+        if (height > 26 && width > 120) {
+          drawTag(
+            label,
+            left + 6,
+            labelY,
+            style.stroke,
+            "rgba(8, 18, 25, 0.9)",
+          );
+        } else {
+          drawTag(
+            label,
+            left + 6,
+            Math.max(top - 22, 24),
+            style.stroke,
+            "rgba(8, 18, 25, 0.96)",
+          );
+        }
       }
     });
   }
@@ -218,9 +403,20 @@
     if (!showPivotMarkersInput?.checked) return;
     lastPivots.forEach((pivot) => {
       const x = timeToX(pivot.time);
-      const price = pivot.type === "bullish" ? pivot.low : pivot.high;
-      const y = priceToY(price);
+      const y = priceToY(pivotPrice(pivot));
       if (x == null || y == null) return;
+
+      overlayCtx.save();
+      overlayCtx.fillStyle = "rgba(9, 19, 26, 0.92)";
+      overlayCtx.beginPath();
+      overlayCtx.arc(x, y, 8, 0, Math.PI * 2);
+      overlayCtx.fill();
+
+      overlayCtx.strokeStyle = pivotColor(pivot);
+      overlayCtx.lineWidth = 1.6;
+      overlayCtx.beginPath();
+      overlayCtx.arc(x, y, 7.2, 0, Math.PI * 2);
+      overlayCtx.stroke();
 
       overlayCtx.fillStyle = pivotColor(pivot);
       overlayCtx.beginPath();
@@ -237,121 +433,130 @@
       overlayCtx.fill();
 
       if (pivot.haunted) {
-        overlayCtx.strokeStyle = "#ffffff";
+        overlayCtx.strokeStyle = "rgba(255, 255, 255, 0.92)";
         overlayCtx.lineWidth = 1;
         overlayCtx.beginPath();
-        overlayCtx.moveTo(x - 4, y - 4);
-        overlayCtx.lineTo(x + 4, y + 4);
-        overlayCtx.moveTo(x + 4, y - 4);
-        overlayCtx.lineTo(x - 4, y + 4);
+        overlayCtx.moveTo(x - 4.5, y - 4.5);
+        overlayCtx.lineTo(x + 4.5, y + 4.5);
+        overlayCtx.moveTo(x + 4.5, y - 4.5);
+        overlayCtx.lineTo(x - 4.5, y + 4.5);
         overlayCtx.stroke();
       }
+      overlayCtx.restore();
     });
   }
 
   function drawRepresentatives() {
+    if (showRepresentativesInput && !showRepresentativesInput.checked) return;
     lastSegments.forEach((segment) => {
-      if (!segment.representative_pivot_time) return;
+      if (
+        segment.representative_pivot_index == null ||
+        !segment.representative_pivot_time
+      ) {
+        return;
+      }
       const x = timeToX(segment.representative_pivot_time);
-      const candle = lastCandles[segment.representative_pivot_index];
-      if (x == null || !candle) return;
-      const y = priceToY(candle.close);
-      if (y == null) return;
+      const price = representativePrice(segment);
+      const y = price == null ? null : priceToY(price);
+      if (x == null || y == null) return;
 
-      overlayCtx.fillStyle = segment.direction === "UPWARD" ? COLORS.level2Up : COLORS.level2Down;
+      const color =
+        segment.direction === "UPWARD" ? COLORS.level2Up : COLORS.level2Down;
+      overlayCtx.save();
+      overlayCtx.fillStyle = "rgba(9, 19, 26, 0.94)";
       overlayCtx.beginPath();
-      overlayCtx.moveTo(x, y - 7);
-      overlayCtx.lineTo(x + 7, y);
-      overlayCtx.lineTo(x, y + 7);
-      overlayCtx.lineTo(x - 7, y);
+      overlayCtx.moveTo(x, y - 10);
+      overlayCtx.lineTo(x + 10, y);
+      overlayCtx.lineTo(x, y + 10);
+      overlayCtx.lineTo(x - 10, y);
       overlayCtx.closePath();
       overlayCtx.fill();
+
+      overlayCtx.strokeStyle = color;
+      overlayCtx.lineWidth = 2;
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(x, y - 9);
+      overlayCtx.lineTo(x + 9, y);
+      overlayCtx.lineTo(x, y + 9);
+      overlayCtx.lineTo(x - 9, y);
+      overlayCtx.closePath();
+      overlayCtx.stroke();
+
+      overlayCtx.fillStyle = color;
+      overlayCtx.font = "700 9px 'IBM Plex Mono', monospace";
+      overlayCtx.textAlign = "center";
+      overlayCtx.textBaseline = "middle";
+      overlayCtx.fillText("R", x, y + 0.5);
+      overlayCtx.restore();
     });
   }
 
-  function structureMarkerY(marker, slot) {
-    const candle = lastCandles[marker.candle_index];
-    if (!candle) return null;
-    const top = candleSeries.priceToCoordinate(candle.high);
-    const bottom = candleSeries.priceToCoordinate(candle.low);
-    if (top == null || bottom == null) return null;
-    const offset = 16 + slot * 14;
-    return marker.direction === "UPWARD" ? top - offset : bottom + offset;
-  }
-
-  function structureMarkerSlot(marker, slots) {
-    const key = `${marker.candle_index}:${marker.direction}`;
-    const next = slots.get(key) || 0;
-    slots.set(key, next + 1);
-    return next;
-  }
-
   function drawStructureMarkers() {
-    const slots = new Map();
+    const width = chartContainer.clientWidth;
     lastMarkers.forEach((marker) => {
-      const x = timeToX(marker.time);
-      const y = structureMarkerY(marker, structureMarkerSlot(marker, slots));
       const priceY = priceToY(marker.price);
-      if (x == null || y == null) return;
+      if (priceY == null) return;
 
+      const rawX0 =
+        marker.line_start_time != null
+          ? chart.timeScale().timeToCoordinate(marker.line_start_time)
+          : null;
+      const rawX1 =
+        marker.line_end_time != null
+          ? chart.timeScale().timeToCoordinate(marker.line_end_time)
+          : null;
+      if (rawX0 == null && rawX1 == null) return;
+
+      const x0 = Math.round(rawX0 != null ? rawX0 : 0);
+      const x1 = Math.round(rawX1 != null ? rawX1 : width);
+      const iconX = marker.type === "BOS" ? x1 : x0;
       const lineColor = structureLineColor(marker);
-      const iconColor = structureIconColor(marker);
-      const lineHalf = marker.type === "BOS" ? 30 : 24;
       const label = showStructureLabelsInput?.checked
-        ? `${marker.type} ${marker.index} · ${marker.direction === "UPWARD" ? "UP" : "DOWN"}`
+        ? markerLabel(marker)
         : "";
 
       overlayCtx.save();
       overlayCtx.strokeStyle = lineColor;
-      overlayCtx.fillStyle = iconColor;
-      overlayCtx.lineWidth = marker.type === "BOS" ? 2.2 : 1.9;
+      overlayCtx.lineWidth = marker.type === "BOS" ? 2 : 1.7;
       overlayCtx.setLineDash(marker.type === "BOS" ? [] : [6, 4]);
-      if (priceY != null) {
-        overlayCtx.beginPath();
-        overlayCtx.moveTo(Math.round(x), Math.round(Math.min(y, priceY)));
-        overlayCtx.lineTo(Math.round(x), Math.round(Math.max(y, priceY)));
-        overlayCtx.stroke();
-      }
       overlayCtx.beginPath();
-      overlayCtx.moveTo(Math.round(x - lineHalf), Math.round(y));
-      overlayCtx.lineTo(Math.round(x + lineHalf), Math.round(y));
+      overlayCtx.moveTo(x0, priceY);
+      overlayCtx.lineTo(x1, priceY);
       overlayCtx.stroke();
       overlayCtx.setLineDash([]);
 
+      overlayCtx.fillStyle = "rgba(9, 19, 26, 0.94)";
       if (marker.type === "BOS") {
-        overlayCtx.fillRect(Math.round(x - 4.5), Math.round(y - 4.5), 9, 9);
-        overlayCtx.strokeStyle = "#eafff4";
-        overlayCtx.lineWidth = 1;
-        overlayCtx.strokeRect(Math.round(x - 4.5) + 0.5, Math.round(y - 4.5) + 0.5, 8, 8);
+        overlayCtx.fillRect(iconX - 6, priceY - 6, 12, 12);
+        overlayCtx.strokeStyle = lineColor;
+        overlayCtx.lineWidth = 1.6;
+        overlayCtx.strokeRect(iconX - 5.5, priceY - 5.5, 11, 11);
       } else {
         overlayCtx.beginPath();
-        overlayCtx.moveTo(Math.round(x), Math.round(y - 7));
-        overlayCtx.lineTo(Math.round(x + 7), Math.round(y));
-        overlayCtx.lineTo(Math.round(x), Math.round(y + 7));
-        overlayCtx.lineTo(Math.round(x - 7), Math.round(y));
+        overlayCtx.moveTo(iconX, priceY - 8);
+        overlayCtx.lineTo(iconX + 8, priceY);
+        overlayCtx.lineTo(iconX, priceY + 8);
+        overlayCtx.lineTo(iconX - 8, priceY);
         overlayCtx.closePath();
         overlayCtx.fill();
-        overlayCtx.strokeStyle = "#f8fafc";
-        overlayCtx.lineWidth = 1;
+        overlayCtx.strokeStyle = lineColor;
+        overlayCtx.lineWidth = 1.6;
         overlayCtx.stroke();
       }
 
       if (label) {
-        overlayCtx.font = "600 10px 'IBM Plex Mono', monospace";
-        const textWidth = Math.ceil(overlayCtx.measureText(label).width);
-        const boxWidth = textWidth + 12;
-        const boxHeight = 17;
-        const boxX = Math.round(x - boxWidth / 2);
-        const boxY = Math.round(y - boxHeight - 11);
-        overlayCtx.fillStyle = "rgba(8, 18, 25, 0.94)";
-        overlayCtx.fillRect(boxX, boxY, boxWidth, boxHeight);
-        overlayCtx.strokeStyle = lineColor;
-        overlayCtx.lineWidth = 1;
-        overlayCtx.strokeRect(boxX + 0.5, boxY + 0.5, boxWidth - 1, boxHeight - 1);
-        overlayCtx.fillStyle = lineColor;
-        overlayCtx.textAlign = "center";
-        overlayCtx.textBaseline = "middle";
-        overlayCtx.fillText(label, Math.round(x), Math.round(boxY + boxHeight / 2 + 0.5));
+        const offsetX = marker.type === "BOS" ? -12 : 12;
+        const align = marker.type === "BOS" ? "right" : "left";
+        const labelX = clamp(iconX + offsetX, 8, width - 8);
+        const labelY = marker.direction === "UPWARD" ? priceY - 22 : priceY + 6;
+        drawTag(
+          label,
+          labelX,
+          labelY,
+          lineColor,
+          "rgba(8, 18, 25, 0.96)",
+          align,
+        );
       }
       overlayCtx.restore();
     });
@@ -364,9 +569,9 @@
     overlayCtx.clearRect(0, 0, width, height);
     drawSegmentBands(width);
     drawZones();
+    drawStructureMarkers();
     drawPivots();
     drawRepresentatives();
-    drawStructureMarkers();
   }
 
   function render(candles, pivots, segments, zones, markers) {
@@ -379,16 +584,23 @@
     lastMarkers = markers.map((marker) => ({
       ...marker,
       time: unixTime(marker.time),
+      line_start_time: marker.line_start_time
+        ? unixTime(marker.line_start_time)
+        : null,
+      line_end_time: marker.line_end_time
+        ? unixTime(marker.line_end_time)
+        : null,
     }));
+    pivotByIndex = new Map(pivots.map((pivot) => [pivot.index, pivot]));
 
     candleSeries.setData(
       candles.map((c) => ({
-        time: unixTime(c.close_time),
+        time: unixTime(c.open_time),
         open: c.open,
         high: c.high,
         low: c.low,
         close: c.close,
-      }))
+      })),
     );
 
     zoneList.innerHTML = "";
@@ -406,7 +618,8 @@
       const option = document.createElement("option");
       option.value = idx;
       option.textContent = `SEG_${segment.index} · ${segment.direction} · pivots ${segment.pivot_count} · rep ${segment.representative_pivot_index ?? "-"}`;
-      option.style.color = segment.direction === "UPWARD" ? COLORS.up : COLORS.down;
+      option.style.color =
+        segment.direction === "UPWARD" ? COLORS.up : COLORS.down;
       segmentList.appendChild(option);
     });
 
@@ -427,22 +640,6 @@
     drawOverlay();
   }
 
-  zoneList?.addEventListener("change", () => {
-    const zone = lastZones[Number(zoneList.value)];
-    if (!zone) return;
-    const center = Math.floor((unixTime(zone.start_time) + unixTime(zone.end_time)) / 2);
-    const width = Math.max(unixTime(zone.end_time) - unixTime(zone.start_time), 6 * 3600);
-    focusTimeWindow(center, Math.ceil(width * 0.8));
-  });
-
-  segmentList?.addEventListener("change", () => {
-    const segment = lastSegments[Number(segmentList.value)];
-    if (!segment) return;
-    const center = Math.floor((unixTime(segment.start_time) + unixTime(segment.end_time)) / 2);
-    const width = Math.max(unixTime(segment.end_time) - unixTime(segment.start_time), 8 * 3600);
-    focusTimeWindow(center, Math.ceil(width * 0.65));
-  });
-
   async function handleSubmit(event) {
     event.preventDefault();
     statusEl.textContent = "Requesting candles, pivots, segments, and zones...";
@@ -460,16 +657,26 @@
       up_pivot_filter: formData.get("up_pivot_filter"),
       down_pivot_filter: formData.get("down_pivot_filter"),
       include_hunted_pivots: formData.has("include_hunted_pivots"),
-      representative_include_hunted: formData.has("representative_include_hunted"),
-      maximum_pivot_distance: maxPivotDistanceRaw ? Number(maxPivotDistanceRaw) : null,
+      representative_include_hunted: formData.has(
+        "representative_include_hunted",
+      ),
+      maximum_pivot_distance: maxPivotDistanceRaw
+        ? Number(maxPivotDistanceRaw)
+        : null,
       minimum_overlap: Number(formData.get("minimum_overlap") || 0),
       minimum_overlap_ratio: Number(formData.get("minimum_overlap_ratio") || 0),
       allow_reuse: formData.has("allow_reuse"),
       relaxed_slope: formData.has("relaxed_slope"),
       slope_epsilon: Number(formData.get("slope_epsilon") || 0),
       epsilon: Number(formData.get("epsilon") || 0.000000001),
+      min_swing_pct: Number(formData.get("min_swing_pct") ?? 0),
+      include_pullback_in_bos_level: formData.has(
+        "include_pullback_in_bos_level",
+      ),
       include_bos_in_choch_range: formData.has("include_bos_in_choch_range"),
-      include_hunt_candle_in_choch_range: formData.has("include_hunt_candle_in_choch_range"),
+      include_hunt_candle_in_choch_range: formData.has(
+        "include_hunt_candle_in_choch_range",
+      ),
       source: formData.get("source"),
       csv_path: optionalText(formData.get("csv_path")),
       http_proxy: optionalText(formData.get("http_proxy")),
@@ -482,10 +689,14 @@
         timeframe: payload.timeframe,
         start: payload.start,
         end: payload.end,
+        scan_length: payload.scan_length,
         direction_window: payload.direction_window,
         hunt_mode: payload.hunt_mode,
+        min_swing_pct: payload.min_swing_pct,
+        include_pullback_in_bos_level: payload.include_pullback_in_bos_level,
         include_bos_in_choch_range: payload.include_bos_in_choch_range,
-        include_hunt_candle_in_choch_range: payload.include_hunt_candle_in_choch_range,
+        include_hunt_candle_in_choch_range:
+          payload.include_hunt_candle_in_choch_range,
         source: payload.source,
         csv_path: payload.csv_path,
         http_proxy: payload.http_proxy,
@@ -518,7 +729,9 @@
         structureJson = await structureRes.json();
       } else {
         const error = await structureRes.json().catch(() => ({}));
-        structureWarning = error.detail ? ` Structure overlay unavailable: ${error.detail}.` : " Structure overlay unavailable.";
+        structureWarning = error.detail
+          ? ` Structure overlay unavailable: ${error.detail}.`
+          : " Structure overlay unavailable.";
       }
 
       render(
@@ -526,7 +739,7 @@
         liquidityJson.pivots,
         liquidityJson.segments,
         liquidityJson.zones,
-        structureJson.markers || []
+        structureJson.markers || [],
       );
       statusEl.textContent = `Loaded ${liquidityJson.candles.length} candles, ${liquidityJson.pivots.length} pivots, ${liquidityJson.segments.length} segments, ${liquidityJson.zones.length} liquidity zones, and ${(structureJson.markers || []).length} BOS/CHoCH markers.${structureWarning}`;
     } catch (err) {
@@ -535,10 +748,39 @@
     }
   }
 
+  setDefaultDates();
+  syncSourceFields();
+
+  zoneList?.addEventListener("change", () => {
+    const zone = lastZones[Number(zoneList.value)];
+    if (!zone) return;
+    const center = Math.floor(
+      (unixTime(zone.start_time) + unixTime(zone.end_time)) / 2,
+    );
+    const width = Math.max(
+      unixTime(zone.end_time) - unixTime(zone.start_time),
+      6 * 3600,
+    );
+    focusTimeWindow(center, Math.ceil(width * 0.8));
+  });
+
+  segmentList?.addEventListener("change", () => {
+    const segment = lastSegments[Number(segmentList.value)];
+    if (!segment) return;
+    const center = Math.floor(
+      (unixTime(segment.start_time) + unixTime(segment.end_time)) / 2,
+    );
+    const width = Math.max(
+      unixTime(segment.end_time) - unixTime(segment.start_time),
+      8 * 3600,
+    );
+    focusTimeWindow(center, Math.ceil(width * 0.65));
+  });
+
   form?.elements?.source?.addEventListener("change", syncSourceFields);
   showZoneLabelsInput?.addEventListener("change", drawOverlay);
   showStructureLabelsInput?.addEventListener("change", drawOverlay);
   showPivotMarkersInput?.addEventListener("change", drawOverlay);
-  syncSourceFields();
+  showRepresentativesInput?.addEventListener("change", drawOverlay);
   form?.addEventListener("submit", handleSubmit);
 })();
