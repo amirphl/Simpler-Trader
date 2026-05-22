@@ -4,15 +4,8 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Pivot Explorer</title>
-    <link
-      rel="preconnect"
-      href="https://fonts.googleapis.com"
-    />
-    <link
-      rel="preconnect"
-      href="https://fonts.gstatic.com"
-      crossorigin
-    />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
       href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
       rel="stylesheet"
@@ -30,11 +23,28 @@
         --bull-odd: #93c5fd;
         --bull-even: #86efac;
       }
-      * { box-sizing: border-box; }
+      * {
+        box-sizing: border-box;
+      }
       body {
         margin: 0;
-        font-family: "Inter", system-ui, -apple-system, sans-serif;
-        background: radial-gradient(circle at 20% 20%, rgba(96,165,250,0.08), transparent 30%), radial-gradient(circle at 80% 0%, rgba(52,211,153,0.08), transparent 28%), var(--bg);
+        font-family:
+          "Inter",
+          system-ui,
+          -apple-system,
+          sans-serif;
+        background:
+          radial-gradient(
+            circle at 20% 20%,
+            rgba(96, 165, 250, 0.08),
+            transparent 30%
+          ),
+          radial-gradient(
+            circle at 80% 0%,
+            rgba(52, 211, 153, 0.08),
+            transparent 28%
+          ),
+          var(--bg);
         color: var(--text);
       }
       header {
@@ -43,57 +53,137 @@
         align-items: center;
         justify-content: space-between;
         backdrop-filter: blur(8px);
-        background: rgba(17,24,39,0.75);
-        border-bottom: 1px solid rgba(255,255,255,0.05);
+        background: rgba(17, 24, 39, 0.75);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
       }
-      h1 { margin: 0; font-size: 20px; letter-spacing: 0.2px; }
-      main { padding: 20px; max-width: 1280px; margin: 0 auto; }
+      h1 {
+        margin: 0;
+        font-size: 20px;
+        letter-spacing: 0.2px;
+      }
+      main {
+        padding: 20px;
+        max-width: 100%;
+        margin: 0 auto;
+      }
       form {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
         gap: 12px;
         background: var(--panel);
-        border: 1px solid rgba(255,255,255,0.06);
+        border: 1px solid rgba(255, 255, 255, 0.06);
         border-radius: 16px;
         padding: 16px;
-        box-shadow: 0 14px 50px rgba(0,0,0,0.35);
+        box-shadow: 0 14px 50px rgba(0, 0, 0, 0.35);
       }
-      label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
-      input, select, button {
+      label {
+        display: block;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      input,
+      select,
+      button {
         width: 100%;
         background: #0f172a;
-        border: 1px solid rgba(255,255,255,0.08);
+        border: 1px solid rgba(255, 255, 255, 0.08);
         border-radius: 12px;
         padding: 10px 12px;
         color: var(--text);
         font-size: 14px;
+      }
+      input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
+        padding: 0;
+        margin-top: 6px;
+        cursor: pointer;
+        accent-color: #2563eb;
+        border-radius: 4px;
       }
       button {
         background: linear-gradient(120deg, #2563eb, #1e3a8a);
         border: none;
         font-weight: 600;
         cursor: pointer;
-        transition: transform 120ms ease, box-shadow 120ms ease;
+        transition:
+          transform 120ms ease,
+          box-shadow 120ms ease;
       }
-      button:hover { transform: translateY(-1px); box-shadow: 0 8px 30px rgba(37,99,235,0.35); }
-      #status { margin-top: 12px; color: var(--muted); font-size: 13px; }
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 8px 30px rgba(37, 99, 235, 0.35);
+      }
+      #status {
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 13px;
+      }
       .panel {
         margin-top: 16px;
         background: var(--panel);
-        border: 1px solid rgba(255,255,255,0.06);
+        border: 1px solid rgba(255, 255, 255, 0.06);
         border-radius: 16px;
         padding: 16px;
-        box-shadow: 0 14px 50px rgba(0,0,0,0.35);
+        box-shadow: 0 14px 50px rgba(0, 0, 0, 0.35);
       }
-      #chart { height: 520px; }
-      .row {
+      #chart {
+        height: 520px;
+        position: relative;
+      }
+      .pivot-marker-overlay {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        z-index: 2;
+      }
+      .pivot-marker-label {
+        position: absolute;
+        min-width: 48px;
+        padding: 3px 6px;
+        border-radius: 7px;
+        background: rgba(11, 18, 32, 0.86);
+        border: 1px solid currentColor;
+        color: var(--text);
+        font-size: 11px;
+        font-weight: 600;
+        line-height: 1.3;
+        text-align: center;
+        white-space: pre-line;
+        transform: translate(-50%, -100%);
+      }
+      .pivot-marker-label.below {
+        transform: translate(-50%, 0);
+      }
+      select#pivot-list {
+        width: 100%;
+        height: 200px;
+        background: #0f172a;
+      }
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .legend {
         display: grid;
-        grid-template-columns: 1fr 280px;
-        gap: 16px;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 10px;
+        font-size: 13px;
+        line-height: 1.45;
       }
-      @media (max-width: 960px) { .row { grid-template-columns: 1fr; } }
-      select#pivot-list { height: 520px; background: #0f172a; }
-      .tag { display: inline-flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 999px; font-size: 12px; background: rgba(255,255,255,0.06); }
+      .legend-item {
+        color: var(--muted);
+      }
+      .legend-item strong {
+        color: var(--text);
+        font-weight: 600;
+      }
     </style>
     <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
     <script defer src="/static/js/pivots.js"></script>
@@ -123,7 +213,55 @@
         </div>
         <div>
           <label for="scan_length">Scan last N candles</label>
-          <input id="scan_length" name="scan_length" type="number" min="50" value="500" />
+          <input
+            id="scan_length"
+            name="scan_length"
+            type="number"
+            min="50"
+            value="500"
+          />
+        </div>
+        <div>
+          <label for="min_swing_pct"
+            >Min swing %
+            <span style="color: var(--muted)">(0 = off)</span></label
+          >
+          <input
+            id="min_swing_pct"
+            name="min_swing_pct"
+            type="number"
+            min="0"
+            step="0.1"
+            value="0"
+            placeholder="e.g. 0.5"
+          />
+        </div>
+        <div>
+          <label for="restart_on_invalidation">Restart on invalidation</label>
+          <input
+            id="restart_on_invalidation"
+            name="restart_on_invalidation"
+            type="checkbox"
+          />
+        </div>
+        <div>
+          <label for="use_structural_left_bound">Structural left bound</label>
+          <input
+            id="use_structural_left_bound"
+            name="use_structural_left_bound"
+            type="checkbox"
+          />
+        </div>
+        <div>
+          <label for="include_reference_candle"
+            >Include ref candle in pivot range</label
+          >
+          <input
+            id="include_reference_candle"
+            name="include_reference_candle"
+            type="checkbox"
+            checked
+          />
         </div>
         <div>
           <label>&nbsp;</label>
@@ -132,12 +270,52 @@
       </form>
       <div id="status"></div>
 
-      <div class="row panel">
-        <div id="chart"></div>
-        <div>
-          <label for="pivot-list">Detected pivots</label>
-          <select id="pivot-list" size="20"></select>
+      <section class="panel legend" aria-label="Pivot marker legend">
+        <div class="legend-item">
+          <strong>Ref / R</strong>: reference candle where a pivot candidate
+          starts.
         </div>
+        <div class="legend-item">
+          <strong>Pivot / P</strong>: confirmed swing pivot before the trigger
+          candle.
+        </div>
+        <div class="legend-item">
+          <strong>Target</strong>: trigger candle that breaks the candidate
+          level.
+        </div>
+        <div class="legend-item">
+          <strong>Stacked labels</strong>: one candle can show multiple marks,
+          displayed as separate lines.
+        </div>
+        <div class="legend-item">
+          <strong>Restart on invalidation</strong>: re-scan from j+1 instead of
+          jumping to the invalidating candle — fills structural gaps.
+        </div>
+        <div class="legend-item">
+          <strong>Min swing %</strong>: discard pivots whose (high−low)/mid is
+          below this threshold; e.g. 0.5 removes micro-swings.
+        </div>
+        <div class="legend-item">
+          <strong>Structural left bound</strong>: use the previous confirmed
+          same-type pivot as the left boundary for the invalidation zone instead
+          of the nearest raw same-direction candle. May widen or narrow the zone
+          depending on data.
+        </div>
+        <div class="legend-item">
+          <strong>Include ref candle</strong>: include the reference candle j
+          itself in the argmax/argmin pivot search so the structural extreme is
+          never missed when j holds the highest high or lowest low. Enabled by
+          default.
+        </div>
+      </section>
+
+      <div class="panel">
+        <div id="chart"></div>
+      </div>
+
+      <div class="panel">
+        <label for="pivot-list">Detected pivots</label>
+        <select id="pivot-list" size="20"></select>
       </div>
     </main>
   </body>
