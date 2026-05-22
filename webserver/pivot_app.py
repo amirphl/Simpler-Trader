@@ -39,6 +39,8 @@ UI_DIR.mkdir(parents=True, exist_ok=True)
 app.mount("/static", StaticFiles(directory=UI_DIR), name="static")
 
 DEFAULT_TRUSTED_HOSTS = [
+    "188.121.124.28",
+    "188.121.124.28:9093",
     "localhost",
     "127.0.0.1",
 ]
@@ -63,7 +65,7 @@ def _build_trusted_hosts() -> list[str]:
 TRUSTED_HOSTS = _build_trusted_hosts()
 ALLOWED_ORIGINS = _list_env(
     "WEB_ALLOWED_ORIGINS",
-    "http://localhost:9093,http://127.0.0.1:9093",
+    "http://188.121.124.28:9093,http://localhost:9093,http://127.0.0.1:9093",
 )
 FORCE_HTTPS = _bool_env("WEB_FORCE_HTTPS", False)
 PROXY_FALLBACK = os.getenv("WEB_CANDLE_PROXY")
