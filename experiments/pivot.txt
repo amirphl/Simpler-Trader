@@ -1,0 +1,181 @@
+INPUT
+    candles[0 .. M-1]
+    N = number of most recent candles to scan
+
+DEFINITIONS
+    scan_start = max(0, M - N)
+    scan_end   = M - 1
+
+    candle i is bearish if close[i] < open[i]
+    candle i is bullish if close[i] > open[i]
+
+    crosses below level L at candle x:
+        low[x] < L
+
+    crosses above level H at candle x:
+        high[x] > H
+
+DATA STRUCTURES
+    pivots = []   # each pivot:
+                  # {
+                  #   index,
+                  #   type: "bearish" or "bullish",
+                  #   high,
+                  #   low,
+                  #   haunted: false
+                  # }
+
+HELPERS
+
+    prev_bearish(i):
+        return nearest index t < i such that candle t is bearish
+        if none exists, return NONE
+
+    prev_bullish(i):
+        return nearest index t < i such that candle t is bullish
+        if none exists, return NONE
+
+    next_bullish(i):
+        return nearest index t > i such that candle t is bullish
+        if none exists, return NONE
+
+    next_bearish(i):
+        return nearest index t > i such that candle t is bearish
+        if none exists, return NONE
+
+    argmax_high(a, b):
+        return index t in [a .. b] with maximum high[t]
+
+    argmin_low(a, b):
+        return index t in [a .. b] with minimum low[t]
+
+MAIN LOOP
+
+    cursor = scan_start
+
+    while cursor <= scan_end:
+
+        if candle[cursor] is bearish:
+            j = cursor
+
+            # -----------------------------------
+            # A1) Search for a BEARISH pivot
+            # -----------------------------------
+
+            k = next_bullish(j)
+            if k is NONE:
+                break
+
+            candidate_low = minimum of low[t] for t in [j .. k]
+
+            pb = prev_bearish(j)
+            if pb is NONE:
+                left_bound = j
+            else:
+                left_bound = pb
+
+            invalidation_high = maximum of high[t] for t in [left_bound .. j]
+
+            p = NONE   # first candle after k that crosses below candidate_low
+            q = NONE   # first candle after k that crosses above invalidation_high
+
+            x = k + 1
+            while x <= scan_end:
+                if crosses above invalidation_high at candle x:
+                    q = x
+                    break
+                if crosses below candidate_low at candle x:
+                    p = x
+                    break
+                x = x + 1
+
+            if p is NONE:
+                if q is not NONE:
+                    cursor = q
+                else:
+                    break
+            else:
+                pivot_index = argmax_high(j + 1, p)
+                add to pivots:
+                    {
+                        index: pivot_index,
+                        type: "bearish",
+                        high: high[pivot_index],
+                        low: low[pivot_index],
+                        haunted: false
+                    }
+
+                cursor = p
+
+        else if candle[cursor] is bullish:
+            j = cursor
+
+            # -----------------------------------
+            # A2) Search for a BULLISH pivot
+            # Reverse of A1
+            # -----------------------------------
+
+            k = next_bearish(j)
+            if k is NONE:
+                break
+
+            candidate_high = maximum of high[t] for t in [j .. k]
+
+            pb = prev_bullish(j)
+            if pb is NONE:
+                left_bound = j
+            else:
+                left_bound = pb
+
+            invalidation_low = minimum of low[t] for t in [left_bound .. j]
+
+            p = NONE   # first candle after k that crosses above candidate_high
+            q = NONE   # first candle after k that crosses below invalidation_low
+
+            x = k + 1
+            while x <= scan_end:
+                if crosses below invalidation_low at candle x:
+                    q = x
+                    break
+                if crosses above candidate_high at candle x:
+                    p = x
+                    break
+                x = x + 1
+
+            if p is NONE:
+                if q is not NONE:
+                    cursor = q
+                else:
+                    break
+            else:
+                pivot_index = argmin_low(j + 1, p)
+                add to pivots:
+                    {
+                        index: pivot_index,
+                        type: "bullish",
+                        high: high[pivot_index],
+                        low: low[pivot_index],
+                        haunted: false
+                    }
+
+                cursor = p
+
+        else:
+            cursor = cursor + 1
+
+
+HAUNTED MARKING LOOP
+
+    for each pivot u in pivots in chronological order:
+
+        if pivot u.type == "bearish":
+            for each later candle x where x > u.index:
+                if high[x] > u.high:
+                    u.haunted = true
+                    break
+
+        else if pivot u.type == "bullish":
+            for each later candle x where x > u.index:
+                if low[x] < u.low:
+                    u.haunted = true
+                    break
