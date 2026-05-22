@@ -1,62 +1,92 @@
 from __future__ import annotations
 
-# from datetime import datetime, timezone
 import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Any, Dict, List, Mapping, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import ProxyHandler, Request, build_opener
+from urllib.request import OpenerDirector, ProxyHandler, Request, build_opener
 
 from .models import Candle, normalize_symbol
 
 BINANCE_BASE_URL = "https://api.binance.com"
+KLINES_ENDPOINT = "/api/v3/klines"
+TICKER_24H_ENDPOINT = "/api/v3/ticker/24hr"
+DEFAULT_HEADERS = {
+    "Accept": "application/json",
+    "User-Agent": "Simpler-Trader/1.0",
+}
 MAX_BATCH = 500
+
+_INTERVAL_TO_MILLISECONDS = {
+    "1m": 60_000,
+    "3m": 180_000,
+    "5m": 300_000,
+    "15m": 900_000,
+    "30m": 1_800_000,
+    "1h": 3_600_000,
+    "2h": 7_200_000,
+    "4h": 14_400_000,
+    "6h": 21_600_000,
+    "8h": 28_800_000,
+    "12h": 43_200_000,
+    "1d": 86_400_000,
+    "3d": 259_200_000,
+    "1w": 604_800_000,
+    "1M": 2_592_000_000,
+}
 
 
 def interval_to_milliseconds(interval: str) -> int:
     """Translate Binance interval strings into millisecond durations."""
     normalized = interval.strip()
-    mapping = {
-        "1m": 60_000,
-        "3m": 180_000,
-        "5m": 300_000,
-        "15m": 900_000,
-        "30m": 1_800_000,
-        "1h": 3_600_000,
-        "2h": 7_200_000,
-        "4h": 14_400_000,
-        "6h": 21_600_000,
-        "8h": 28_800_000,
-        "12h": 43_200_000,
-        "1d": 86_400_000,
-        "3d": 259_200_000,
-        "1w": 604_800_000,
-        "1M": 2_592_000_000,
-    }
-    if normalized not in mapping:
-        raise ValueError(f"Unsupported interval: {interval}")
-    return mapping[normalized]
+    try:
+        return _INTERVAL_TO_MILLISECONDS[normalized]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported interval: {interval}") from exc
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BinanceClientConfig:
     base_url: str = BINANCE_BASE_URL
     timeout: float = 10.0
-    proxies: Dict[str, str] | None = None
+    proxies: Mapping[str, str] | None = None
     max_retries: int = 5
-    initial_retry_delay: float = 1.0  # seconds
-    max_retry_delay: float = 60.0  # seconds
+    initial_retry_delay: float = 1.0
+    max_retry_delay: float = 60.0
     retry_backoff_multiplier: float = 2.0
+
+    def __post_init__(self) -> None:
+        base_url = self.base_url.strip()
+        if not base_url:
+            raise ValueError("base_url cannot be empty")
+        object.__setattr__(self, "base_url", base_url)
+        if self.timeout <= 0:
+            raise ValueError("timeout must be positive")
+        if self.max_retries <= 0:
+            raise ValueError("max_retries must be at least 1")
+        if self.initial_retry_delay <= 0:
+            raise ValueError("initial_retry_delay must be positive")
+        if self.max_retry_delay <= 0:
+            raise ValueError("max_retry_delay must be positive")
+        if self.max_retry_delay < self.initial_retry_delay:
+            raise ValueError(
+                "max_retry_delay must be greater than or equal to initial_retry_delay"
+            )
+        if self.retry_backoff_multiplier < 1:
+            raise ValueError("retry_backoff_multiplier must be at least 1")
 
 
 class BinanceClient:
     """Minimal Binance REST client for historical candle retrieval with retry logic."""
 
     def __init__(
-        self, config: BinanceClientConfig, logger: logging.Logger | None = None
+        self,
+        config: BinanceClientConfig,
+        logger: logging.Logger | None = None,
+        opener: OpenerDirector | None = None,
     ) -> None:
         self._base_url = config.base_url.rstrip("/")
         self._timeout = config.timeout
@@ -65,10 +95,7 @@ class BinanceClient:
         self._max_retry_delay = config.max_retry_delay
         self._retry_backoff_multiplier = config.retry_backoff_multiplier
         self._log = logger or logging.getLogger(__name__)
-        handlers = []
-        if config.proxies:
-            handlers.append(ProxyHandler(config.proxies))
-        self._opener = build_opener(*handlers)
+        self._opener = opener or self._build_opener(config.proxies)
 
     def fetch_klines(
         self,
@@ -79,146 +106,296 @@ class BinanceClient:
         end_ms: int,
         limit: int,
     ) -> List[Candle]:
+        normalized_symbol = normalize_symbol(symbol)
+        normalized_interval = self._normalize_interval(interval)
+        validated_limit = self._validate_limit(limit)
         if end_ms <= start_ms:
             return []
+
+        params = self._build_klines_params(
+            symbol=normalized_symbol,
+            interval=normalized_interval,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            limit=validated_limit,
+        )
+        payload = self._get_json(KLINES_ENDPOINT, params, context=params)
+        rows = self._require_list_payload(payload, endpoint=KLINES_ENDPOINT)
+        return self._parse_klines(
+            rows,
+            symbol=normalized_symbol,
+            interval=normalized_interval,
+        )
+
+    def fetch_top_symbols(self, limit: int = 100) -> List[str]:
+        """Return the most liquid USDT symbols based on 24h quote volume."""
+        if limit <= 0:
+            return []
+
+        payload = self._get_json(
+            TICKER_24H_ENDPOINT,
+            context={"limit": limit},
+        )
+        rows = self._require_list_payload(payload, endpoint=TICKER_24H_ENDPOINT)
+        return self._extract_top_symbols(rows, limit=limit)
+
+    def close(self) -> None:
+        close_method = getattr(self._opener, "close", None)
+        if callable(close_method):
+            close_method()
+
+    def _build_opener(self, proxies: Mapping[str, str] | None) -> OpenerDirector:
+        handlers = [ProxyHandler(dict(proxies))] if proxies else []
+        return build_opener(*handlers)
+
+    def _normalize_interval(self, interval: str) -> str:
+        normalized_interval = interval.strip()
+        interval_to_milliseconds(normalized_interval)
+        return normalized_interval
+
+    def _validate_limit(self, limit: int) -> int:
         if limit <= 0 or limit > MAX_BATCH:
             raise ValueError(f"limit must be in 1..{MAX_BATCH}")
-        params: Dict[str, str | int] = {
-            "symbol": normalize_symbol(symbol),
+        return limit
+
+    def _build_klines_params(
+        self,
+        *,
+        symbol: str,
+        interval: str,
+        start_ms: int,
+        end_ms: int,
+        limit: int,
+    ) -> Dict[str, str | int]:
+        return {
+            "symbol": symbol,
             "interval": interval,
             "startTime": start_ms,
             "endTime": end_ms - 1,
             "limit": limit,
         }
-        query = urlencode(params)
-        request = Request(f"{self._base_url}/api/v3/klines?{query}")
 
-        last_exception: Exception | None = None
-        delay = self._initial_retry_delay
-
-        for attempt in range(self._max_retries):
-            try:
-                with self._opener.open(request, timeout=self._timeout) as response:
-                    body = response.read()
-                payload = json.loads(body)
-                # self._log.debug(
-                #     f"Received response with {len(payload) if isinstance(payload, list) else 'unknown'} klines for "
-                #     f"{symbol} {interval} (attempt {attempt + 1}/{self._max_retries})",
-                #     extra={
-                #         "symbol": symbol,
-                #         "interval": interval,
-                #         "status": response.status,
-                #         "start_iso": _ms_to_iso(start_ms),
-                #         "end_iso": _ms_to_iso(end_ms),
-                #         "limit": limit,
-                #     },
-                # )
-                return [
-                    Candle.from_binance(symbol, interval, kline) for kline in payload
-                ]
-
-            except HTTPError as exc:
-                # Don't retry on client errors (4xx) except 429 (rate limit) and 408 (timeout)
-                if 400 <= exc.code < 500 and exc.code not in (429, 408):
-                    raise RuntimeError(
-                        f"Binance request failed with status {exc.code}: {exc.reason}"
-                    ) from exc
-
-                last_exception = exc
-                if attempt < self._max_retries - 1:
-                    self._log.warning(
-                        f"HTTP error {exc.code} on attempt {attempt + 1}/{self._max_retries}, "
-                        f"retrying in {delay:.1f}s...",
-                        extra={
-                            "symbol": symbol,
-                            "interval": interval,
-                            "status": exc.code,
-                        },
-                    )
-                else:
-                    raise RuntimeError(
-                        f"Binance request failed after {self._max_retries} attempts with status {exc.code}: {exc.reason}"
-                    ) from exc
-
-            except URLError as exc:
-                last_exception = exc
-                error_msg = str(exc.reason) if exc.reason else str(exc)
-                if attempt < self._max_retries - 1:
-                    self._log.warning(
-                        f"Connection error on attempt {attempt + 1}/{self._max_retries}, "
-                        f"retrying in {delay:.1f}s: {error_msg}",
-                        extra={"symbol": symbol, "interval": interval},
-                    )
-                else:
-                    raise RuntimeError(
-                        f"Binance request failed after {self._max_retries} attempts: {error_msg}"
-                    ) from exc
-
-            except (TimeoutError, OSError) as exc:
-                last_exception = exc
-                if attempt < self._max_retries - 1:
-                    self._log.warning(
-                        f"Timeout/OS error on attempt {attempt + 1}/{self._max_retries}, "
-                        f"retrying in {delay:.1f}s: {exc}",
-                        extra={"symbol": symbol, "interval": interval},
-                    )
-                else:
-                    raise RuntimeError(
-                        f"Binance request failed after {self._max_retries} attempts: {exc}"
-                    ) from exc
-
-            except Exception as exc:
-                # Unexpected errors - don't retry
+    def _parse_klines(
+        self,
+        rows: Sequence[object],
+        *,
+        symbol: str,
+        interval: str,
+    ) -> List[Candle]:
+        candles: List[Candle] = []
+        for index, row in enumerate(rows):
+            if not isinstance(row, Sequence) or isinstance(row, (str, bytes, bytearray)):
                 raise RuntimeError(
-                    f"Unexpected error in Binance request: {exc}"
-                ) from exc
-
-            # Exponential backoff before retry
-            if attempt < self._max_retries - 1:
-                time.sleep(delay)
-                delay = min(
-                    delay * self._retry_backoff_multiplier, self._max_retry_delay
+                    f"Binance returned invalid kline row at index {index}: {row!r}"
                 )
+            try:
+                candles.append(Candle.from_binance(symbol, interval, row))
+            except (IndexError, TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"Failed to parse Binance kline row at index {index}: {row!r}"
+                ) from exc
+        return candles
 
-        # Should never reach here, but just in case
-        if last_exception:
-            raise RuntimeError(
-                f"Binance request failed after {self._max_retries} attempts"
-            ) from last_exception
-        raise RuntimeError("Binance request failed for unknown reason")
-
-    def close(self) -> None:
-        # urllib opener does not require explicit closing; kept for symmetry.
-        return
-
-    def fetch_top_symbols(self, limit: int = 100) -> List[str]:
-        """Return the most liquid symbols based on 24h quote volume."""
-        request = Request(f"{self._base_url}/api/v3/ticker/24hr")
-        with self._opener.open(request, timeout=self._timeout) as response:
-            payload = json.loads(response.read())
-        if not isinstance(payload, list):
-            return []
-
-        def parse_volume(item: dict) -> float:
+    def _extract_top_symbols(self, rows: Sequence[object], *, limit: int) -> List[str]:
+        def parse_volume(item: object) -> float:
+            if not isinstance(item, Mapping):
+                return 0.0
             try:
                 return float(item.get("quoteVolume", "0"))
             except (TypeError, ValueError):
                 return 0.0
 
-        # Prefer USDT pairs to keep things consistent
-        sorted_items = sorted(payload, key=parse_volume, reverse=True)
         symbols: List[str] = []
-        for item in sorted_items:
+        seen: set[str] = set()
+        for item in sorted(rows, key=parse_volume, reverse=True):
+            if not isinstance(item, Mapping):
+                continue
             symbol = item.get("symbol")
             if not isinstance(symbol, str):
                 continue
-            if not symbol.endswith("USDT"):
+            normalized_symbol = normalize_symbol(symbol)
+            if not normalized_symbol.endswith("USDT"):
                 continue
-            symbols.append(symbol)
+            if normalized_symbol in seen:
+                continue
+            seen.add(normalized_symbol)
+            symbols.append(normalized_symbol)
             if len(symbols) >= limit:
                 break
         return symbols
 
+    def _get_json(
+        self,
+        endpoint: str,
+        params: Mapping[str, str | int] | None = None,
+        *,
+        context: Mapping[str, Any] | None = None,
+    ) -> object:
+        url = self._build_url(endpoint, params)
+        delay = self._initial_retry_delay
+        last_exception: Exception | None = None
 
-# def _ms_to_iso(timestamp_ms: int) -> str:
-#     return datetime.fromtimestamp(timestamp_ms / 1000, tz=timezone.utc).isoformat()
+        for attempt in range(1, self._max_retries + 1):
+            sleep_delay = delay
+            request = self._build_request(url)
+            try:
+                with self._opener.open(request, timeout=self._timeout) as response:
+                    return self._decode_json_response(response.read(), endpoint=endpoint)
+            except HTTPError as exc:
+                sleep_delay = self._resolve_retry_delay(exc, fallback=delay)
+                self._raise_or_record_http_error(
+                    exc=exc,
+                    attempt=attempt,
+                    endpoint=endpoint,
+                    delay=sleep_delay,
+                    context=context,
+                )
+                last_exception = exc
+            except URLError as exc:
+                last_exception = exc
+                self._log_retry(
+                    attempt=attempt,
+                    delay=delay,
+                    endpoint=endpoint,
+                    message=f"Connection error: {self._format_url_error(exc)}",
+                    context=context,
+                )
+            except (TimeoutError, OSError) as exc:
+                last_exception = exc
+                self._log_retry(
+                    attempt=attempt,
+                    delay=delay,
+                    endpoint=endpoint,
+                    message=f"Timeout/OS error: {exc}",
+                    context=context,
+                )
+            except RuntimeError:
+                raise
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Unexpected Binance request failure for {endpoint}: {exc}"
+                ) from exc
+
+            if attempt < self._max_retries:
+                time.sleep(sleep_delay)
+                delay = min(
+                    sleep_delay * self._retry_backoff_multiplier,
+                    self._max_retry_delay,
+                )
+
+        if last_exception is not None:
+            raise RuntimeError(
+                f"Binance request failed after {self._max_retries} attempts for {endpoint}"
+            ) from last_exception
+        raise RuntimeError(f"Binance request failed for unknown reason: {endpoint}")
+
+    def _build_request(self, url: str) -> Request:
+        return Request(url, headers=DEFAULT_HEADERS)
+
+    def _decode_json_response(self, raw_body: bytes, *, endpoint: str) -> object:
+        try:
+            return json.loads(raw_body)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"Binance returned invalid JSON for {endpoint}") from exc
+
+    def _raise_or_record_http_error(
+        self,
+        *,
+        exc: HTTPError,
+        attempt: int,
+        endpoint: str,
+        delay: float,
+        context: Mapping[str, Any] | None,
+    ) -> None:
+        if 400 <= exc.code < 500 and exc.code not in (408, 418, 429):
+            details = self._extract_http_error_details(exc)
+            raise RuntimeError(
+                f"Binance request failed with status {exc.code} for {endpoint}: {details}"
+            ) from exc
+
+        details = self._extract_http_error_details(exc)
+        self._log_retry(
+            attempt=attempt,
+            delay=delay,
+            endpoint=endpoint,
+            message=f"HTTP {exc.code}: {details}",
+            context=context,
+        )
+
+    def _log_retry(
+        self,
+        *,
+        attempt: int,
+        delay: float,
+        endpoint: str,
+        message: str,
+        context: Mapping[str, Any] | None,
+    ) -> None:
+        if attempt >= self._max_retries:
+            return
+        extra = {"endpoint": endpoint}
+        if context:
+            extra.update(dict(context))
+        self._log.warning(
+            "Binance request attempt %s/%s failed for %s, retrying in %.1fs: %s",
+            attempt,
+            self._max_retries,
+            endpoint,
+            delay,
+            message,
+            extra=extra,
+        )
+
+    def _build_url(self, endpoint: str, params: Mapping[str, str | int] | None) -> str:
+        if params:
+            return f"{self._base_url}{endpoint}?{urlencode(params)}"
+        return f"{self._base_url}{endpoint}"
+
+    def _resolve_retry_delay(self, exc: HTTPError, *, fallback: float) -> float:
+        retry_after = exc.headers.get("Retry-After") if exc.headers else None
+        if retry_after is None:
+            return fallback
+        try:
+            return min(max(float(retry_after), 0.0), self._max_retry_delay)
+        except (TypeError, ValueError):
+            return fallback
+
+    def _require_list_payload(self, payload: object, *, endpoint: str) -> List[object]:
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, Mapping):
+            code = payload.get("code")
+            message = payload.get("msg") or payload.get("message") or repr(payload)
+            raise RuntimeError(
+                f"Binance returned an API error for {endpoint}: code={code} msg={message}"
+            )
+        raise RuntimeError(
+            f"Binance returned unexpected payload type for {endpoint}: {type(payload).__name__}"
+        )
+
+    def _extract_http_error_details(self, exc: HTTPError) -> str:
+        try:
+            body = exc.read()
+        except Exception:
+            body = b""
+
+        if body:
+            try:
+                payload = json.loads(body)
+            except json.JSONDecodeError:
+                text = body.decode("utf-8", errors="replace").strip()
+                return text or str(exc.reason)
+            if isinstance(payload, Mapping):
+                message = payload.get("msg") or payload.get("message")
+                code = payload.get("code")
+                if message is not None and code is not None:
+                    return f"{message} (code={code})"
+                if message is not None:
+                    return str(message)
+                return json.dumps(payload, sort_keys=True)
+
+        return str(exc.reason)
+
+    def _format_url_error(self, exc: URLError) -> str:
+        reason = getattr(exc, "reason", None)
+        return str(reason) if reason else str(exc)
