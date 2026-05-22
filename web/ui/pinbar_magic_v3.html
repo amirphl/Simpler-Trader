@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Pin Bar Magic v2 – Backtest Control Panel</title>
+    <title>Pin Bar Magic v3 – Backtest Control Panel</title>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <style>
       :root {
@@ -121,11 +121,10 @@
     <header>
       <div class="header-row">
         <div>
-          <h1>Pin Bar Magic v2</h1>
+          <h1>Pin Bar Magic v3</h1>
           <p>
-            Pine-compatible inputs from
-            <code>pinbar_magic_strategy.pine</code> plus execution-model
-            controls for backtest parity tuning.
+            Pin Bar Magic v3 inputs plus execution-model controls for backtest
+            parity tuning.
           </p>
         </div>
         <a class="home-link" href="/">← All Strategies</a>
@@ -179,11 +178,11 @@
               />
             </label>
             <label>
-              Trail Points (Price Units)
+              Trail Points (Ticks)
               <input
                 name="trail_points"
                 type="number"
-                value="1"
+                value="100"
                 step="1"
                 min="1"
                 max="1000"
@@ -191,14 +190,25 @@
               />
             </label>
             <label>
-              Trail Offset (Price Units)
+              Trail Offset (Ticks)
               <input
                 name="trail_offset"
                 type="number"
-                value="1"
+                value="50"
                 step="1"
                 min="1"
                 max="1000"
+                required
+              />
+            </label>
+            <label>
+              Symbol Min Tick
+              <input
+                name="symbol_mintick"
+                type="number"
+                value="0.01"
+                step="0.0001"
+                min="0.00000001"
                 required
               />
             </label>
@@ -443,6 +453,6 @@
       defer
     ></script>
     <script src="/static/js/app.js" defer></script>
-    <script src="/static/js/pinbar_magic_v2.js" defer></script>
+    <script src="/static/js/pinbar_magic_v3.js" defer></script>
   </body>
 </html>

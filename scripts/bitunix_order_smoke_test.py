@@ -38,7 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--config-file",
         type=Path,
-        default=Path("./configs/live_trading.pinbar_magic_v2.env"),
+        default=Path("./configs/live_trading.pinbar_magic_v3.env"),
         help="Path to live trading .env config file",
     )
     parser.add_argument("--symbol", default="DOGEUSDT", help="Symbol to trade")
