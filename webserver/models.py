@@ -273,6 +273,10 @@ class PivotRequest(BaseModel):
     start: datetime
     end: datetime
     scan_length: int = Field(default=500, ge=1)
+    restart_on_invalidation: bool = False
+    min_swing_pct: float = Field(default=0.0, ge=0.0)
+    use_structural_left_bound: bool = False
+    include_reference_candle: bool = True
     source: Literal["binance", "csv"] = Field(default="binance")
     csv_path: str | None = None
     http_proxy: str | None = None
@@ -319,6 +323,7 @@ class PivotPoint(BaseModel):
     trigger_time: datetime
     invalidation_index: int | None = None
     invalidation_time: datetime | None = None
+    invalidation_level: float | None = None
     next_bullish_index: int | None = None
     next_bullish_time: datetime | None = None
     next_bearish_index: int | None = None
@@ -354,9 +359,18 @@ class BOSCHoCHRequest(BaseModel):
     start: datetime
     end: datetime
     direction_window: int = Field(default=3, ge=1)
+    scan_length: int = Field(default=500, ge=1)
     hunt_mode: Literal["wick", "close"] = Field(default="wick")
     include_bos_in_choch_range: bool = False
     include_hunt_candle_in_choch_range: bool = True
+    min_swing_pct: float = Field(default=0.0, ge=0.0)
+    include_pullback_in_bos_level: bool = True
+    # Pivot-specific params forwarded to detect_pivots
+    restart_on_invalidation: bool = False
+    pivot_min_swing_pct: float = Field(default=0.0, ge=0.0)
+    use_structural_left_bound: bool = False
+    include_reference_candle: bool = True
+    choch_display_mode: Literal["all", "first", "last"] = Field(default="all")
     source: Literal["binance", "csv"] = Field(default="binance")
     csv_path: str | None = None
     http_proxy: str | None = None
@@ -365,9 +379,12 @@ class BOSCHoCHRequest(BaseModel):
     @field_validator("symbol", "timeframe", mode="before")
     @classmethod
     def _normalize_bos_choch_text_fields(cls, value: Any, info: Any) -> Any:
-        return _require_non_empty_text(str(value), info.field_name) if value is not None else value
+        if value is None:
+            return value
+        text = _require_non_empty_text(str(value), info.field_name)
+        return text.upper() if info.field_name == "symbol" else text
 
-    @field_validator("hunt_mode", "source", mode="before")
+    @field_validator("hunt_mode", "source", "choch_display_mode", mode="before")
     @classmethod
     def _normalize_bos_choch_enums(cls, value: Any) -> Any:
         if isinstance(value, str):
@@ -400,6 +417,9 @@ class BOSCHoCHMarker(BaseModel):
     high: float
     low: float
     label: str
+    line_start_time: datetime
+    line_end_time: datetime
+    bos_index: int | None = None
 
 
 class BOSCHoCHDirectionState(BaseModel):
@@ -407,10 +427,38 @@ class BOSCHoCHDirectionState(BaseModel):
     since_index: int
 
 
+class DirectionReversalEvent(BaseModel):
+    candle_index: int
+    time: datetime
+    direction: Literal["UPWARD", "DOWNWARD"]
+    details: str
+
+
+class CHoCHUpdatePayload(BaseModel):
+    bos_index: int
+    candle_index: int
+    time: datetime
+    level: float
+    reason: str
+    direction: Literal["UPWARD", "DOWNWARD"]
+
+
+class DetectionEventPayload(BaseModel):
+    candle_index: int
+    time: datetime
+    event: str
+    direction: Literal["UPWARD", "DOWNWARD"]
+    details: str
+
+
 class BOSCHoCHResponse(BaseModel):
     candles: List[CandleForPivot]
     markers: List[BOSCHoCHMarker]
     direction_state: BOSCHoCHDirectionState
+    pivots: List[PivotPoint] = Field(default_factory=list)
+    direction_reversals: List[DirectionReversalEvent] = Field(default_factory=list)
+    choch_updates: List[CHoCHUpdatePayload] = Field(default_factory=list)
+    detection_events: List[DetectionEventPayload] = Field(default_factory=list)
 
 
 class LiquidityZoneRequest(BaseModel):
@@ -427,10 +475,21 @@ class LiquidityZoneRequest(BaseModel):
     hunt_mode: Literal["wick", "close"] = Field(default="wick")
     include_bos_in_choch_range: bool = False
     include_hunt_candle_in_choch_range: bool = True
+    min_swing_pct: float = Field(default=0.0, ge=0.0)
+    include_pullback_in_bos_level: bool = True
+    # Pivot-specific params forwarded to detect_pivots
+    restart_on_invalidation: bool = False
+    pivot_min_swing_pct: float = Field(default=0.0, ge=0.0)
+    use_structural_left_bound: bool = False
+    include_reference_candle: bool = True
     up_pivot_filter: Literal["BULLISH", "BEARISH", "ALL"] = Field(default="BULLISH")
     down_pivot_filter: Literal["BULLISH", "BEARISH", "ALL"] = Field(default="BEARISH")
     include_hunted_pivots: bool = False
+    pivot_grouping: Literal["combined", "separate_by_type"] = Field(default="combined")
+    pair_scan_order: Literal["newest_to_oldest", "oldest_to_newest"] = Field(default="newest_to_oldest")
     representative_include_hunted: bool = False
+    representative_mode: Literal["choch", "latest_eligible"] = Field(default="choch")
+    allow_representative_fallback: bool = True
     maximum_pivot_distance: int | None = Field(default=None, ge=1)
     minimum_overlap: float = Field(default=0.0, ge=0.0)
     minimum_overlap_ratio: float = Field(default=0.0, ge=0.0)
@@ -438,6 +497,7 @@ class LiquidityZoneRequest(BaseModel):
     relaxed_slope: bool = False
     slope_epsilon: float = Field(default=0.0, ge=0.0)
     epsilon: float = Field(default=1e-9, gt=0.0)
+    zone_hunt_mode: Literal["wick", "close"] = Field(default="wick")
     source: Literal["binance", "csv"] = Field(default="binance")
     csv_path: str | None = None
     http_proxy: str | None = None
@@ -446,9 +506,20 @@ class LiquidityZoneRequest(BaseModel):
     @field_validator("symbol", "timeframe", mode="before")
     @classmethod
     def _normalize_liquidity_text_fields(cls, value: Any, info: Any) -> Any:
-        return _require_non_empty_text(str(value), info.field_name) if value is not None else value
+        if value is None:
+            return value
+        text = _require_non_empty_text(str(value), info.field_name)
+        return text.upper() if info.field_name == "symbol" else text
 
-    @field_validator("hunt_mode", "source", mode="before")
+    @field_validator(
+        "hunt_mode",
+        "source",
+        "pivot_grouping",
+        "pair_scan_order",
+        "representative_mode",
+        "zone_hunt_mode",
+        mode="before",
+    )
     @classmethod
     def _normalize_liquidity_lowercase_enums(cls, value: Any) -> Any:
         if isinstance(value, str):

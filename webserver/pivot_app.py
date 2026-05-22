@@ -5,7 +5,7 @@ import os
 from pathlib import Path
 from typing import Awaitable, Callable
 
-from fastapi import FastAPI, Request  # type: ignore[import-not-found]
+from fastapi import FastAPI, HTTPException, Request  # type: ignore[import-not-found]
 from fastapi.middleware.cors import CORSMiddleware  # type: ignore[import-not-found]
 from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware  # type: ignore[import-not-found]
 from fastapi.middleware.trustedhost import TrustedHostMiddleware  # type: ignore[import-not-found]
@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse  # type: ignore[import-not-found]
 from fastapi.staticfiles import StaticFiles  # type: ignore[import-not-found]
 
 from candle_downloader.models import to_milliseconds
-from experiments.pivot_detection import detect_pivots, get_candles
+from experiments.pivot_detection import PivotConfig, detect_pivots, get_candles
 from .models import CandleForPivot, PivotPoint, PivotRequest, PivotResponse
 
 
@@ -69,6 +69,8 @@ FORCE_HTTPS = _bool_env("WEB_FORCE_HTTPS", False)
 PROXY_FALLBACK = os.getenv("WEB_CANDLE_PROXY")
 HTTP_PROXY_FALLBACK = os.getenv("WEB_CANDLE_HTTP_PROXY")
 HTTPS_PROXY_FALLBACK = os.getenv("WEB_CANDLE_HTTPS_PROXY")
+STD_HTTP_PROXY = os.getenv("http_proxy") or os.getenv("HTTP_PROXY")
+STD_HTTPS_PROXY = os.getenv("https_proxy") or os.getenv("HTTPS_PROXY")
 PIVOT_CANDLE_SOURCE = os.getenv("PIVOT_CANDLE_SOURCE", "binance").strip().lower()
 PIVOT_CANDLE_CSV_PATH = os.getenv("PIVOT_CANDLE_CSV_PATH")
 
@@ -104,27 +106,57 @@ async def pivots_page() -> FileResponse:
 @app.post("/api/pivots", response_model=PivotResponse)
 async def compute_pivots(payload: PivotRequest) -> PivotResponse:
     proxies = {}
-    if payload.http_proxy:
-        proxies["http"] = payload.http_proxy
-    if payload.https_proxy:
-        proxies["https"] = payload.https_proxy
+    http_proxy = payload.http_proxy or HTTP_PROXY_FALLBACK or PROXY_FALLBACK or STD_HTTP_PROXY
+    https_proxy = payload.https_proxy or HTTPS_PROXY_FALLBACK or PROXY_FALLBACK or STD_HTTPS_PROXY
+    if http_proxy:
+        proxies["http"] = http_proxy
+    if https_proxy:
+        proxies["https"] = https_proxy
 
     start_ms = to_milliseconds(payload.start)
     end_ms = to_milliseconds(payload.end)
     source = (payload.source or PIVOT_CANDLE_SOURCE or "binance").strip().lower()
     csv_path = payload.csv_path or PIVOT_CANDLE_CSV_PATH
-    candles = get_candles(
-        source=source,
-        symbol=payload.symbol,
-        interval=payload.timeframe,
-        start_ms=start_ms,
-        end_ms=end_ms,
-        csv_path=csv_path,
-        proxies=proxies or None,
-        logger=logger.getChild("pivots.binance"),
-    )
-    pivots = detect_pivots(candles, payload.scan_length)
+    symbol = payload.symbol.upper()
+    try:
+        candles = get_candles(
+            source=source,
+            symbol=symbol,
+            interval=payload.timeframe,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            csv_path=csv_path,
+            proxies=proxies or None,
+            logger=logger.getChild(source),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        logger.exception("Candle fetch failed: %s", exc)
+        raise HTTPException(
+            status_code=502, detail=f"Candle source error: {exc}"
+        ) from exc
 
+    if not candles:
+        raise HTTPException(
+            status_code=422, detail="No candles returned for the given parameters"
+        )
+
+    try:
+        pivots = detect_pivots(
+            candles,
+            payload.scan_length,
+            PivotConfig(
+                restart_on_invalidation=payload.restart_on_invalidation,
+                min_swing_pct=payload.min_swing_pct,
+                use_structural_left_bound=payload.use_structural_left_bound,
+                include_reference_candle=payload.include_reference_candle,
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    n = len(candles)
     pivot_points = [
         PivotPoint(
             index=p.index,
@@ -132,50 +164,40 @@ async def compute_pivots(payload: PivotRequest) -> PivotResponse:
             high=p.high,
             low=p.low,
             haunted=p.haunted,
-            time=candles[p.index].close_time
-            if 0 <= p.index < len(candles)
-            else payload.start,
+            invalidation_level=p.invalidation_level,
+            time=candles[p.index].open_time if 0 <= p.index < n else payload.start,
             reference_index=p.reference_index,
-            reference_time=candles[p.reference_index].close_time
-            if 0 <= p.reference_index < len(candles)
-            else payload.start,
+            reference_time=candles[p.reference_index].open_time if 0 <= p.reference_index < n else payload.start,
             trigger_index=p.trigger_index,
-            trigger_time=candles[p.trigger_index].close_time
-            if 0 <= p.trigger_index < len(candles)
-            else payload.start,
+            trigger_time=candles[p.trigger_index].open_time if 0 <= p.trigger_index < n else payload.start,
             invalidation_index=p.invalidation_index,
             invalidation_time=(
-                candles[p.invalidation_index].close_time
-                if p.invalidation_index is not None
-                and 0 <= p.invalidation_index < len(candles)
+                candles[p.invalidation_index].open_time
+                if p.invalidation_index is not None and 0 <= p.invalidation_index < n
                 else None
             ),
             next_bullish_index=p.next_bullish_index,
             next_bullish_time=(
-                candles[p.next_bullish_index].close_time
-                if p.next_bullish_index is not None
-                and 0 <= p.next_bullish_index < len(candles)
+                candles[p.next_bullish_index].open_time
+                if p.next_bullish_index is not None and 0 <= p.next_bullish_index < n
                 else None
             ),
             next_bearish_index=p.next_bearish_index,
             next_bearish_time=(
-                candles[p.next_bearish_index].close_time
-                if p.next_bearish_index is not None
-                and 0 <= p.next_bearish_index < len(candles)
+                candles[p.next_bearish_index].open_time
+                if p.next_bearish_index is not None and 0 <= p.next_bearish_index < n
                 else None
             ),
             previous_bullish_index=p.previous_bullish_index,
             previous_bullish_time=(
-                candles[p.previous_bullish_index].close_time
-                if p.previous_bullish_index is not None
-                and 0 <= p.previous_bullish_index < len(candles)
+                candles[p.previous_bullish_index].open_time
+                if p.previous_bullish_index is not None and 0 <= p.previous_bullish_index < n
                 else None
             ),
             previous_bearish_index=p.previous_bearish_index,
             previous_bearish_time=(
-                candles[p.previous_bearish_index].close_time
-                if p.previous_bearish_index is not None
-                and 0 <= p.previous_bearish_index < len(candles)
+                candles[p.previous_bearish_index].open_time
+                if p.previous_bearish_index is not None and 0 <= p.previous_bearish_index < n
                 else None
             ),
         )
