@@ -1,0 +1,329 @@
+ALGORITHM: BOS / CHoCH Detection
+==================================
+
+OVERVIEW
+--------
+Detects Break-of-Structure (BOS) events and Change-of-Character (CHoCH) levels
+from a sequence of closed OHLC candles.
+
+  BOS  — a swing structure that has been "hunted": price breaks past the
+         structural extreme formed during a pullback.
+  CHoCH — the counter-trend support/resistance level associated with a BOS.
+          If a future opposite candle crosses the last CHoCH of the newest BOS,
+          the trend direction is considered reversed.
+
+Two symmetric directions are supported:
+  UPWARD   — trend makes higher highs; BOS levels are swing HIGHS.
+  DOWNWARD — trend makes lower lows;  BOS levels are swing LOWS.
+
+The algorithm below is written for UPWARD. DOWNWARD is the exact mirror
+(swap bullish ↔ bearish, max HIGH ↔ min LOW, >= ↔ <=) and is described
+explicitly in the DOWNWARD MIRROR section.
+
+
+CONFIG (all parameters, with defaults)
+---------------------------------------
+  direction_window                : int   = 3      # candles used to infer initial direction
+  hunt_mode                       : enum  = WICK   # WICK | CLOSE
+  include_bos_in_choch_range      : bool  = False  # include BOS-complete candle in initial CHoCH scan
+  include_hunt_candle_in_choch_range : bool = True # include BOS-hunt candle in initial CHoCH scan
+  min_swing_pct                   : float = 0.0    # (|bos_level - choch_level| / mid) * 100 threshold; 0 = off
+  include_pullback_in_bos_level   : bool  = True   # include first pullback candle in BOS level scan
+
+
+DATA STRUCTURES
+---------------
+  BOS_RECORD {
+    index          : int    # sequential identifier (0-based)
+    direction      : UPWARD | DOWNWARD
+    anchor_index   : int    # left boundary of the BOS level scan
+    start_index    : int    # index of the first pullback candle (triggering formation)
+    level          : float  # BOS price level
+    complete_index : int    # index of the first resume candle (state → "complete")
+    hunt_index     : int    # index of the candle that crossed the BOS level (state → "confirmed")
+    state          : "forming" → "complete" → "confirmed"
+    label          : str    # e.g. "UP_BOS_0", "DOWN_BOS_2"
+  }
+
+  CHOCH_UPDATE {
+    bos_index    : int    # which BOS_RECORD this update belongs to
+    candle_index : int    # the candle that holds the CHoCH price extreme
+    level        : float  # CHoCH price level
+    reason       : "initial-range" | "continuous"
+  }
+
+
+ALGORITHM STATE
+---------------
+  direction      : UPWARD | DOWNWARD       # current trend direction
+  anchor_index   : int                     # left boundary for the next BOS level scan
+  phase          : WAIT_PULLBACK | FORMING | AWAIT_HUNT
+  forming_level  : float | None            # accumulating BOS level
+  complete_index : int | None              # index of the first resume candle
+  forming_bos    : BOS_RECORD | None       # the BOS currently being built
+  bos_counter    : int = 0                 # next BOS index to assign
+  active_bos_ids : list[int]               # all confirmed BOS IDs since last reversal
+  choch_levels   : dict[int → list[float]] # per BOS ID: cascading CHoCH levels
+
+
+HELPER FUNCTIONS
+----------------
+  extreme(direction, candle):
+    UPWARD   → candle.high
+    DOWNWARD → candle.low
+
+  is_opposite(direction, candle):
+    # True when the candle runs AGAINST the current direction (pullback candle).
+    UPWARD   → candle.close < candle.open   (bearish)
+    DOWNWARD → candle.close > candle.open   (bullish)
+
+  is_resume(direction, candle):
+    # True when the candle resumes the current direction.
+    UPWARD   → candle.close > candle.open   (bullish)
+    DOWNWARD → candle.close < candle.open   (bearish)
+
+  NOTE: candles where open == close (doji / neutral) return False for BOTH
+        is_opposite and is_resume.  They advance the index without modifying state.
+
+  bos_crossed(direction, level, candle, hunt_mode):
+    # True when the candle crosses the BOS level IN the trend direction.
+    # BOS is a swing HIGH for UPWARD, so it is crossed from BELOW by a HIGH or close.
+    UPWARD   → (candle.high  if hunt_mode=WICK else candle.close) >= level
+    DOWNWARD → (candle.low   if hunt_mode=WICK else candle.close) <= level
+
+  choch_crossed(direction, level, candle, hunt_mode):
+    # True when an OPPOSITE candle crosses the CHoCH level AGAINST the trend.
+    # CHoCH is a swing LOW support for UPWARD; crossed from ABOVE by a low or close.
+    UPWARD   → (candle.low  if hunt_mode=WICK else candle.close) <= level
+    DOWNWARD → (candle.high if hunt_mode=WICK else candle.close) >= level
+
+  choch_new_level(direction, candle, hunt_mode):
+    # The cascaded CHoCH level set by a candle that just crossed the old CHoCH.
+    UPWARD   → (candle.low  if hunt_mode=WICK else candle.close)
+    DOWNWARD → (candle.high if hunt_mode=WICK else candle.close)
+
+  initial_choch_extreme(direction, candles, start, end):
+    # Return (level, candle_index) of the structural extreme in [start, end].
+    UPWARD   → argmin candles[start..end].low  → (level = candle.low,  index)
+    DOWNWARD → argmax candles[start..end].high → (level = candle.high, index)
+
+
+INITIALISATION
+--------------
+  1. Inspect the first `direction_window` candles:
+       score = Σ (+1 for each bullish candle, -1 for each bearish candle)
+       if score > 0: direction ← UPWARD
+       if score < 0: direction ← DOWNWARD
+       if score = 0: direction ← direction of the last non-neutral candle in the window
+  2. anchor_index ← index of the last candle in that window (direction_window - 1)
+  3. phase ← WAIT_PULLBACK
+  4. active_bos_ids ← []
+
+
+MAIN LOOP  (i = anchor_index .. N-1, where N = len(candles))
+-------------------------------------------------------------
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  STEP A — CHoCH cascade & direction-reversal check                      │
+  │  RUNS FIRST, on every candle, BEFORE the phase state machine.           │
+  │  Applies regardless of whether a BOS is currently forming.              │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  if is_opposite(direction, candle[i]) AND active_bos_ids is non-empty:
+
+    newest_id ← active_bos_ids.last()
+    direction_reversed ← False
+
+    for each bos_id in active_bos_ids:
+      last_level ← choch_levels[bos_id].last()
+      if choch_crossed(direction, last_level, candle[i], hunt_mode):
+        new_level ← choch_new_level(direction, candle[i], hunt_mode)
+        choch_levels[bos_id].append(new_level)
+        emit CHOCH_UPDATE(bos_id, i, new_level, reason="continuous")
+        if bos_id == newest_id:
+          direction_reversed ← True
+
+    if direction_reversed:
+      direction    ← flip(direction)    # UPWARD↔DOWNWARD
+      active_bos_ids ← []               # clear all tracked BOSes
+      anchor_index ← i
+      forming_bos  ← None               # abandon any in-progress BOS
+      phase        ← WAIT_PULLBACK
+      advance i and continue             # reversal candle is consumed; restart loop
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  STEP B — Phase state machine                                           │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+  PHASE WAIT_PULLBACK:
+  ────────────────────
+    if is_opposite(direction, candle[i]):
+
+      # STEP 1: Scan [anchor_index .. scan_end] for the structural extreme.
+      #         scan_end = i   if include_pullback_in_bos_level = True  (default)
+      #         scan_end = i-1 if include_pullback_in_bos_level = False
+      # anchor_index is always ≤ i (set to hunt candle of last BOS, or window start).
+
+      scan_end ← i if include_pullback_in_bos_level else (i - 1)
+      level ← max(extreme(direction, candles[j]) for j in anchor_index..scan_end)
+              # (min for DOWNWARD)
+
+      forming_level ← level
+      forming_bos ← BOS_RECORD(
+        index        = bos_counter,
+        direction    = direction,
+        anchor_index = anchor_index,
+        start_index  = i,
+        level        = level,
+        state        = "forming",
+        label        = bos_label(direction, bos_counter),
+      )
+      phase ← FORMING
+
+    advance i and continue
+
+
+  PHASE FORMING:
+  ──────────────
+    if is_resume(direction, candle[i]):
+      # STEP 2-1: first resume candle → BOS is "complete"
+      forming_bos.complete_index ← i
+      forming_bos.state          ← "complete"
+      complete_index             ← i
+      phase                      ← AWAIT_HUNT
+
+      # STEP 3: the resume candle itself may immediately hunt the BOS
+      if bos_crossed(direction, forming_level, candle[i], hunt_mode):
+        call CONFIRM_BOS(hunt_index = i)
+        anchor_index ← i
+        forming_bos  ← None
+        phase        ← WAIT_PULLBACK
+
+      advance i and continue
+
+    if is_opposite(direction, candle[i]):
+      # STEP 2-2: another pullback candle → extend the BOS level
+      forming_level ← max(forming_level, extreme(direction, candle[i]))
+                      # (min for DOWNWARD)
+      forming_bos.level ← forming_level
+
+    # neutral candles: fall through — advance index, no state change
+    advance i and continue
+
+
+  PHASE AWAIT_HUNT:
+  ─────────────────
+    # STEP 4: any candle (bullish, bearish, or neutral) may hunt the BOS
+    if bos_crossed(direction, forming_level, candle[i], hunt_mode):
+      call CONFIRM_BOS(hunt_index = i)
+      anchor_index ← i
+      forming_bos  ← None
+      phase        ← WAIT_PULLBACK
+      # anchor_index = i captures this candle's structural extreme for the next
+      # BOS scan; always advance — re-processing the hunt candle would expose it
+      # to Step A, which would immediately cascade (and possibly reverse) the BOS
+      # that was just confirmed on the very same candle.
+
+    advance i and continue
+
+
+SUB-PROCEDURE: CONFIRM_BOS(hunt_index)
+────────────────────────────────────────
+  # Called when the BOS level is crossed; finishes the BOS and computes CHoCH.
+
+  forming_bos.hunt_index ← hunt_index
+  forming_bos.state      ← "confirmed"
+  bos_counter            ← bos_counter + 1
+
+  # Compute the initial CHoCH from the range between BOS-complete and hunt.
+  choch_start ← forming_bos.complete_index  if include_bos_in_choch_range
+                else forming_bos.complete_index + 1
+  choch_end   ← hunt_index                  if include_hunt_candle_in_choch_range
+                else hunt_index - 1
+  if choch_start > choch_end:               # degenerate range → fallback to hunt candle
+    choch_start ← choch_end ← hunt_index
+
+  (choch_level, choch_candle_idx) ← initial_choch_extreme(
+    direction, candles, choch_start, choch_end
+  )
+
+  # Optional size filter
+  if min_swing_pct > 0:
+    swing_pct ← |forming_bos.level - choch_level| / ((forming_bos.level + choch_level) / 2) * 100
+    if swing_pct < min_swing_pct:
+      return   # BOS discarded (too small); formation is still reset by the caller
+
+  # Record confirmed BOS and its initial CHoCH
+  bos_records.append(forming_bos)
+  active_bos_ids.append(forming_bos.index)
+  choch_levels[forming_bos.index] ← [choch_level]
+  emit CHOCH_UPDATE(forming_bos.index, choch_candle_idx, choch_level, reason="initial-range")
+
+
+DOWNWARD MIRROR (explicit)
+──────────────────────────
+  Everything above applies with these substitutions:
+
+  Concept            UPWARD                     DOWNWARD
+  ─────────────────  ─────────────────────────  ─────────────────────────
+  Pullback candle    bearish                    bullish
+  Resume candle      bullish                    bearish
+  BOS level          max HIGH of [anchor, i]    min LOW  of [anchor, i]
+  BOS hunt           candle.high >= level        candle.low <= level
+                     (candle.close >= level)     (candle.close <= level)
+  Initial CHoCH      min LOW  of [complete,hunt] max HIGH of [complete,hunt]
+  CHoCH hunt         candle.low <= level         candle.high >= level
+                     (candle.close <= level)     (candle.close >= level)
+  Cascaded CHoCH     candle.low (or close)       candle.high (or close)
+
+  DOWN_BOS_N is confirmed when a candle's low (or close) falls through the
+  swing low. DOWN_CHoCH is the max HIGH resistance of the bounce range — if a
+  future bullish candle's high (or close) clears this resistance, the CHoCH
+  cascades; if it belongs to the newest DOWN_BOS, the direction reverses to UPWARD.
+
+
+EDGE CASES
+──────────
+  No previous BOS:
+    anchor_index starts at direction_window - 1 (the last candle in the
+    initial direction-inference window). There is no prior confirmed BOS.
+
+  Direction reversal during FORMING or AWAIT_HUNT:
+    Step A fires before Step B. If the opposite candle reverses direction,
+    forming_bos is abandoned (set to None), active_bos_ids is cleared, and
+    the phase machine is skipped entirely for this candle.
+
+  Hunt candle captured via anchor_index:
+    After CONFIRM_BOS the algorithm always advances to the next candle.
+    The hunt candle's structural extreme is preserved because anchor_index is
+    set to hunt_index, so the next WAIT_PULLBACK scan begins from that candle.
+    Re-processing the hunt candle without advancing would expose it to Step A,
+    which could immediately cascade and reverse the BOS just confirmed.
+
+  Neutral / doji candles (open == close):
+    is_opposite and is_resume both return False.
+    In FORMING: the BOS level is not extended.
+    In AWAIT_HUNT: the BOS is not hunted (price did not move).
+    Step A: CHoCH cascade does not fire.
+
+
+REPRESENTATION
+──────────────
+  UP_BOS N:
+    Solid green horizontal line at bos.level,
+    from candle[start_index] to candle[hunt_index].
+    Labelled "UP_BOS_N".
+
+  DOWN_BOS N:
+    Solid red horizontal line at bos.level,
+    from candle[start_index] to candle[hunt_index].
+    Labelled "DOWN_BOS_N".
+
+  UP_CHoCH N (last CHoCH update for UP_BOS N):
+    Dashed blue horizontal line at the last CHoCH level,
+    from the CHoCH candle extending ~10 candles forward.
+    Labelled "UP_CH_N".
+
+  DOWN_CHoCH N:
+    Dashed teal horizontal line — mirror of UP_CHoCH.
+    Labelled "DOWN_CH_N".
