@@ -15,7 +15,7 @@ from experiments.bos_choch_detection import (
     get_candles,
     infer_initial_direction,
 )
-from experiments.pivot_detection import Pivot, detect_pivots
+from experiments.pivot_detection import Pivot, PivotConfig, detect_pivots
 
 Direction = Literal["UPWARD", "DOWNWARD"]
 PivotFilter = Literal["BULLISH", "BEARISH", "ALL"]
@@ -68,6 +68,16 @@ class LiquidityZoneConfig:
     hunt_mode: HuntMode = "wick"
     include_bos_in_choch_range: bool = False
     include_hunt_candle_in_choch_range: bool = True
+    min_swing_pct: float = 0.0
+    include_pullback_in_bos_level: bool = True
+
+    # Pivot detection settings forwarded to detect_pivots.
+    # pivot_min_swing_pct is independent from the BOS-level min_swing_pct above —
+    # BOS swing is (bos_level−choch_level)/mid, pivot swing is (high−low)/mid.
+    restart_on_invalidation: bool = False
+    pivot_min_swing_pct: float = 0.0
+    use_structural_left_bound: bool = False
+    include_reference_candle: bool = True
 
     # Pivot selection for level-1 liquidity zones.
     # Defaults implement the requested behaviour:
@@ -144,6 +154,8 @@ def _validate_config(config: LiquidityZoneConfig) -> None:
         raise ValueError("minimum_overlap must be >= 0")
     if config.minimum_overlap_ratio < 0:
         raise ValueError("minimum_overlap_ratio must be >= 0")
+    if config.minimum_overlap_ratio > 1:
+        raise ValueError("minimum_overlap_ratio must be in the range [0, 1]")
     if config.slope_epsilon < 0:
         raise ValueError("slope_epsilon must be >= 0")
     if config.epsilon < 0:
@@ -692,7 +704,16 @@ def detect_liquidity_zones(
     cfg = config or LiquidityZoneConfig()
     _validate_config(cfg)
 
-    pivots = detect_pivots(candles, cfg.scan_length)
+    pivots = detect_pivots(
+        candles,
+        cfg.scan_length,
+        PivotConfig(
+            restart_on_invalidation=cfg.restart_on_invalidation,
+            min_swing_pct=cfg.pivot_min_swing_pct,
+            use_structural_left_bound=cfg.use_structural_left_bound,
+            include_reference_candle=cfg.include_reference_candle,
+        ),
+    )
     bos_choch_result = detect_bos_choch(
         candles,
         BOSCHoCHConfig(
@@ -700,6 +721,8 @@ def detect_liquidity_zones(
             hunt_mode=cfg.hunt_mode,
             include_bos_in_choch_range=cfg.include_bos_in_choch_range,
             include_hunt_candle_in_choch_range=cfg.include_hunt_candle_in_choch_range,
+            min_swing_pct=cfg.min_swing_pct,
+            include_pullback_in_bos_level=cfg.include_pullback_in_bos_level,
         ),
     )
     direction_segments = _build_direction_segments(
@@ -851,6 +874,7 @@ def build_liquidity_zone_plotly_figure(
         segment
         for segment in result.direction_segments
         if segment.representative_pivot is not None
+        and 0 <= segment.representative_pivot.index < len(candles)
     ]
     fig.add_trace(
         go.Scatter(
@@ -895,6 +919,11 @@ def build_liquidity_zone_plotly_figure(
         for direction, zones in zones_by_direction.items():
             fillcolor, line_color = zone_styles[(level, direction)]
             for zone in zones:
+                if not (
+                    0 <= zone.start_index < len(candles)
+                    and 0 <= zone.end_index < len(candles)
+                ):
+                    continue
                 x0 = candles[zone.start_index].open_time
                 x1 = candles[zone.end_index].open_time
                 fig.add_shape(
@@ -979,6 +1008,27 @@ def main() -> int:
         "--exclude-hunt-candle-in-choch-range",
         action="store_true",
         help="Exclude BOS hunt candle from initial CHoCH range",
+    )
+    parser.add_argument(
+        "--restart-on-invalidation",
+        action="store_true",
+        help="On pivot invalidation advance cursor to j+1 instead of q, filling gaps",
+    )
+    parser.add_argument(
+        "--pivot-min-swing-pct",
+        type=float,
+        default=0.0,
+        help="Drop pivots whose (high-low)/mid*100 < this value (0 = disabled)",
+    )
+    parser.add_argument(
+        "--use-structural-left-bound",
+        action="store_true",
+        help="Use previous confirmed same-type pivot as left bound for invalidation zone",
+    )
+    parser.add_argument(
+        "--no-include-reference-candle",
+        action="store_true",
+        help="Exclude the reference candle j from the pivot search range (legacy behaviour)",
     )
     parser.add_argument(
         "--up-pivot-filter", choices=["BULLISH", "BEARISH", "ALL"], default="BULLISH"
@@ -1066,6 +1116,10 @@ def main() -> int:
             hunt_mode=args.hunt_mode,
             include_bos_in_choch_range=args.include_bos_in_choch_range,
             include_hunt_candle_in_choch_range=not args.exclude_hunt_candle_in_choch_range,
+            restart_on_invalidation=args.restart_on_invalidation,
+            pivot_min_swing_pct=args.pivot_min_swing_pct,
+            use_structural_left_bound=args.use_structural_left_bound,
+            include_reference_candle=not args.no_include_reference_candle,
             up_pivot_filter=args.up_pivot_filter,
             down_pivot_filter=args.down_pivot_filter,
             include_hunted_pivots=args.include_hunted_pivots,
