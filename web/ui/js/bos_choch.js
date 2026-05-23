@@ -81,7 +81,7 @@
 
   (() => {
     const end = new Date();
-    const start = new Date(end.getTime() - 7 * 24 * 3600 * 1000);
+    const start = new Date(Date.UTC(2026, 0, 1, 0, 0, 0));
     document.getElementById("start").value = isoInput(start);
     document.getElementById("end").value = isoInput(end);
   })();
