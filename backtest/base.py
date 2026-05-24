@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 from statistics import mean
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
@@ -14,6 +14,7 @@ from candle_downloader.models import Candle
 from candle_downloader.storage import CandleStore
 
 CandleMatrix = Dict[str, Dict[str, List[Candle]]]
+StrategyRunResult = Tuple[Sequence["TradePerformance"], Mapping[str, Any] | None]
 
 
 @dataclass(frozen=True)
@@ -22,10 +23,10 @@ class BacktestRunConfig:
 
     start: datetime
     end: datetime
-    initial_capital: float = 10_000.0
+    initial_capital: float = 100.0
     override_download: bool = False
     max_batch: int = MAX_BATCH
-    risk_free_rate: float = 0.0  # expressed as decimal annual rate, e.g. 0.02 = 2%
+    risk_free_rate: float = 0.0
     warmup_days: int = 30
 
     def __post_init__(self) -> None:
@@ -85,8 +86,8 @@ class BacktestStatistics:
     equity_curve: List[float] = field(default_factory=list)
     extra: Dict[str, Any] = field(default_factory=dict)
 
-    def as_dict(self) -> Dict[str, float | int | List[float]]:
-        base = {
+    def as_dict(self) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
             "total_trades": self.total_trades,
             "winning_trades": self.winning_trades,
             "losing_trades": self.losing_trades,
@@ -104,8 +105,8 @@ class BacktestStatistics:
             "average_trade_duration_sec": self.average_trade_duration_sec,
             "equity_curve": self.equity_curve,
         }
-        base.update(self.extra)
-        return base
+        payload.update(self.extra)
+        return payload
 
 
 @dataclass
@@ -120,15 +121,7 @@ class BacktestReport:
     def as_dict(self) -> Dict[str, object]:
         return {
             "strategy": self.strategy_name,
-            "config": {
-                "start": self.config.start.isoformat(),
-                "end": self.config.end.isoformat(),
-                "initial_capital": self.config.initial_capital,
-                "override_download": self.config.override_download,
-                "max_batch": self.config.max_batch,
-                "risk_free_rate": self.config.risk_free_rate,
-                "warmup_days": self.config.warmup_days,
-            },
+            "config": serialize_run_config(self.config),
             "statistics": self.statistics.as_dict(),
             "trades": [
                 {
@@ -160,10 +153,8 @@ class BacktestStrategy(ABC):
         """Return the Binance-compatible intervals needed by the strategy."""
 
     @abstractmethod
-    def run(
-        self, context: BacktestContext
-    ) -> Tuple[Sequence[TradePerformance], Mapping[str, Any] | None]:
-        """Execute backtest logic and return immutable trade outcomes and optional extra stats."""
+    def run(self, context: BacktestContext) -> StrategyRunResult:
+        """Execute backtest logic and return trade outcomes and optional extra stats."""
 
 
 class BaseBacktester:
@@ -183,55 +174,48 @@ class BaseBacktester:
         self._log = logger or logging.getLogger(__name__)
 
     def run(self, config: BacktestRunConfig) -> BacktestReport:
-        strategy_symbols = list(self._strategy.symbols())
-        timeframes = list(self._strategy.timeframes())
-        if not strategy_symbols:
-            raise ValueError("strategy must provide at least one symbol")
-        if not timeframes:
-            raise ValueError("strategy must provide at least one timeframe")
+        symbols = _require_non_empty(self._strategy.symbols(), "symbol")
+        timeframes = _require_non_empty(self._strategy.timeframes(), "timeframe")
+        normalized_config = normalize_run_config(config)
 
-        start = _ensure_utc(
-            config.start.replace(hour=0, minute=0, second=0, microsecond=0)
-        )
-        end = _ensure_utc(
-            config.end.replace(hour=23, minute=59, second=59, microsecond=999999)
-        )
-        warmup_start = (
-            start - timedelta(days=config.warmup_days) if config.warmup_days else start
-        )
         data = self._download_data(
-            strategy_symbols, timeframes, warmup_start, end, config
+            symbols=symbols,
+            timeframes=timeframes,
+            start=compute_warmup_start(normalized_config),
+            end=normalized_config.end,
+            config=normalized_config,
         )
-        ignore_candles: Dict[str, Dict[str, int]] = {}
-        for symbol, tf_candles in data.items():
-            ignore_candles[symbol] = {}
-            for timeframe, candles in tf_candles.items():
-                ignore_candles[symbol][timeframe] = sum(
-                    1 for candle in candles if candle.close_time < start
-                )
-
-        context = BacktestContext(
-            config=config, data=data, ignore_candles=ignore_candles
-        )
-        result = self._strategy.run(context)
-        custom_stats: Mapping[str, Any] | None = None
-        if len(result) == 2:
-            trades, custom_stats = result  # type: ignore[misc]
-        else:
-            trades = result  # type: ignore[assignment]
-        trades = tuple(trades)
-        statistics = self._build_statistics(trades, config)
+        context = self._build_context(normalized_config, data)
+        trades, custom_stats = self._parse_strategy_result(self._strategy.run(context))
+        statistics = self._build_statistics(trades, normalized_config)
         if custom_stats:
             statistics.extra.update(dict(custom_stats))
         return BacktestReport(
             strategy_name=self._strategy.name(),
-            config=config,
+            config=normalized_config,
             statistics=statistics,
             trades=trades,
         )
 
+    def _build_context(
+        self, config: BacktestRunConfig, data: CandleMatrix
+    ) -> BacktestContext:
+        return BacktestContext(
+            config=config,
+            data=data,
+            ignore_candles=build_ignore_candles(data, config.start),
+        )
+
+    def _parse_strategy_result(
+        self, result: StrategyRunResult
+    ) -> Tuple[Tuple[TradePerformance, ...], Mapping[str, Any] | None]:
+        raw_trades, extra_stats = result
+        trades = tuple(validate_trade_sequence(raw_trades))
+        return trades, extra_stats
+
     def _download_data(
         self,
+        *,
         symbols: Sequence[str],
         timeframes: Sequence[str],
         start: datetime,
@@ -240,6 +224,7 @@ class BaseBacktester:
     ) -> CandleMatrix:
         dataset: CandleMatrix = {}
         for symbol in symbols:
+            dataset[symbol] = {}
             for timeframe in timeframes:
                 self._log.info(
                     "Syncing candles",
@@ -260,8 +245,9 @@ class BaseBacktester:
                     max_batch=config.max_batch,
                 )
                 self._downloader.sync(request)
-                candles = self._store.load(symbol, timeframe, start, end)
-                dataset.setdefault(symbol, {})[timeframe] = candles
+                dataset[symbol][timeframe] = self._store.load(
+                    symbol, timeframe, start, end
+                )
         return dataset
 
     def _build_statistics(
@@ -269,13 +255,12 @@ class BaseBacktester:
         trades: Sequence[TradePerformance],
         config: BacktestRunConfig,
     ) -> BacktestStatistics:
-        stats = BacktestStatistics()
-        stats.total_trades = len(trades)
+        initial_capital = config.initial_capital
+        stats = BacktestStatistics(
+            total_trades=len(trades),
+            equity_curve=[initial_capital],
+        )
         if not trades:
-            stats.equity_curve = [config.initial_capital]
-            stats.cagr_pct = 0.0
-            stats.net_profit = 0.0
-            stats.net_profit_pct = 0.0
             return stats
 
         stats.winning_trades = sum(1 for trade in trades if trade.pnl > 0)
@@ -284,77 +269,188 @@ class BaseBacktester:
         stats.gross_profit = sum(trade.pnl for trade in trades if trade.pnl > 0)
         stats.gross_loss = sum(trade.pnl for trade in trades if trade.pnl < 0)
         stats.net_profit = stats.gross_profit + stats.gross_loss
-        stats.net_profit_pct = (stats.net_profit / config.initial_capital) * 100
-
+        stats.net_profit_pct = (stats.net_profit / initial_capital) * 100
         stats.average_return_pct = mean(trade.return_pct for trade in trades)
         stats.expectancy = stats.net_profit / stats.total_trades
         stats.average_trade_duration_sec = mean(
             trade.duration_seconds() for trade in trades
         )
-
-        if stats.gross_loss < 0:
-            stats.profit_factor = (
-                stats.gross_profit / abs(stats.gross_loss)
-                if stats.gross_profit > 0
-                else 0.0
-            )
-        elif stats.gross_profit > 0:
-            stats.profit_factor = float("inf")
-        else:
-            stats.profit_factor = 0.0
-
-        equity = config.initial_capital
-        peak = equity
-        stats.equity_curve = [equity]
-        max_drawdown = 0.0
-        for trade in trades:
-            equity += trade.pnl
-            stats.equity_curve.append(equity)
-            if equity > peak:
-                peak = equity
-            drawdown = (peak - equity) / peak if peak else 0.0
-            max_drawdown = max(max_drawdown, drawdown)
-        stats.max_drawdown_pct = max_drawdown * 100
-
-        final_equity = stats.equity_curve[-1]
-        duration_years = (config.end - config.start).total_seconds() / (
-            365.25 * 24 * 3600
+        stats.profit_factor = compute_profit_factor(
+            stats.gross_profit, stats.gross_loss
         )
-        if duration_years > 0 and final_equity > 0:
-            stats.cagr_pct = (
-                (final_equity / config.initial_capital) ** (1 / duration_years) - 1
-            ) * 100
-        else:
-            stats.cagr_pct = 0.0
-
-        returns = [trade.return_pct / 100 for trade in trades]
-        if len(returns) > 1:
-            avg_return = mean(returns)
-            variance = mean((r - avg_return) ** 2 for r in returns)
-            std_dev = math.sqrt(variance)
-
-            # Convert annual risk-free rate to per-trade using average trade duration,
-            # then annualize Sharpe by trades-per-year to avoid mixing time bases.
-            avg_trade_years = stats.average_trade_duration_sec / (365.25 * 24 * 3600)
-            trades_per_year = (
-                (1.0 / avg_trade_years) if avg_trade_years > 0 else len(trades)
-            )
-            rf_per_trade = (
-                config.risk_free_rate * avg_trade_years if avg_trade_years > 0 else 0.0
-            )
-
-            excess_return = avg_return - rf_per_trade
-            sharpe = (excess_return / std_dev) if std_dev else 0.0
-            stats.sharpe_ratio = (
-                sharpe * math.sqrt(trades_per_year) if trades_per_year > 0 else 0.0
-            )
-        else:
-            stats.sharpe_ratio = 0.0
-
+        stats.equity_curve, stats.max_drawdown_pct = build_equity_curve(
+            initial_capital=initial_capital,
+            trades=trades,
+        )
+        stats.cagr_pct = compute_cagr_pct(
+            initial_capital=initial_capital,
+            final_equity=stats.equity_curve[-1],
+            start=config.start,
+            end=config.end,
+        )
+        stats.sharpe_ratio = compute_sharpe_ratio(
+            trades=trades,
+            risk_free_rate=getattr(config, "risk_free_rate", 0.0),
+            average_trade_duration_sec=stats.average_trade_duration_sec,
+        )
         return stats
+
+
+def normalize_run_config(config: BacktestRunConfig) -> BacktestRunConfig:
+    return replace(
+        config,
+        start=_ensure_utc(
+            config.start.replace(hour=0, minute=0, second=0, microsecond=0)
+        ),
+        end=_ensure_utc(
+            config.end.replace(hour=23, minute=59, second=59, microsecond=999999)
+        ),
+    )
+
+
+def serialize_run_config(config: BacktestRunConfig) -> Dict[str, object]:
+    return {
+        "start": config.start.isoformat(),
+        "end": config.end.isoformat(),
+        "initial_capital": config.initial_capital,
+        "override_download": config.override_download,
+        "max_batch": config.max_batch,
+        "risk_free_rate": config.risk_free_rate,
+        "warmup_days": config.warmup_days,
+    }
+
+
+def compute_warmup_start(config: BacktestRunConfig) -> datetime:
+    if config.warmup_days <= 0:
+        return config.start
+    return config.start - timedelta(days=config.warmup_days)
+
+
+def build_ignore_candles(
+    data: CandleMatrix, trading_start: datetime
+) -> Dict[str, Dict[str, int]]:
+    return {
+        symbol: {
+            timeframe: sum(1 for candle in candles if candle.close_time < trading_start)
+            for timeframe, candles in timeframe_map.items()
+        }
+        for symbol, timeframe_map in data.items()
+    }
+
+
+def validate_trade_sequence(
+    trades: Sequence[TradePerformance],
+) -> Sequence[TradePerformance]:
+    validated: List[TradePerformance] = []
+    for trade in trades:
+        entry_time = _ensure_utc(trade.entry_time)
+        exit_time = _ensure_utc(trade.exit_time)
+        if exit_time < entry_time:
+            raise ValueError(
+                "trade exit_time must be greater than or equal to entry_time"
+            )
+        if not math.isfinite(trade.pnl):
+            raise ValueError("trade pnl must be finite")
+        if not math.isfinite(trade.return_pct):
+            raise ValueError("trade return_pct must be finite")
+        validated.append(replace(trade, entry_time=entry_time, exit_time=exit_time))
+    validated.sort(key=lambda trade: (trade.exit_time, trade.entry_time))
+    return validated
+
+
+def build_equity_curve(
+    *, initial_capital: float, trades: Sequence[TradePerformance]
+) -> Tuple[List[float], float]:
+    equity_curve = [initial_capital]
+    equity = initial_capital
+    peak = initial_capital
+    max_drawdown = 0.0
+
+    for trade in trades:
+        equity += trade.pnl
+        equity_curve.append(equity)
+        peak = max(peak, equity)
+        drawdown = (peak - equity) / peak if peak else 0.0
+        max_drawdown = max(max_drawdown, drawdown)
+
+    return equity_curve, max_drawdown * 100
+
+
+def compute_profit_factor(gross_profit: float, gross_loss: float) -> float:
+    if gross_loss < 0:
+        return gross_profit / abs(gross_loss) if gross_profit > 0 else 0.0
+    if gross_profit > 0:
+        return float("inf")
+    return 0.0
+
+
+def compute_cagr_pct(
+    *,
+    initial_capital: float,
+    final_equity: float,
+    start: datetime,
+    end: datetime,
+) -> float:
+    duration_years = (end - start).total_seconds() / (365.25 * 24 * 3600)
+    if duration_years <= 0 or final_equity <= 0:
+        return 0.0
+    return ((final_equity / initial_capital) ** (1 / duration_years) - 1) * 100
+
+
+def compute_sharpe_ratio(
+    *,
+    trades: Sequence[TradePerformance],
+    risk_free_rate: float | None = None,
+    average_trade_duration_sec: float,
+) -> float:
+    returns = [trade.return_pct / 100 for trade in trades]
+    if len(returns) <= 1:
+        return 0.0
+
+    avg_return = mean(returns)
+    variance = mean((value - avg_return) ** 2 for value in returns)
+    std_dev = math.sqrt(variance)
+    if std_dev == 0:
+        return 0.0
+
+    avg_trade_years = average_trade_duration_sec / (365.25 * 24 * 3600)
+    trades_per_year = (1.0 / avg_trade_years) if avg_trade_years > 0 else len(trades)
+    annual_risk_free_rate = risk_free_rate or 0.0
+    rf_per_trade = (
+        annual_risk_free_rate * avg_trade_years if avg_trade_years > 0 else 0.0
+    )
+    excess_return = avg_return - rf_per_trade
+    return (excess_return / std_dev) * math.sqrt(trades_per_year)
+
+
+def _require_non_empty(values: Sequence[str], label: str) -> List[str]:
+    items = [value.strip() for value in values if value and value.strip()]
+    if not items:
+        raise ValueError(f"strategy must provide at least one {label}")
+    return items
 
 
 def _ensure_utc(moment: datetime) -> datetime:
     if moment.tzinfo is None:
         return moment.replace(tzinfo=timezone.utc)
     return moment.astimezone(timezone.utc)
+
+
+__all__ = [
+    "BacktestContext",
+    "BacktestReport",
+    "BacktestRunConfig",
+    "BacktestStatistics",
+    "BacktestStrategy",
+    "BaseBacktester",
+    "CandleMatrix",
+    "TradePerformance",
+    "build_equity_curve",
+    "build_ignore_candles",
+    "compute_cagr_pct",
+    "compute_profit_factor",
+    "compute_sharpe_ratio",
+    "compute_warmup_start",
+    "normalize_run_config",
+    "serialize_run_config",
+]
