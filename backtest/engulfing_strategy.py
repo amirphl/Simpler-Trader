@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from math import sqrt
-from typing import List, Sequence, Tuple, Mapping, Any
+from typing import Any, List, Mapping, Sequence, Tuple
 
 from candle_downloader.models import Candle
 
@@ -62,14 +62,21 @@ class EngulfingStrategyConfig:
     stochastic_second_threshold: float | None = None
     stochastic_comparison: str = "gt"  # "gt" or "lt"
     stochastic_d_smoothing: int = 3
+    starting_capital: float = 100.0
 
     def __post_init__(self) -> None:
+        if not self.symbol:
+            raise ValueError("symbol must not be empty")
+        if not self.timeframe:
+            raise ValueError("timeframe must not be empty")
         if self.window_size <= 0:
             raise ValueError("window_size must be positive")
         if self.leverage <= 0:
             raise ValueError("leverage must be positive")
         if self.take_profit_pct <= 0:
             raise ValueError("take_profit_pct must be positive")
+        if self.doji_size <= 0 or self.doji_size > 1:
+            raise ValueError("doji_size must be in the range (0, 1]")
         if self.volume_window < 2:
             raise ValueError("volume_window must be at least 2")
         if self.max_volume_pressure_score <= 0:
@@ -78,6 +85,8 @@ class EngulfingStrategyConfig:
             raise ValueError("stop_loss_pct must be positive for percent mode")
         if self.exchange_fee_pct < 0:
             raise ValueError("exchange_fee_pct must be non-negative")
+        if self.starting_capital <= 0:
+            raise ValueError("starting_capital must be positive")
         if self.bollinger_period < 2:
             raise ValueError("bollinger_period must be at least 2")
         if self.bollinger_stddev <= 0:
@@ -88,14 +97,25 @@ class EngulfingStrategyConfig:
             raise ValueError("stochastic_second_period must be greater than 1")
         if self.stochastic_d_smoothing <= 0:
             raise ValueError("stochastic_d_smoothing must be positive")
-        if self.stochastic_comparison not in {"gt", "lt"}:
+        comparison = self.stochastic_comparison.strip().lower()
+        if comparison not in {"gt", "lt"}:
             raise ValueError("stochastic_comparison must be 'gt' or 'lt'")
-        first_line = self.stochastic_first_line.lower()
+        first_line = self.stochastic_first_line.strip().lower()
         if first_line not in {"k", "d"}:
             raise ValueError("stochastic_first_line must be 'k' or 'd'")
-        second_line = self.stochastic_second_line.lower()
+        second_line = self.stochastic_second_line.strip().lower()
         if second_line not in {"k", "d"}:
             raise ValueError("stochastic_second_line must be 'k' or 'd'")
+        for value, label in (
+            (self.stochastic_first_threshold, "stochastic_first_threshold"),
+            (self.stochastic_second_threshold, "stochastic_second_threshold"),
+        ):
+            if value is not None and not 0.0 <= value <= 100.0:
+                raise ValueError(f"{label} must be within 0..100 when provided")
+
+        object.__setattr__(self, "stochastic_comparison", comparison)
+        object.__setattr__(self, "stochastic_first_line", first_line)
+        object.__setattr__(self, "stochastic_second_line", second_line)
 
 
 @dataclass
@@ -108,6 +128,7 @@ class Position:
     take_profit: float
     leverage: float
     size: float  # Position size in base currency
+    metadata: Mapping[str, float | int | str | None] = field(default_factory=dict)
 
 
 def calculate_volume_pressure_score(
@@ -277,53 +298,72 @@ class EngulfingStrategy(BacktestStrategy):
     def run(
         self, context: BacktestContext
     ) -> Tuple[Sequence[TradePerformance], Mapping[str, Any] | None]:
+        cfg = self._config
         self._log.info(
             "Running strategy with configuration",
             extra={
-                "symbol": self._config.symbol,
-                "timeframe": self._config.timeframe,
-                "window_size": self._config.window_size,
-                "leverage": self._config.leverage,
-                "take_profit_pct": self._config.take_profit_pct,
-                "stop_loss_mode": self._config.stop_loss_mode.value,
-                "stop_loss_pct": self._config.stop_loss_pct,
-                "skip_large_upper_wick": self._config.skip_large_upper_wick,
-                "skip_bollinger_cross": self._config.skip_bollinger_cross,
-                "bollinger_period": self._config.bollinger_period,
-                "bollinger_stddev": self._config.bollinger_stddev,
-                "enable_volume_pressure_filter": self._config.enable_volume_pressure_filter,
-                "volume_window": self._config.volume_window,
-                "max_volume_pressure_score": self._config.max_volume_pressure_score,
-                "enable_stochastic_filter": self._config.enable_stochastic_filter,
-                "stochastic_first_line": self._config.stochastic_first_line,
-                "stochastic_first_period": self._config.stochastic_first_period,
-                "stochastic_first_threshold": self._config.stochastic_first_threshold,
-                "stochastic_second_line": self._config.stochastic_second_line,
-                "stochastic_second_period": self._config.stochastic_second_period,
-                "stochastic_second_threshold": self._config.stochastic_second_threshold,
-                "stochastic_comparison": self._config.stochastic_comparison,
-                "stochastic_d_smoothing": self._config.stochastic_d_smoothing,
-                "doji_size": self._config.doji_size,
-                "exchange_fee_pct": self._config.exchange_fee_pct,
+                "symbol": cfg.symbol,
+                "timeframe": cfg.timeframe,
+                "window_size": cfg.window_size,
+                "leverage": cfg.leverage,
+                "take_profit_pct": cfg.take_profit_pct,
+                "stop_loss_mode": cfg.stop_loss_mode.value,
+                "stop_loss_pct": cfg.stop_loss_pct,
+                "skip_large_upper_wick": cfg.skip_large_upper_wick,
+                "skip_bollinger_cross": cfg.skip_bollinger_cross,
+                "bollinger_period": cfg.bollinger_period,
+                "bollinger_stddev": cfg.bollinger_stddev,
+                "enable_volume_pressure_filter": cfg.enable_volume_pressure_filter,
+                "volume_window": cfg.volume_window,
+                "max_volume_pressure_score": cfg.max_volume_pressure_score,
+                "enable_stochastic_filter": cfg.enable_stochastic_filter,
+                "stochastic_first_line": cfg.stochastic_first_line,
+                "stochastic_first_period": cfg.stochastic_first_period,
+                "stochastic_first_threshold": cfg.stochastic_first_threshold,
+                "stochastic_second_line": cfg.stochastic_second_line,
+                "stochastic_second_period": cfg.stochastic_second_period,
+                "stochastic_second_threshold": cfg.stochastic_second_threshold,
+                "stochastic_comparison": cfg.stochastic_comparison,
+                "stochastic_d_smoothing": cfg.stochastic_d_smoothing,
+                "doji_size": cfg.doji_size,
+                "exchange_fee_pct": cfg.exchange_fee_pct,
+                "starting_capital": cfg.starting_capital,
             },
         )
-        symbol = self._config.symbol
-        timeframe = self._config.timeframe
+        symbol = cfg.symbol
+        timeframe = cfg.timeframe
         candles = context.data.get(symbol, {}).get(timeframe, [])
+        ignore_count = context.ignore_candles.get(symbol, {}).get(timeframe, 0)
+        start_index = max(ignore_count, self._required_history())
         self._log.info(
             "Candles loaded",
-            extra={"symbol": symbol, "timeframe": timeframe, "length": len(candles)},
+            extra={
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "length": len(candles),
+                "ignore_count": ignore_count,
+                "start_index": start_index,
+            },
         )
-        if len(candles) < max(100, self._config.window_size + 2):
-            return [], None
+        if len(candles) <= start_index:
+            return [], {"note": "insufficient_data", "candles": len(candles)}
 
-        patterns = detect_candle_patterns(candles, doji_size=self._config.doji_size)
+        patterns = detect_candle_patterns(candles, doji_size=cfg.doji_size)
         trades: List[TradePerformance] = []
         position: Position | None = None
-        initial_capital = context.config.initial_capital
-        current_capital = initial_capital
+        current_capital = cfg.starting_capital
+        stats: dict[str, int | float] = {
+            "signals_detected": 0,
+            "entries_opened": 0,
+            "entries_skipped_stop_above_entry": 0,
+            "entries_skipped_upper_wick": 0,
+            "entries_skipped_bollinger": 0,
+            "entries_skipped_volume": 0,
+            "entries_skipped_stochastic": 0,
+            "open_positions_force_closed": 0,
+        }
 
-        for idx in range(1, len(candles)):
+        for idx in range(start_index, len(candles)):
             candle = candles[idx]
             prev_candle = candles[idx - 1]
 
@@ -342,51 +382,56 @@ class EngulfingStrategy(BacktestStrategy):
                     position = None
 
             # Entry logic: only if no position is open
-            if position is None and idx >= 2:
+            if position is None:
                 prev_pattern = patterns[idx - 1] if idx - 1 < len(patterns) else None
 
                 # Check if previous candle is Bullish Engulfing
                 if prev_pattern and prev_pattern.bullish_engulfing:
+                    stats["signals_detected"] += 1
                     # Check if N candles before previous candle are bearish
                     # Previous candle is at idx-1, so we check from idx-1-N to idx-2 (inclusive)
-                    check_start = idx - 1 - self._config.window_size
-                    if check_start >= 0 and are_bearish(
-                        candles, check_start, self._config.window_size
-                    ):
-                        if not self._passes_stochastic_filter(candles, idx - 1):
+                    check_start = idx - 1 - cfg.window_size
+                    if check_start >= 0 and are_bearish(candles, check_start, cfg.window_size):
+                        stochastic_values = self._resolve_stochastic_values(
+                            candles,
+                            idx - 1,
+                        )
+                        if not self._passes_stochastic_filter(stochastic_values):
+                            stats["entries_skipped_stochastic"] += 1
                             continue
 
                         # --- Volume-pressure filter (optional) ---
-                        if self._config.enable_volume_pressure_filter:
+                        score: float | None = None
+                        if cfg.enable_volume_pressure_filter:
                             score = calculate_volume_pressure_score(
                                 candles,
                                 engulf_idx=idx - 1,
-                                window=self._config.volume_window,
+                                window=cfg.volume_window,
                             )
-                            if (
-                                score is not None
-                                and score > self._config.max_volume_pressure_score
-                            ):
+                            if score is not None and score > cfg.max_volume_pressure_score:
+                                stats["entries_skipped_volume"] += 1
                                 continue
 
                         engulf_candle = prev_candle
 
-                        if self._config.skip_large_upper_wick:
+                        if cfg.skip_large_upper_wick:
                             upper_wick = engulf_candle.high - engulf_candle.close
                             body = engulf_candle.close - engulf_candle.open
                             if body <= 0 or upper_wick > body:
+                                stats["entries_skipped_upper_wick"] += 1
                                 continue
 
-                        if self._config.skip_bollinger_cross:
+                        if cfg.skip_bollinger_cross:
                             bands = calculate_bollinger_bands(
                                 candles,
-                                period=self._config.bollinger_period,
-                                stddev_multiplier=self._config.bollinger_stddev,
+                                period=cfg.bollinger_period,
+                                stddev_multiplier=cfg.bollinger_stddev,
                                 index=idx - 1,
                             )
                             if bands is not None:
                                 _, _, upper_band = bands
                                 if engulf_candle.high >= upper_band:
+                                    stats["entries_skipped_bollinger"] += 1
                                     continue
 
                         # Entry signal triggered
@@ -395,18 +440,27 @@ class EngulfingStrategy(BacktestStrategy):
 
                         # Basic sanity: if SL >= entry, risk/reward is broken → skip.
                         if stop_loss >= entry_price:
+                            stats["entries_skipped_stop_above_entry"] += 1
                             continue
 
-                        take_profit = entry_price * (1.0 + self._config.take_profit_pct)
+                        take_profit = entry_price * (1.0 + cfg.take_profit_pct)
 
                         position = Position(
                             entry_time=candle.open_time,
                             entry_price=entry_price,
                             stop_loss=stop_loss,
                             take_profit=take_profit,
-                            leverage=self._config.leverage,
+                            leverage=cfg.leverage,
                             size=current_capital,
+                            metadata={
+                                "signal_index": idx - 1,
+                                "signal_open_time": engulf_candle.open_time.isoformat(),
+                                "volume_pressure_score": score,
+                                "stochastic_first": stochastic_values[0],
+                                "stochastic_second": stochastic_values[1],
+                            },
                         )
+                        stats["entries_opened"] += 1
                         exit_price, exit_reason = self._check_exit(candle, position)
                         if exit_price is not None and exit_reason is not None:
                             pnl = self._record_exit(
@@ -421,21 +475,36 @@ class EngulfingStrategy(BacktestStrategy):
 
         # Close any remaining position at the end
         if position is not None and candles:
-            # last_candle = candles[-1]
-            # exit_price = last_candle.close
-            # pnl = self._record_exit(
-            #     candle=last_candle,
-            #     exit_price=exit_price,
-            #     exit_reason="End of backtest",
-            #     position=position,
-            #     trades=trades,
-            #     exit_time=last_candle.close_time,
-            #     note_override="End of backtest",
-            # )
-            # current_capital += pnl
+            last_candle = candles[-1]
+            pnl = self._record_exit(
+                candle=last_candle,
+                exit_price=last_candle.close,
+                exit_reason="End of backtest",
+                position=position,
+                trades=trades,
+                exit_time=last_candle.close_time,
+                note_override="End of backtest",
+            )
+            current_capital += pnl
+            stats["open_positions_force_closed"] += 1
             position = None
 
-        return trades, None
+        stats["ending_capital"] = current_capital
+        return trades, stats
+
+    def _required_history(self) -> int:
+        cfg = self._config
+        stochastic_history = max(
+            cfg.stochastic_first_period,
+            cfg.stochastic_second_period,
+        ) + max(cfg.stochastic_d_smoothing - 1, 0)
+        return max(
+            2,
+            cfg.window_size + 1,
+            cfg.volume_window,
+            cfg.bollinger_period,
+            stochastic_history,
+        )
 
     def _check_exit(
         self, candle: Candle, position: Position
@@ -465,7 +534,7 @@ class EngulfingStrategy(BacktestStrategy):
         trades.append(
             TradePerformance(
                 entry_time=position.entry_time,
-                exit_time=exit_time or candle.open_time,
+                exit_time=exit_time or candle.close_time,
                 pnl=pnl,
                 return_pct=return_pct,
                 notes=note,
@@ -476,6 +545,7 @@ class EngulfingStrategy(BacktestStrategy):
                     "take_profit": position.take_profit,
                     "leverage": position.leverage,
                     "fees": fees_paid,
+                    **position.metadata,
                 },
             )
         )
@@ -522,10 +592,9 @@ class EngulfingStrategy(BacktestStrategy):
             return engulf_candle.close - (self._config.stop_loss_pct * body)
         raise ValueError(f"Unsupported stop-loss mode: {mode}")
 
-    def _passes_stochastic_filter(self, candles: Sequence[Candle], index: int) -> bool:
-        if not self._config.enable_stochastic_filter:
-            return True
-
+    def _resolve_stochastic_values(
+        self, candles: Sequence[Candle], index: int
+    ) -> tuple[float | None, float | None]:
         cfg = self._config
         first = calculate_stochastic_value(
             candles,
@@ -541,21 +610,31 @@ class EngulfingStrategy(BacktestStrategy):
             index=index,
             smoothing=cfg.stochastic_d_smoothing,
         )
+        return first, second
 
+    def _passes_stochastic_filter(
+        self, values: tuple[float | None, float | None]
+    ) -> bool:
+        if not self._config.enable_stochastic_filter:
+            return True
+
+        cfg = self._config
+        first, second = values
         if first is None or second is None:
             return False
 
-        if (
-            cfg.stochastic_first_threshold is not None
-            and first < cfg.stochastic_first_threshold
-        ):
+        if not self._passes_threshold(first, cfg.stochastic_first_threshold):
             return False
-        if (
-            cfg.stochastic_second_threshold is not None
-            and second < cfg.stochastic_second_threshold
-        ):
+        if not self._passes_threshold(second, cfg.stochastic_second_threshold):
             return False
 
         if cfg.stochastic_comparison == "gt":
             return first > second
         return first < second
+
+    def _passes_threshold(self, value: float, threshold: float | None) -> bool:
+        if threshold is None:
+            return True
+        if self._config.stochastic_comparison == "gt":
+            return value >= threshold
+        return value <= threshold
