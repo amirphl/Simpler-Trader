@@ -69,8 +69,19 @@ class StochasticRsiFsmConfig:
     take_profit_use_first_entry_price: bool = True
 
     def __post_init__(self) -> None:
-        if not self.symbols:
+        normalized_symbols = tuple(symbol.strip().upper() for symbol in self.symbols if symbol.strip())
+        normalized_tf_1 = self.tf_1.strip()
+        normalized_tf_2 = self.tf_2.strip()
+        normalized_tf_3 = self.tf_3.strip() if self.tf_3 else None
+
+        if not normalized_symbols:
             raise ValueError("symbols must not be empty")
+        if not normalized_tf_1:
+            raise ValueError("tf_1 must not be empty")
+        if not normalized_tf_2:
+            raise ValueError("tf_2 must not be empty")
+        if normalized_tf_3 is not None and not normalized_tf_3:
+            raise ValueError("tf_3 must not be empty when provided")
         if self.k_period <= 1:
             raise ValueError("k_period must be greater than 1")
         if self.k_slowing <= 0:
@@ -106,10 +117,10 @@ class StochasticRsiFsmConfig:
         if self.aligned_high_stoch_mode not in {"v1", "v2", "v3"}:
             raise ValueError("aligned_high_stoch_mode must be one of: v1, v2, v3")
         # Validate intervals early to fail fast on typos.
-        interval_to_milliseconds(self.tf_1)
-        interval_to_milliseconds(self.tf_2)
-        if self.tf_3:
-            interval_to_milliseconds(self.tf_3)
+        interval_to_milliseconds(normalized_tf_1)
+        interval_to_milliseconds(normalized_tf_2)
+        if normalized_tf_3:
+            interval_to_milliseconds(normalized_tf_3)
         if self.martingale_multiplier is not None:
             steps = len(self.martingale_leverages)
         else:
@@ -118,6 +129,10 @@ class StochasticRsiFsmConfig:
             )
         if steps < 0:
             raise ValueError("computed max_martingale_steps must be non-negative")
+        object.__setattr__(self, "symbols", normalized_symbols)
+        object.__setattr__(self, "tf_1", normalized_tf_1)
+        object.__setattr__(self, "tf_2", normalized_tf_2)
+        object.__setattr__(self, "tf_3", normalized_tf_3)
         object.__setattr__(self, "max_martingale_steps", steps)
 
 
@@ -143,7 +158,7 @@ class OpenPositionState:
     funding_paid: float = 0.0
     last_update_time: Optional[datetime] = None
     notes: str = ""
-    metadata: Dict[Any, Any] = None
+    metadata: Dict[Any, Any] = field(default_factory=dict)
 
     def effective_leverage(self) -> float:
         if self.margin <= 0:
@@ -174,9 +189,19 @@ class OpenPositionState:
             if self.last_update_time
             else None,
             "notes": self.notes,
-            # TODO:
-            # "metadata": self.metadata,
+            "metadata": dict(self.metadata),
         }
+
+
+@dataclass(frozen=True)
+class SignalSnapshot:
+    index: int
+    value: float
+    previous_value: float
+    higher_value: float
+    previous_higher_value: float
+    third_value: Optional[float]
+    previous_third_value: Optional[float]
 
 
 def _sma(values: Sequence[Optional[float]], length: int, index: int) -> Optional[float]:
@@ -775,10 +800,7 @@ class StochasticRsiFsmStrategy(BacktestStrategy):
         #         )
 
         states: Dict[str, Optional[OpenPositionState]] = {s: None for s in tf_1_candles}
-        high_ptrs: Dict[str, Tuple[int, Optional[float], Optional[float]]] = {}
         last_symbol_time: Dict[str, datetime] = {}
-        for symbol in tf_1_candles:
-            high_ptrs[symbol] = (-1, None, None)
 
         events: List[Tuple[datetime, str, int]] = []
         for symbol, candles in tf_1_candles.items():
@@ -798,8 +820,13 @@ class StochasticRsiFsmStrategy(BacktestStrategy):
 
         for _, symbol, idx in events:
             candle = tf_1_candles[symbol][idx]
-            ind = tf_1_ind[symbol][idx]
-            prev_ind = tf_1_ind[symbol][idx - 1] if idx > 0 else None
+            signal = self._build_signal_snapshot(
+                index=idx,
+                base_values=tf_1_ind[symbol],
+                aligned_tf_2_values=al_tf_2_ind[symbol],
+                aligned_tf_3_values=al_tf_3_ind.get(symbol),
+                cfg=cfg,
+            )
             # high_idx, prev_high, current_high = high_ptrs[symbol]
             # high_candles = higher_candles_by_symbol[symbol]
             # high_values = high_stoch_rsi[symbol]
@@ -825,24 +852,19 @@ class StochasticRsiFsmStrategy(BacktestStrategy):
                 position.funding_paid += funding
             last_symbol_time[symbol] = candle.close_time
 
-            al_ind2 = al_tf_2_ind[symbol][idx]
-            prev_al_ind2 = al_tf_2_ind[symbol][idx - 1] if idx > 0 else None
-
-            al_ind3 = None
-            prev_al_ind3 = None
-
-            if al_tf_3_ind.get(symbol):
-                al_ind3 = al_tf_3_ind[symbol][idx]
-                prev_al_ind3 = al_tf_3_ind[symbol][idx - 1] if idx > 0 else None
-
             exit_metadata = {
                 "exit[candle]": str(candle),
-                "exit[ind]": ind,
-                "exit[prev_ind]": prev_ind,
-                "exit[al_ind2]": al_ind2,
-                "exit[prev_al_ind2]": prev_al_ind2,
-                "exit[al_ind3]": al_ind3,
-                "exit[prev_al_ind3]": prev_al_ind3,
+                "exit[signal_index]": signal.index if signal is not None else None,
+                "exit[ind]": signal.value if signal is not None else None,
+                "exit[prev_ind]": signal.previous_value if signal is not None else None,
+                "exit[al_ind2]": signal.higher_value if signal is not None else None,
+                "exit[prev_al_ind2]": (
+                    signal.previous_higher_value if signal is not None else None
+                ),
+                "exit[al_ind3]": signal.third_value if signal is not None else None,
+                "exit[prev_al_ind3]": (
+                    signal.previous_third_value if signal is not None else None
+                ),
             }
 
             if position is not None:
@@ -950,12 +972,11 @@ class StochasticRsiFsmStrategy(BacktestStrategy):
 
                 if cfg.enable_high_exit_cross:
                     if (
-                        prev_al_ind2 is not None
-                        and al_ind2 is not None
+                        signal is not None
                         and self._crossed_opposite(
                             position.side,
-                            prev_al_ind2,
-                            al_ind2,
+                            signal.previous_higher_value,
+                            signal.higher_value,
                             cfg,
                         )
                     ):
@@ -977,44 +998,10 @@ class StochasticRsiFsmStrategy(BacktestStrategy):
                         open_positions_count = max(0, open_positions_count - 1)
                         position = None
 
-            # Skip until all stochastic RSI series have valid values.
-            if (
-                ind is None
-                or prev_ind is None
-                or al_ind2 is None
-                or prev_al_ind2 is None
-            ):
+            if signal is None:
                 continue
 
-            # NOTE:
-            mid = (cfg.overbought + cfg.oversold) / 2
-
-            if cfg.use_midsold_filter:
-                long_signal = (
-                    al_ind2 < cfg.oversold
-                    and prev_ind < cfg.oversold
-                    and cfg.oversold < ind < mid
-                )
-                short_signal = (
-                    al_ind2 > cfg.overbought
-                    and prev_ind > cfg.overbought
-                    and mid < ind < cfg.overbought
-                )
-            else:
-                long_signal = (
-                    al_ind2 < cfg.oversold
-                    and prev_ind < cfg.oversold
-                    and ind > cfg.oversold
-                )
-                short_signal = (
-                    al_ind2 > cfg.overbought
-                    and prev_ind > cfg.overbought
-                    and ind < cfg.overbought
-                )
-
-            if al_ind3:
-                long_signal = long_signal and al_ind3 < cfg.oversold
-                short_signal = short_signal and al_ind3 > cfg.overbought
+            long_signal, short_signal = self._evaluate_entry_signals(signal, cfg)
 
             if position is None:
                 if open_positions_count >= cfg.max_concurrent_positions:
@@ -1032,12 +1019,13 @@ class StochasticRsiFsmStrategy(BacktestStrategy):
 
                     entry_metadata = {
                         "entry[candle]": str(candle),
-                        "entry[ind]": ind,
-                        "entry[prev_ind]": prev_ind,
-                        "entry[al_ind2]": al_ind2,
-                        "entry[prev_al_ind2]": prev_al_ind2,
-                        "entry[al_ind3]": al_ind3,
-                        "entry[prev_al_ind3]": prev_al_ind3,
+                        "entry[signal_index]": signal.index,
+                        "entry[ind]": signal.value,
+                        "entry[prev_ind]": signal.previous_value,
+                        "entry[al_ind2]": signal.higher_value,
+                        "entry[prev_al_ind2]": signal.previous_higher_value,
+                        "entry[al_ind3]": signal.third_value,
+                        "entry[prev_al_ind3]": signal.previous_third_value,
                     }
 
                     new_position = self._open_position(
@@ -1089,12 +1077,13 @@ class StochasticRsiFsmStrategy(BacktestStrategy):
                     add_size = cfg.initial_order_usdt * multiplier
                     martingale_metadata = {
                         "martingale[candle]": str(candle),
-                        "martingale[ind]": ind,
-                        "martingale[prev_ind]": prev_ind,
-                        "martingale[al_ind2]": al_ind2,
-                        "martingale[prev_al_ind2]": prev_al_ind2,
-                        "martingale[al_ind3]": al_ind3,
-                        "martingale[prev_al_ind3]": prev_al_ind3,
+                        "martingale[signal_index]": signal.index,
+                        "martingale[ind]": signal.value,
+                        "martingale[prev_ind]": signal.previous_value,
+                        "martingale[al_ind2]": signal.higher_value,
+                        "martingale[prev_al_ind2]": signal.previous_higher_value,
+                        "martingale[al_ind3]": signal.third_value,
+                        "martingale[prev_al_ind3]": signal.previous_third_value,
                     }
                     self._add_to_position(
                         position=position,
@@ -1134,12 +1123,13 @@ class StochasticRsiFsmStrategy(BacktestStrategy):
                         )
                         entry_metadata = {
                             "entry[candle]": str(candle),
-                            "entry[ind]": ind,
-                            "entry[prev_ind]": prev_ind,
-                            "entry[al_ind2]": al_ind2,
-                            "entry[prev_al_ind2]": prev_al_ind2,
-                            "entry[al_ind3]": al_ind3,
-                            "entry[prev_al_ind3]": prev_al_ind3,
+                            "entry[signal_index]": signal.index,
+                            "entry[ind]": signal.value,
+                            "entry[prev_ind]": signal.previous_value,
+                            "entry[al_ind2]": signal.higher_value,
+                            "entry[prev_al_ind2]": signal.previous_higher_value,
+                            "entry[al_ind3]": signal.third_value,
+                            "entry[prev_al_ind3]": signal.previous_third_value,
                         }
                         new_state = self._open_position(
                             symbol=symbol,
@@ -1155,6 +1145,32 @@ class StochasticRsiFsmStrategy(BacktestStrategy):
                         if new_state:
                             states[symbol] = new_state
                             open_positions_count += 1
+
+        for symbol, position in states.items():
+            if position is None:
+                continue
+            candles = tf_1_candles.get(symbol, [])
+            if not candles:
+                continue
+            final_candle = candles[-1]
+            final_metadata = {
+                "exit[candle]": str(final_candle),
+                "exit[reason]": "End of backtest",
+            }
+            exit_price = _calc_exit_price_with_slippage(
+                final_candle.close, position.side, cfg.slippage_pct
+            )
+            trades.append(
+                self._close_position(
+                    position=position,
+                    exit_price=exit_price,
+                    exit_time=final_candle.close_time,
+                    reason="End of backtest",
+                    use_taker_fee=True,
+                    cfg=cfg,
+                    metadata=final_metadata,
+                )
+            )
 
         adds: List[float] = []
         for trade in trades:
@@ -1178,6 +1194,90 @@ class StochasticRsiFsmStrategy(BacktestStrategy):
         return trades, extra_stats
 
     # ------------------------------------------------------------------ helpers
+
+    def _build_signal_snapshot(
+        self,
+        *,
+        index: int,
+        base_values: Sequence[Optional[float]],
+        aligned_tf_2_values: Sequence[Optional[float]],
+        aligned_tf_3_values: Optional[Sequence[Optional[float]]],
+        cfg: StochasticRsiFsmConfig,
+    ) -> Optional[SignalSnapshot]:
+        signal_index = index - cfg.signal_offset
+        previous_index = signal_index - 1
+        if signal_index < 0 or previous_index < 0:
+            return None
+        if signal_index >= len(base_values) or signal_index >= len(aligned_tf_2_values):
+            return None
+
+        value = base_values[signal_index]
+        previous_value = base_values[previous_index]
+        higher_value = aligned_tf_2_values[signal_index]
+        previous_higher_value = aligned_tf_2_values[previous_index]
+        if (
+            value is None
+            or previous_value is None
+            or higher_value is None
+            or previous_higher_value is None
+        ):
+            return None
+
+        third_value: Optional[float] = None
+        previous_third_value: Optional[float] = None
+        if aligned_tf_3_values is not None:
+            if signal_index >= len(aligned_tf_3_values):
+                return None
+            third_value = aligned_tf_3_values[signal_index]
+            previous_third_value = aligned_tf_3_values[previous_index]
+            if third_value is None or previous_third_value is None:
+                return None
+
+        return SignalSnapshot(
+            index=signal_index,
+            value=value,
+            previous_value=previous_value,
+            higher_value=higher_value,
+            previous_higher_value=previous_higher_value,
+            third_value=third_value,
+            previous_third_value=previous_third_value,
+        )
+
+    def _evaluate_entry_signals(
+        self,
+        signal: SignalSnapshot,
+        cfg: StochasticRsiFsmConfig,
+    ) -> Tuple[bool, bool]:
+        mid = (cfg.overbought + cfg.oversold) / 2.0
+
+        if cfg.use_midsold_filter:
+            long_signal = (
+                signal.higher_value < cfg.oversold
+                and signal.previous_value < cfg.oversold
+                and cfg.oversold < signal.value < mid
+            )
+            short_signal = (
+                signal.higher_value > cfg.overbought
+                and signal.previous_value > cfg.overbought
+                and mid < signal.value < cfg.overbought
+            )
+        else:
+            long_signal = (
+                signal.higher_value < cfg.oversold
+                and signal.previous_value < cfg.oversold
+                and signal.value > cfg.oversold
+            )
+            short_signal = (
+                signal.higher_value > cfg.overbought
+                and signal.previous_value > cfg.overbought
+                and signal.value < cfg.overbought
+            )
+
+        if signal.third_value is not None:
+            long_signal = long_signal and signal.third_value < cfg.oversold
+            short_signal = short_signal and signal.third_value > cfg.overbought
+
+        return long_signal, short_signal
 
     def _crossed_opposite(
         self,
@@ -1362,11 +1462,10 @@ class StochasticRsiFsmStrategy(BacktestStrategy):
             return None
         fee = _calc_fee(size_usdt, cfg.maker_fee_pct)
         margin = size_usdt / leverage if leverage > 0 else size_usdt
-        tp_basis = fill if cfg.take_profit_use_first_entry_price else fill
         take_profit = (
-            tp_basis * (1 + cfg.take_profit_pct)
+            fill * (1 + cfg.take_profit_pct)
             if side is PositionDirection.LONG
-            else tp_basis * (1 - cfg.take_profit_pct)
+            else fill * (1 - cfg.take_profit_pct)
         )
         liquidation_price, margin_call_price = _calc_risk_prices(
             fill, margin, qty, side
@@ -1517,7 +1616,8 @@ class StochasticRsiFsmStrategy(BacktestStrategy):
         pnl = gross - total_fees - position.funding_paid
         ret_pct = (pnl / position.notional) * 100.0 if position.notional else 0.0
 
-        metadata.update(
+        resolved_metadata: Dict[Any, Any] = dict(metadata or {})
+        resolved_metadata.update(
             {
                 "symbol": position.symbol,
                 "side": position.side.value,
@@ -1544,7 +1644,7 @@ class StochasticRsiFsmStrategy(BacktestStrategy):
             pnl=pnl,
             return_pct=ret_pct,
             notes=reason,
-            metadata=metadata,
+            metadata=resolved_metadata,
         )
 
     def _format_series(
