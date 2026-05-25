@@ -10,12 +10,15 @@ from pathlib import Path
 from typing import Any, Dict
 
 from backtest import (
+    BacktestReport,
     BacktestRunConfig,
     BaseBacktester,
     EngulfingStrategy,
     EngulfingStrategyConfig,
-    PinBarMagicStrategyConfigV2,
-    PinBarMagicStrategyV2,
+    EmaAvwapPullbackStrategy,
+    EmaAvwapPullbackStrategyConfig,
+    PinBarMagicStrategyConfigV3,
+    PinBarMagicStrategyV3,
     StrongTrendStairStrategy,
     StrongTrendStairStrategyConfig,
     StopLossMode,
@@ -43,9 +46,11 @@ def parse_datetime(value: str) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def load_common_env_config() -> Dict[str, str]:
+def load_engulfing_env_config() -> Dict[str, str]:
     return {
-        "strategy": os.getenv("BACKTEST_STRATEGY", os.getenv("STRATEGY_KIND", "engulfing")),
+        "strategy": os.getenv(
+            "BACKTEST_STRATEGY", os.getenv("STRATEGY_KIND", "engulfing")
+        ),
         "symbol": os.getenv("STRATEGY_SYMBOL", ""),
         "timeframe": os.getenv("STRATEGY_TIMEFRAME", ""),
         "leverage": os.getenv("STRATEGY_LEVERAGE", ""),
@@ -66,11 +71,6 @@ def load_common_env_config() -> Dict[str, str]:
         "show_stochastic": os.getenv("SHOW_STOCHASTIC", "true"),
         "show_equity": os.getenv("SHOW_EQUITY", "true"),
         "log_level": os.getenv("LOG_LEVEL", "INFO"),
-    }
-
-
-def load_engulfing_env_config() -> Dict[str, str]:
-    return {
         "window_size": os.getenv("STRATEGY_WINDOW_SIZE", ""),
         "doji_size": os.getenv("STRATEGY_DOJI_SIZE", "0.05"),
         "stop_loss_mode": os.getenv("STRATEGY_STOP_LOSS_MODE", "percent"),
@@ -93,31 +93,141 @@ def load_engulfing_env_config() -> Dict[str, str]:
     }
 
 
-def load_pinbar_magic_v2_env_config() -> Dict[str, str]:
+def load_pinbar_magic_v3_env_config() -> Dict[str, str]:
     return {
+        "strategy": os.getenv(
+            "BACKTEST_STRATEGY", os.getenv("STRATEGY_KIND", "engulfing")
+        ),
+        "symbol": os.getenv("STRATEGY_SYMBOL", ""),
+        "timeframe": os.getenv("STRATEGY_TIMEFRAME", ""),
+        "leverage": os.getenv("STRATEGY_LEVERAGE", ""),
+        "take_profit_pct": os.getenv("STRATEGY_TAKE_PROFIT_PCT", ""),
+        "start": os.getenv("BACKTEST_START", ""),
+        "end": os.getenv("BACKTEST_END", ""),
+        "initial_capital": os.getenv("BACKTEST_INITIAL_CAPITAL", ""),
+        "warmup_days": os.getenv("BACKTEST_WARMUP_DAYS", "0"),
+        "override_download": os.getenv("OVERRIDE_DOWNLOAD", "false"),
+        "store_kind": os.getenv("STORE_KIND", "postgres"),
+        "store_path": os.getenv("STORE_PATH", ""),
+        "http_proxy": os.getenv("HTTP_PROXY", ""),
+        "https_proxy": os.getenv("HTTPS_PROXY", ""),
+        "proxy": os.getenv("PROXY", ""),
+        "stats_output": os.getenv("STATS_OUTPUT", "./backtest_stats.json"),
+        "plot_output": os.getenv("PLOT_OUTPUT", ""),
+        "show_plot": os.getenv("SHOW_PLOT", "false"),
+        "show_stochastic": os.getenv("SHOW_STOCHASTIC", "true"),
+        "show_equity": os.getenv("SHOW_EQUITY", "true"),
+        "log_level": os.getenv("LOG_LEVEL", "INFO"),
         "equity_risk_pct": os.getenv("STRATEGY_EQUITY_RISK_PCT", "3"),
         "atr_multiple": os.getenv("STRATEGY_ATR_MULTIPLE", "0.5"),
         "trail_points": os.getenv("STRATEGY_TRAIL_POINTS", "1"),
         "trail_offset": os.getenv("STRATEGY_TRAIL_OFFSET", "1"),
+        "symbol_mintick": os.getenv("STRATEGY_SYMBOL_MINTICK", "1"),
         "slow_sma_period": os.getenv("STRATEGY_SLOW_SMA_PERIOD", "50"),
         "medium_ema_period": os.getenv("STRATEGY_MEDIUM_EMA_PERIOD", "18"),
         "fast_ema_period": os.getenv("STRATEGY_FAST_EMA_PERIOD", "6"),
         "atr_period": os.getenv("STRATEGY_ATR_PERIOD", "14"),
         "entry_cancel_bars": os.getenv("STRATEGY_ENTRY_CANCEL_BARS", "3"),
-        "entry_activation_mode": os.getenv("STRATEGY_ENTRY_ACTIVATION_MODE", "next_bar"),
+        "entry_activation_mode": os.getenv(
+            "STRATEGY_ENTRY_ACTIVATION_MODE", "next_bar"
+        ),
         "trailing_tick_timeframe": os.getenv("STRATEGY_TRAILING_TICK_TIMEFRAME", "15m"),
-        "use_trailing_tick_emulation": os.getenv("STRATEGY_USE_TRAILING_TICK_EMULATION", "false"),
+        "use_trailing_tick_emulation": os.getenv(
+            "STRATEGY_USE_TRAILING_TICK_EMULATION", "false"
+        ),
         "use_stop_fill_open_gap": os.getenv("STRATEGY_USE_STOP_FILL_OPEN_GAP", "true"),
         "enable_friday_close": os.getenv("STRATEGY_ENABLE_FRIDAY_CLOSE", "true"),
         "friday_close_hour_utc": os.getenv("STRATEGY_FRIDAY_CLOSE_HOUR_UTC", "16"),
         "enable_ema_cross_close": os.getenv("STRATEGY_ENABLE_EMA_CROSS_CLOSE", "true"),
-        "risk_equity_include_unrealized": os.getenv("STRATEGY_RISK_EQUITY_INCLUDE_UNREALIZED", "true"),
-        "risk_equity_mark_source": os.getenv("STRATEGY_RISK_EQUITY_MARK_SOURCE", "close"),
+        "risk_equity_include_unrealized": os.getenv(
+            "STRATEGY_RISK_EQUITY_INCLUDE_UNREALIZED", "true"
+        ),
+        "risk_equity_mark_source": os.getenv(
+            "STRATEGY_RISK_EQUITY_MARK_SOURCE", "close"
+        ),
+    }
+
+
+def load_ema_avwap_pullback_env_config() -> Dict[str, str]:
+    return {
+        "strategy": os.getenv(
+            "BACKTEST_STRATEGY", os.getenv("STRATEGY_KIND", "ema_avwap_pullback")
+        ),
+        "symbol": os.getenv("STRATEGY_SYMBOL", ""),
+        "timeframe": os.getenv("STRATEGY_TIMEFRAME", ""),
+        "leverage": os.getenv("STRATEGY_LEVERAGE", ""),
+        "start": os.getenv("BACKTEST_START", ""),
+        "end": os.getenv("BACKTEST_END", ""),
+        "initial_capital": os.getenv("BACKTEST_INITIAL_CAPITAL", ""),
+        "warmup_days": os.getenv("BACKTEST_WARMUP_DAYS", "0"),
+        "override_download": os.getenv("OVERRIDE_DOWNLOAD", "false"),
+        "store_kind": os.getenv("STORE_KIND", "postgres"),
+        "store_path": os.getenv("STORE_PATH", ""),
+        "http_proxy": os.getenv("HTTP_PROXY", ""),
+        "https_proxy": os.getenv("HTTPS_PROXY", ""),
+        "proxy": os.getenv("PROXY", ""),
+        "stats_output": os.getenv("STATS_OUTPUT", "./backtest_stats.json"),
+        "plot_output": os.getenv("PLOT_OUTPUT", ""),
+        "show_plot": os.getenv("SHOW_PLOT", "false"),
+        "show_stochastic": os.getenv("SHOW_STOCHASTIC", "true"),
+        "show_equity": os.getenv("SHOW_EQUITY", "true"),
+        "log_level": os.getenv("LOG_LEVEL", "INFO"),
+        "equity_risk_pct": os.getenv("STRATEGY_EQUITY_RISK_PCT", "1"),
+        "ema_length": os.getenv("STRATEGY_EMA_LENGTH", "55"),
+        "consecutive_count": os.getenv("STRATEGY_CONSECUTIVE_COUNT", "4"),
+        "ema_validation_mode": os.getenv("STRATEGY_EMA_VALIDATION_MODE", "body"),
+        "setup_waiting_replacement_mode": os.getenv(
+            "STRATEGY_SETUP_WAITING_REPLACEMENT_MODE", "keep_waiting"
+        ),
+        "position_sizing_mode": os.getenv(
+            "STRATEGY_POSITION_SIZING_MODE", "risk_distance"
+        ),
+        "avwap_multiplier_1": os.getenv("STRATEGY_AVWAP_MULTIPLIER_1", "1.0"),
+        "avwap_multiplier_2": os.getenv("STRATEGY_AVWAP_MULTIPLIER_2", "2.0"),
+        "avwap_multiplier_3": os.getenv("STRATEGY_AVWAP_MULTIPLIER_3", "3.0"),
+        "rigid_stop_loss_pct": os.getenv("STRATEGY_RIGID_STOP_LOSS_PCT", "0"),
+        "trailing_activation_threshold_pct": os.getenv(
+            "STRATEGY_TRAILING_ACTIVATION_THRESHOLD_PCT", "0"
+        ),
+        "trailing_gap_pct": os.getenv("STRATEGY_TRAILING_GAP_PCT", "1.0"),
+        "maker_fee_pct": os.getenv("STRATEGY_MAKER_FEE_PCT", "0.0002"),
+        "taker_fee_pct": os.getenv("STRATEGY_TAKER_FEE_PCT", "0.0006"),
+        "entry_slippage_pct": os.getenv("STRATEGY_ENTRY_SLIPPAGE_PCT", "0"),
+        "exit_slippage_pct": os.getenv("STRATEGY_EXIT_SLIPPAGE_PCT", "0"),
+        "use_gap_cross_detection": os.getenv(
+            "STRATEGY_USE_GAP_CROSS_DETECTION", "true"
+        ),
+        "max_decision_log_entries": os.getenv(
+            "STRATEGY_MAX_DECISION_LOG_ENTRIES", "20000"
+        ),
     }
 
 
 def load_stochastic_fsm_env_config() -> Dict[str, str]:
     return {
+        "strategy": os.getenv(
+            "BACKTEST_STRATEGY", os.getenv("STRATEGY_KIND", "engulfing")
+        ),
+        "symbol": os.getenv("STRATEGY_SYMBOL", ""),
+        "timeframe": os.getenv("STRATEGY_TIMEFRAME", ""),
+        "leverage": os.getenv("STRATEGY_LEVERAGE", ""),
+        "take_profit_pct": os.getenv("STRATEGY_TAKE_PROFIT_PCT", ""),
+        "start": os.getenv("BACKTEST_START", ""),
+        "end": os.getenv("BACKTEST_END", ""),
+        "initial_capital": os.getenv("BACKTEST_INITIAL_CAPITAL", ""),
+        "warmup_days": os.getenv("BACKTEST_WARMUP_DAYS", "0"),
+        "override_download": os.getenv("OVERRIDE_DOWNLOAD", "false"),
+        "store_kind": os.getenv("STORE_KIND", "postgres"),
+        "store_path": os.getenv("STORE_PATH", ""),
+        "http_proxy": os.getenv("HTTP_PROXY", ""),
+        "https_proxy": os.getenv("HTTPS_PROXY", ""),
+        "proxy": os.getenv("PROXY", ""),
+        "stats_output": os.getenv("STATS_OUTPUT", "./backtest_stats.json"),
+        "plot_output": os.getenv("PLOT_OUTPUT", ""),
+        "show_plot": os.getenv("SHOW_PLOT", "false"),
+        "show_stochastic": os.getenv("SHOW_STOCHASTIC", "true"),
+        "show_equity": os.getenv("SHOW_EQUITY", "true"),
+        "log_level": os.getenv("LOG_LEVEL", "INFO"),
         "symbols": os.getenv("STRATEGY_SYMBOLS", ""),
         "base_timeframe": os.getenv("STRATEGY_BASE_TIMEFRAME", "1h"),
         "higher_timeframe": os.getenv("STRATEGY_HIGHER_TIMEFRAME", "4h"),
@@ -131,8 +241,12 @@ def load_stochastic_fsm_env_config() -> Dict[str, str]:
         "initial_order_usdt": os.getenv("STRATEGY_INITIAL_ORDER_USDT", "100"),
         "initial_leverage": os.getenv("STRATEGY_INITIAL_LEVERAGE", "3"),
         "martingale_multiplier": os.getenv("STRATEGY_MARTINGALE_MULTIPLIER", "1.1"),
-        "martingale_multipliers": os.getenv("STRATEGY_MARTINGALE_MULTIPLIERS", "1.5,2.0,2.5,3.0"),
-        "martingale_leverages": os.getenv("STRATEGY_MARTINGALE_LEVERAGES", "3.0,3.0,3.0,3.0"),
+        "martingale_multipliers": os.getenv(
+            "STRATEGY_MARTINGALE_MULTIPLIERS", "1.5,2.0,2.5,3.0"
+        ),
+        "martingale_leverages": os.getenv(
+            "STRATEGY_MARTINGALE_LEVERAGES", "3.0,3.0,3.0,3.0"
+        ),
         "max_positions": os.getenv("STRATEGY_MAX_POSITIONS", "5"),
         "slippage_pct": os.getenv("STRATEGY_SLIPPAGE_PCT", "0.0002"),
         "maker_fee_pct": os.getenv("STRATEGY_MAKER_FEE_PCT", "0.0002"),
@@ -144,21 +258,58 @@ def load_stochastic_fsm_env_config() -> Dict[str, str]:
         "max_position_days": os.getenv("STRATEGY_MAX_POSITION_DAYS", "30"),
         "aligned_high_stoch_mode": os.getenv("STRATEGY_ALIGNED_HIGH_STOCH_MODE", "v3"),
         "signal_offset": os.getenv("STRATEGY_SIGNAL_OFFSET", "0"),
-        "enable_take_profit_check": os.getenv("STRATEGY_ENABLE_TAKE_PROFIT_CHECK", "false"),
+        "enable_take_profit_check": os.getenv(
+            "STRATEGY_ENABLE_TAKE_PROFIT_CHECK", "false"
+        ),
         "enable_high_exit_cross": os.getenv("STRATEGY_ENABLE_HIGH_EXIT_CROSS", "false"),
         "use_midsold_filter": os.getenv("STRATEGY_USE_MIDSOLD_FILTER", "false"),
         "enable_reversal_logic": os.getenv("STRATEGY_ENABLE_REVERSAL_LOGIC", "false"),
-        "enable_reversal_reentry": os.getenv("STRATEGY_ENABLE_REVERSAL_REENTRY", "false"),
-        "enable_grid_martingales": os.getenv("STRATEGY_ENABLE_GRID_MARTINGALES", "true"),
-        "grid_martingales_percent": os.getenv("STRATEGY_GRID_MARTINGALES_PERCENT", "3.0"),
-        "trailing_use_first_entry_price": os.getenv("STRATEGY_TRAILING_USE_FIRST_ENTRY_PRICE", "true"),
-        "trailing_use_close_for_stop_activation": os.getenv("STRATEGY_TRAILING_USE_CLOSE_FOR_STOP_ACTIVATION", "true"),
-        "take_profit_use_first_entry_price": os.getenv("STRATEGY_TAKE_PROFIT_USE_FIRST_ENTRY_PRICE", "true"),
+        "enable_reversal_reentry": os.getenv(
+            "STRATEGY_ENABLE_REVERSAL_REENTRY", "false"
+        ),
+        "enable_grid_martingales": os.getenv(
+            "STRATEGY_ENABLE_GRID_MARTINGALES", "true"
+        ),
+        "grid_martingales_percent": os.getenv(
+            "STRATEGY_GRID_MARTINGALES_PERCENT", "3.0"
+        ),
+        "trailing_use_first_entry_price": os.getenv(
+            "STRATEGY_TRAILING_USE_FIRST_ENTRY_PRICE", "true"
+        ),
+        "trailing_use_close_for_stop_activation": os.getenv(
+            "STRATEGY_TRAILING_USE_CLOSE_FOR_STOP_ACTIVATION", "true"
+        ),
+        "take_profit_use_first_entry_price": os.getenv(
+            "STRATEGY_TAKE_PROFIT_USE_FIRST_ENTRY_PRICE", "true"
+        ),
     }
 
 
 def load_strong_trend_stair_env_config() -> Dict[str, str]:
     return {
+        "strategy": os.getenv(
+            "BACKTEST_STRATEGY", os.getenv("STRATEGY_KIND", "engulfing")
+        ),
+        "symbol": os.getenv("STRATEGY_SYMBOL", ""),
+        "timeframe": os.getenv("STRATEGY_TIMEFRAME", ""),
+        "leverage": os.getenv("STRATEGY_LEVERAGE", ""),
+        "take_profit_pct": os.getenv("STRATEGY_TAKE_PROFIT_PCT", ""),
+        "start": os.getenv("BACKTEST_START", ""),
+        "end": os.getenv("BACKTEST_END", ""),
+        "initial_capital": os.getenv("BACKTEST_INITIAL_CAPITAL", ""),
+        "warmup_days": os.getenv("BACKTEST_WARMUP_DAYS", "0"),
+        "override_download": os.getenv("OVERRIDE_DOWNLOAD", "false"),
+        "store_kind": os.getenv("STORE_KIND", "postgres"),
+        "store_path": os.getenv("STORE_PATH", ""),
+        "http_proxy": os.getenv("HTTP_PROXY", ""),
+        "https_proxy": os.getenv("HTTPS_PROXY", ""),
+        "proxy": os.getenv("PROXY", ""),
+        "stats_output": os.getenv("STATS_OUTPUT", "./backtest_stats.json"),
+        "plot_output": os.getenv("PLOT_OUTPUT", ""),
+        "show_plot": os.getenv("SHOW_PLOT", "false"),
+        "show_stochastic": os.getenv("SHOW_STOCHASTIC", "true"),
+        "show_equity": os.getenv("SHOW_EQUITY", "true"),
+        "log_level": os.getenv("LOG_LEVEL", "INFO"),
         "position_size_pct": os.getenv("STRATEGY_POSITION_SIZE_PCT", "2"),
         "starting_balance_usd": os.getenv("STRATEGY_STARTING_BALANCE_USD", "10000"),
         "hard_stop_loss_pct": os.getenv("STRATEGY_HARD_STOP_LOSS_PCT", "5"),
@@ -173,18 +324,37 @@ def load_strong_trend_stair_env_config() -> Dict[str, str]:
         "di_len": os.getenv("STRATEGY_DI_LEN", "14"),
         "adx_smooth": os.getenv("STRATEGY_ADX_SMOOTH", "14"),
         "adx_min": os.getenv("STRATEGY_ADX_MIN", "20"),
-        "reverse_on_opposite_signal": os.getenv("STRATEGY_REVERSE_ON_OPPOSITE_SIGNAL", "false"),
+        "reverse_on_opposite_signal": os.getenv(
+            "STRATEGY_REVERSE_ON_OPPOSITE_SIGNAL", "false"
+        ),
     }
 
 
-def load_env_config() -> Dict[str, str]:
-    """Load configuration from environment variables."""
-    config = load_common_env_config()
-    config.update(load_engulfing_env_config())
-    config.update(load_pinbar_magic_v2_env_config())
-    config.update(load_stochastic_fsm_env_config())
-    config.update(load_strong_trend_stair_env_config())
-    return config
+def load_env_config(strategy: str | None = None) -> Dict[str, str]:
+    """Load environment configuration for the selected strategy only."""
+    strategy_name = (
+        (
+            strategy
+            or os.getenv("BACKTEST_STRATEGY", os.getenv("STRATEGY_KIND", "engulfing"))
+        )
+        .strip()
+        .lower()
+    )
+    if strategy_name == "engulfing":
+        return load_engulfing_env_config()
+    if strategy_name == "pinbar_magic_v3":
+        return load_pinbar_magic_v3_env_config()
+    if strategy_name == "ema_avwap_pullback":
+        return load_ema_avwap_pullback_env_config()
+    if strategy_name == "stochastic_fsm":
+        return load_stochastic_fsm_env_config()
+    if strategy_name == "strong_trend_stair":
+        return load_strong_trend_stair_env_config()
+    raise ValueError(
+        "Unsupported strategy "
+        f"'{strategy_name}'. Expected one of: engulfing, pinbar_magic_v3, "
+        "ema_avwap_pullback, stochastic_fsm, strong_trend_stair"
+    )
 
 
 def str_to_bool(value: str | None, default: bool = False) -> bool:
@@ -199,10 +369,10 @@ def parse_float_list(value: str) -> list[float]:
     return [float(part) for part in value.split(",") if part.strip()]
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Build command-line argument parser."""
+def build_engulfing_parser() -> argparse.ArgumentParser:
+    """Build command-line parser for the engulfing strategy."""
     parser = argparse.ArgumentParser(
-        description="Run backtest strategy with candle download and visualization.",
+        description="Run engulfing backtest with candle download and visualization.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Environment variables (can be overridden by CLI args):
@@ -243,17 +413,13 @@ Environment variables (can be overridden by CLI args):
         """,
     )
 
-    # Strategy parameters
     parser.add_argument(
         "--strategy",
-        choices=("engulfing", "pinbar_magic_v2", "stochastic_fsm", "strong_trend_stair"),
+        choices=("engulfing",),
+        default="engulfing",
         help="Backtest strategy to run",
     )
     parser.add_argument("--symbol", help="Trading pair symbol (e.g., BTCUSDT)")
-    parser.add_argument(
-        "--symbols",
-        help="Comma-separated symbols for stochastic_fsm (e.g., BTCUSDT,ETHUSDT)",
-    )
     parser.add_argument("--timeframe", help="Binance interval (e.g., 1h, 4h)")
     parser.add_argument(
         "--window-size", type=int, help="Number of candles to check for bearish pattern"
@@ -268,6 +434,294 @@ Environment variables (can be overridden by CLI args):
         "--doji-size", type=float, help="Doji size for pattern detection"
     )
     parser.add_argument(
+        "--stop-loss-mode",
+        choices=("percent", "close", "low", "open", "body"),
+        help="Stop-loss placement strategy",
+    )
+    parser.add_argument(
+        "--stop-loss-pct",
+        type=float,
+        help="Fraction for percent-based stop loss (e.g., 0.005 = 0.5%%)",
+    )
+    parser.add_argument(
+        "--exchange-fee-pct",
+        type=float,
+        help="Exchange fee per side as a decimal (e.g., 0.0004 = 4 bps)",
+    )
+    parser.add_argument(
+        "--skip-wick-filter",
+        action=argparse.BooleanOptionalAction,
+        help="Skip signals when engulfing candle upper wick outweighs the body",
+    )
+    parser.add_argument(
+        "--skip-bollinger-cross",
+        action=argparse.BooleanOptionalAction,
+        help="Skip signals when engulfing candle pierces the Bollinger upper band",
+    )
+    parser.add_argument(
+        "--bollinger-period", type=int, help="Period for Bollinger band filter"
+    )
+    parser.add_argument(
+        "--bollinger-stddev", type=float, help="Stddev multiplier for Bollinger filter"
+    )
+    parser.add_argument(
+        "--volume-filter",
+        dest="volume_filter",
+        action=argparse.BooleanOptionalAction,
+        help="Enable or disable volume pressure filter",
+    )
+    parser.add_argument(
+        "--stoch-enabled",
+        dest="stoch_enabled",
+        action=argparse.BooleanOptionalAction,
+        help="Enable or disable stochastic comparison filter",
+    )
+    parser.add_argument(
+        "--stoch-first-line",
+        choices=("k", "d"),
+        help="Line type for first stochastic leg (k or d)",
+    )
+    parser.add_argument(
+        "--stoch-first-period", type=int, help="Period for first stochastic leg"
+    )
+    parser.add_argument(
+        "--stoch-first-threshold",
+        type=float,
+        help="Minimum value for first stochastic leg (optional)",
+    )
+    parser.add_argument(
+        "--stoch-second-line",
+        choices=("k", "d"),
+        help="Line type for second stochastic leg (k or d)",
+    )
+    parser.add_argument(
+        "--stoch-second-period", type=int, help="Period for second stochastic leg"
+    )
+    parser.add_argument(
+        "--stoch-second-threshold",
+        type=float,
+        help="Minimum value for second stochastic leg (optional)",
+    )
+    parser.add_argument(
+        "--stoch-comparison",
+        choices=("gt", "lt"),
+        help="Comparison operator between stochastic legs",
+    )
+    parser.add_argument(
+        "--stoch-d-smoothing",
+        type=int,
+        help="Smoothing length for %%D (applies when using D line)",
+    )
+
+    parser.add_argument(
+        "--start", type=parse_datetime, help="Start datetime (ISO8601, UTC)"
+    )
+    parser.add_argument(
+        "--end", type=parse_datetime, help="End datetime (ISO8601, UTC)"
+    )
+    parser.add_argument("--initial-capital", type=float, help="Starting capital")
+    parser.add_argument("--warmup-days", type=int, help="Warmup days before start date")
+    parser.add_argument(
+        "--override-download", action="store_true", help="Re-download all candles"
+    )
+    parser.add_argument("--store-kind", choices=("postgres",), help="Storage type")
+    parser.add_argument(
+        "--store-path",
+        type=Path,
+        help="Optional .env file path for postgres settings",
+    )
+    parser.add_argument("--http-proxy", help="HTTP proxy URL")
+    parser.add_argument("--https-proxy", help="HTTPS proxy URL")
+    parser.add_argument("--proxy", help="Shortcut for both HTTP and HTTPS proxy")
+    parser.add_argument(
+        "--stats-output", type=Path, help="Path to write statistics JSON"
+    )
+    parser.add_argument(
+        "--plot-output", type=Path, help="Path to save plot (HTML/PNG/SVG/PDF)"
+    )
+    parser.add_argument(
+        "--show-plot", action="store_true", help="Display plot in browser"
+    )
+    parser.add_argument(
+        "--no-stochastic",
+        action="store_true",
+        help="Hide stochastic oscillator subplot",
+    )
+    parser.add_argument(
+        "--no-equity", action="store_true", help="Hide equity curve subplot"
+    )
+    parser.add_argument("--log-level", default="INFO", help="Logging level")
+
+    return parser
+
+
+def build_pinbar_magic_v3_parser() -> argparse.ArgumentParser:
+    """Build command-line parser for the Pinbar Magic v3 strategy."""
+    parser = argparse.ArgumentParser(
+        description="Run Pinbar Magic v3 backtest with candle download and visualization."
+    )
+    parser.add_argument(
+        "--strategy",
+        choices=("pinbar_magic_v3",),
+        default="pinbar_magic_v3",
+        help="Backtest strategy to run",
+    )
+    parser.add_argument("--symbol", help="Trading pair symbol (e.g., BTCUSDT)")
+    parser.add_argument("--timeframe", help="Binance interval (e.g., 1h, 4h)")
+    parser.add_argument("--leverage", type=float, help="Leverage multiplier")
+    parser.add_argument(
+        "--equity-risk-pct",
+        type=float,
+        help="Pinbar Magic v3 equity risk percent",
+    )
+    parser.add_argument(
+        "--atr-multiple",
+        type=float,
+        help="Pinbar Magic v3 ATR multiple",
+    )
+    parser.add_argument(
+        "--trail-points",
+        type=float,
+        help="Pinbar Magic v3 trailing activation distance in ticks",
+    )
+    parser.add_argument(
+        "--trail-offset",
+        type=float,
+        help="Pinbar Magic v3 trailing offset distance in ticks",
+    )
+    parser.add_argument(
+        "--symbol-mintick",
+        type=float,
+        help="Pinbar Magic v3 minimum symbol price tick for trail point conversion",
+    )
+    parser.add_argument(
+        "--slow-sma-period",
+        type=int,
+        help="Pinbar Magic v3 slow SMA period",
+    )
+    parser.add_argument(
+        "--medium-ema-period",
+        type=int,
+        help="Pinbar Magic v3 medium EMA period",
+    )
+    parser.add_argument(
+        "--fast-ema-period",
+        type=int,
+        help="Pinbar Magic v3 fast EMA period",
+    )
+    parser.add_argument(
+        "--atr-period",
+        type=int,
+        help="Pinbar Magic v3 ATR period",
+    )
+    parser.add_argument(
+        "--entry-cancel-bars",
+        type=int,
+        help="Pinbar Magic v3 bars until pending entry cancellation",
+    )
+    parser.add_argument(
+        "--entry-activation-mode",
+        choices=("next_bar", "same_bar"),
+        help="Pinbar Magic v3 stop-entry activation mode",
+    )
+    parser.add_argument(
+        "--trailing-tick-timeframe",
+        help="Pinbar Magic v3 timeframe used for trailing tick emulation",
+    )
+    parser.add_argument(
+        "--use-trailing-tick-emulation",
+        action=argparse.BooleanOptionalAction,
+        help="Enable Pinbar Magic v3 trailing tick emulation",
+    )
+    parser.add_argument(
+        "--use-stop-fill-open-gap",
+        action=argparse.BooleanOptionalAction,
+        help="Enable Pinbar Magic v3 stop fill at open when gap crosses stop",
+    )
+    parser.add_argument(
+        "--enable-friday-close",
+        action=argparse.BooleanOptionalAction,
+        help="Enable Pinbar Magic v3 Friday close-all behavior",
+    )
+    parser.add_argument(
+        "--friday-close-hour-utc",
+        type=int,
+        help="Pinbar Magic v3 Friday close hour in UTC",
+    )
+    parser.add_argument(
+        "--enable-ema-cross-close",
+        action=argparse.BooleanOptionalAction,
+        help="Enable Pinbar Magic v3 EMA cross close-all behavior",
+    )
+    parser.add_argument(
+        "--risk-equity-include-unrealized",
+        action=argparse.BooleanOptionalAction,
+        help="Include unrealized PnL in Pinbar Magic v3 risk equity",
+    )
+    parser.add_argument(
+        "--risk-equity-mark-source",
+        choices=("close", "open", "hl2", "ohlc4"),
+        help="Pinbar Magic v3 mark source for unrealized equity",
+    )
+
+    parser.add_argument(
+        "--start", type=parse_datetime, help="Start datetime (ISO8601, UTC)"
+    )
+    parser.add_argument(
+        "--end", type=parse_datetime, help="End datetime (ISO8601, UTC)"
+    )
+    parser.add_argument("--initial-capital", type=float, help="Starting capital")
+    parser.add_argument("--warmup-days", type=int, help="Warmup days before start date")
+    parser.add_argument(
+        "--override-download", action="store_true", help="Re-download all candles"
+    )
+    parser.add_argument("--store-kind", choices=("postgres",), help="Storage type")
+    parser.add_argument(
+        "--store-path",
+        type=Path,
+        help="Optional .env file path for postgres settings",
+    )
+    parser.add_argument("--http-proxy", help="HTTP proxy URL")
+    parser.add_argument("--https-proxy", help="HTTPS proxy URL")
+    parser.add_argument("--proxy", help="Shortcut for both HTTP and HTTPS proxy")
+    parser.add_argument(
+        "--stats-output", type=Path, help="Path to write statistics JSON"
+    )
+    parser.add_argument(
+        "--plot-output", type=Path, help="Path to save plot (HTML/PNG/SVG/PDF)"
+    )
+    parser.add_argument(
+        "--show-plot", action="store_true", help="Display plot in browser"
+    )
+    parser.add_argument(
+        "--no-stochastic",
+        action="store_true",
+        help="Hide stochastic oscillator subplot",
+    )
+    parser.add_argument(
+        "--no-equity", action="store_true", help="Hide equity curve subplot"
+    )
+    parser.add_argument("--log-level", default="INFO", help="Logging level")
+
+    return parser
+
+
+def build_stochastic_fsm_parser() -> argparse.ArgumentParser:
+    """Build command-line parser for the stochastic FSM strategy."""
+    parser = argparse.ArgumentParser(
+        description="Run stochastic FSM backtest with candle download and visualization."
+    )
+    parser.add_argument(
+        "--strategy",
+        choices=("stochastic_fsm",),
+        default="stochastic_fsm",
+        help="Backtest strategy to run",
+    )
+    parser.add_argument(
+        "--symbols",
+        help="Comma-separated symbols for stochastic_fsm (e.g., BTCUSDT,ETHUSDT)",
+    )
+    parser.add_argument(
         "--base-timeframe", help="stochastic_fsm base timeframe (default: 1h)"
     )
     parser.add_argument(
@@ -276,6 +730,11 @@ Environment variables (can be overridden by CLI args):
     parser.add_argument(
         "--higher-timeframe-2",
         help="stochastic_fsm optional second higher timeframe (e.g., 1d)",
+    )
+    parser.add_argument(
+        "--take-profit-pct",
+        type=float,
+        help="Take profit percentage (e.g., 0.02 for 2%%)",
     )
     parser.add_argument("--k-period", type=int, help="stochastic_fsm K period")
     parser.add_argument("--k-slowing", type=int, help="stochastic_fsm K smoothing")
@@ -411,174 +870,63 @@ Environment variables (can be overridden by CLI args):
         action=argparse.BooleanOptionalAction,
         help="stochastic_fsm base take-profit on first entry",
     )
+
     parser.add_argument(
-        "--stop-loss-mode",
-        choices=("percent", "close", "low", "open", "body"),
-        help="Stop-loss placement strategy",
+        "--start", type=parse_datetime, help="Start datetime (ISO8601, UTC)"
     )
     parser.add_argument(
-        "--stop-loss-pct",
-        type=float,
-        help="Fraction for percent-based stop loss (e.g., 0.005 = 0.5%%)",
+        "--end", type=parse_datetime, help="End datetime (ISO8601, UTC)"
+    )
+    parser.add_argument("--initial-capital", type=float, help="Starting capital")
+    parser.add_argument("--warmup-days", type=int, help="Warmup days before start date")
+    parser.add_argument(
+        "--override-download", action="store_true", help="Re-download all candles"
+    )
+    parser.add_argument("--store-kind", choices=("postgres",), help="Storage type")
+    parser.add_argument(
+        "--store-path",
+        type=Path,
+        help="Optional .env file path for postgres settings",
+    )
+    parser.add_argument("--http-proxy", help="HTTP proxy URL")
+    parser.add_argument("--https-proxy", help="HTTPS proxy URL")
+    parser.add_argument("--proxy", help="Shortcut for both HTTP and HTTPS proxy")
+    parser.add_argument(
+        "--stats-output", type=Path, help="Path to write statistics JSON"
     )
     parser.add_argument(
-        "--exchange-fee-pct",
-        type=float,
-        help="Exchange fee per side as a decimal (e.g., 0.0004 = 4 bps)",
+        "--plot-output", type=Path, help="Path to save plot (HTML/PNG/SVG/PDF)"
     )
     parser.add_argument(
-        "--skip-wick-filter",
-        action=argparse.BooleanOptionalAction,
-        help="Skip signals when engulfing candle upper wick outweighs the body",
+        "--show-plot", action="store_true", help="Display plot in browser"
     )
     parser.add_argument(
-        "--skip-bollinger-cross",
-        action=argparse.BooleanOptionalAction,
-        help="Skip signals when engulfing candle pierces the Bollinger upper band",
+        "--no-stochastic",
+        action="store_true",
+        help="Hide stochastic oscillator subplot",
     )
     parser.add_argument(
-        "--bollinger-period", type=int, help="Period for Bollinger band filter"
+        "--no-equity", action="store_true", help="Hide equity curve subplot"
+    )
+    parser.add_argument("--log-level", default="INFO", help="Logging level")
+
+    return parser
+
+
+def build_strong_trend_stair_parser() -> argparse.ArgumentParser:
+    """Build command-line parser for the strong trend stair strategy."""
+    parser = argparse.ArgumentParser(
+        description="Run strong trend stair backtest with candle download and visualization."
     )
     parser.add_argument(
-        "--bollinger-stddev", type=float, help="Stddev multiplier for Bollinger filter"
+        "--strategy",
+        choices=("strong_trend_stair",),
+        default="strong_trend_stair",
+        help="Backtest strategy to run",
     )
-    parser.add_argument(
-        "--volume-filter",
-        dest="volume_filter",
-        action=argparse.BooleanOptionalAction,
-        help="Enable or disable volume pressure filter",
-    )
-    parser.add_argument(
-        "--stoch-enabled",
-        dest="stoch_enabled",
-        action=argparse.BooleanOptionalAction,
-        help="Enable or disable stochastic comparison filter",
-    )
-    parser.add_argument(
-        "--stoch-first-line",
-        choices=("k", "d"),
-        help="Line type for first stochastic leg (k or d)",
-    )
-    parser.add_argument(
-        "--stoch-first-period", type=int, help="Period for first stochastic leg"
-    )
-    parser.add_argument(
-        "--stoch-first-threshold",
-        type=float,
-        help="Minimum value for first stochastic leg (optional)",
-    )
-    parser.add_argument(
-        "--stoch-second-line",
-        choices=("k", "d"),
-        help="Line type for second stochastic leg (k or d)",
-    )
-    parser.add_argument(
-        "--stoch-second-period", type=int, help="Period for second stochastic leg"
-    )
-    parser.add_argument(
-        "--stoch-second-threshold",
-        type=float,
-        help="Minimum value for second stochastic leg (optional)",
-    )
-    parser.add_argument(
-        "--stoch-comparison",
-        choices=("gt", "lt"),
-        help="Comparison operator between stochastic legs",
-    )
-    parser.add_argument(
-        "--stoch-d-smoothing",
-        type=int,
-        help="Smoothing length for %%D (applies when using D line)",
-    )
-    parser.add_argument(
-        "--equity-risk-pct",
-        type=float,
-        help="Pinbar Magic v2 equity risk percent",
-    )
-    parser.add_argument(
-        "--atr-multiple",
-        type=float,
-        help="Pinbar Magic v2 ATR multiple",
-    )
-    parser.add_argument(
-        "--trail-points",
-        type=float,
-        help="Pinbar Magic v2 trailing activation distance (price units)",
-    )
-    parser.add_argument(
-        "--trail-offset",
-        type=float,
-        help="Pinbar Magic v2 trailing offset distance (price units)",
-    )
-    parser.add_argument(
-        "--slow-sma-period",
-        type=int,
-        help="Pinbar Magic v2 slow SMA period",
-    )
-    parser.add_argument(
-        "--medium-ema-period",
-        type=int,
-        help="Pinbar Magic v2 medium EMA period",
-    )
-    parser.add_argument(
-        "--fast-ema-period",
-        type=int,
-        help="Pinbar Magic v2 fast EMA period",
-    )
-    parser.add_argument(
-        "--atr-period",
-        type=int,
-        help="Pinbar Magic v2 ATR period",
-    )
-    parser.add_argument(
-        "--entry-cancel-bars",
-        type=int,
-        help="Pinbar Magic v2 bars until pending entry cancellation",
-    )
-    parser.add_argument(
-        "--entry-activation-mode",
-        choices=("next_bar", "same_bar"),
-        help="Pinbar Magic v2 stop-entry activation mode",
-    )
-    parser.add_argument(
-        "--trailing-tick-timeframe",
-        help="Pinbar Magic v2 timeframe used for trailing tick emulation",
-    )
-    parser.add_argument(
-        "--use-trailing-tick-emulation",
-        action=argparse.BooleanOptionalAction,
-        help="Enable Pinbar Magic v2 trailing tick emulation",
-    )
-    parser.add_argument(
-        "--use-stop-fill-open-gap",
-        action=argparse.BooleanOptionalAction,
-        help="Enable Pinbar Magic v2 stop fill at open when gap crosses stop",
-    )
-    parser.add_argument(
-        "--enable-friday-close",
-        action=argparse.BooleanOptionalAction,
-        help="Enable Pinbar Magic v2 Friday close-all behavior",
-    )
-    parser.add_argument(
-        "--friday-close-hour-utc",
-        type=int,
-        help="Pinbar Magic v2 Friday close hour in UTC",
-    )
-    parser.add_argument(
-        "--enable-ema-cross-close",
-        action=argparse.BooleanOptionalAction,
-        help="Enable Pinbar Magic v2 EMA cross close-all behavior",
-    )
-    parser.add_argument(
-        "--risk-equity-include-unrealized",
-        action=argparse.BooleanOptionalAction,
-        help="Include unrealized PnL in Pinbar Magic v2 risk equity",
-    )
-    parser.add_argument(
-        "--risk-equity-mark-source",
-        choices=("close", "open", "hl2", "ohlc4"),
-        help="Pinbar Magic v2 mark source for unrealized equity",
-    )
+    parser.add_argument("--symbol", help="Trading pair symbol (e.g., BTCUSDT)")
+    parser.add_argument("--timeframe", help="Binance interval (e.g., 1h, 4h)")
+    parser.add_argument("--leverage", type=float, help="Leverage multiplier")
     parser.add_argument(
         "--position-size-pct",
         type=float,
@@ -604,14 +952,28 @@ Environment variables (can be overridden by CLI args):
         type=float,
         help="Strong trend stair trailing offset percent from favorable move",
     )
-    parser.add_argument("--ema-fast-len", type=int, help="Strong trend stair fast EMA length")
-    parser.add_argument("--ema-mid-len", type=int, help="Strong trend stair mid EMA length")
-    parser.add_argument("--ema-slow-len", type=int, help="Strong trend stair slow EMA length")
-    parser.add_argument("--slope-lookback", type=int, help="Strong trend stair slow EMA slope lookback")
-    parser.add_argument("--st-atr-len", type=int, help="Strong trend stair supertrend ATR length")
-    parser.add_argument("--st-factor", type=float, help="Strong trend stair supertrend factor")
+    parser.add_argument(
+        "--ema-fast-len", type=int, help="Strong trend stair fast EMA length"
+    )
+    parser.add_argument(
+        "--ema-mid-len", type=int, help="Strong trend stair mid EMA length"
+    )
+    parser.add_argument(
+        "--ema-slow-len", type=int, help="Strong trend stair slow EMA length"
+    )
+    parser.add_argument(
+        "--slope-lookback", type=int, help="Strong trend stair slow EMA slope lookback"
+    )
+    parser.add_argument(
+        "--st-atr-len", type=int, help="Strong trend stair supertrend ATR length"
+    )
+    parser.add_argument(
+        "--st-factor", type=float, help="Strong trend stair supertrend factor"
+    )
     parser.add_argument("--di-len", type=int, help="Strong trend stair DI length")
-    parser.add_argument("--adx-smooth", type=int, help="Strong trend stair ADX smoothing")
+    parser.add_argument(
+        "--adx-smooth", type=int, help="Strong trend stair ADX smoothing"
+    )
     parser.add_argument("--adx-min", type=float, help="Strong trend stair minimum ADX")
     parser.add_argument(
         "--reverse-on-opposite-signal",
@@ -619,7 +981,6 @@ Environment variables (can be overridden by CLI args):
         help="Strong trend stair reverse when opposite trend appears",
     )
 
-    # Backtest parameters
     parser.add_argument(
         "--start", type=parse_datetime, help="Start datetime (ISO8601, UTC)"
     )
@@ -669,31 +1030,668 @@ Environment variables (can be overridden by CLI args):
     return parser
 
 
-def resolve_config(
+def build_ema_avwap_pullback_parser() -> argparse.ArgumentParser:
+    """Build command-line parser for the EMA + AVWAP pullback strategy."""
+    parser = argparse.ArgumentParser(
+        description="Run EMA + AVWAP pullback backtest with candle download and visualization."
+    )
+    parser.add_argument(
+        "--strategy",
+        choices=("ema_avwap_pullback",),
+        default="ema_avwap_pullback",
+        help="Backtest strategy to run",
+    )
+    parser.add_argument("--symbol", help="Trading pair symbol (e.g., BTCUSDT)")
+    parser.add_argument("--timeframe", help="Binance interval (e.g., 1h, 4h)")
+    parser.add_argument("--leverage", type=float, help="Leverage multiplier")
+    parser.add_argument(
+        "--equity-risk-pct",
+        type=float,
+        help="Percent of current equity risked between AVWAP entry and band-2 stop",
+    )
+    parser.add_argument("--ema-length", type=int, help="EMA length")
+    parser.add_argument(
+        "--consecutive-count",
+        type=int,
+        help="Number of consecutive bullish or bearish candles required for setup",
+    )
+    parser.add_argument(
+        "--ema-validation-mode",
+        choices=("body", "wick"),
+        help="Validate the current candle body only or the full wick range against the EMA",
+    )
+    parser.add_argument(
+        "--setup-waiting-replacement-mode",
+        choices=("keep_waiting", "replace_waiting"),
+        help="When a setup is already in setup_waiting and a new same-direction setup is detected, either keep waiting on the old setup or replace it with the new one",
+    )
+    parser.add_argument(
+        "--position-sizing-mode",
+        choices=("risk_distance", "risk_amount_per_price"),
+        help="Size positions either from stop distance risk or by dividing the risk budget by the current price while reserving for slippage and fees",
+    )
+    parser.add_argument(
+        "--avwap-multiplier-1",
+        type=float,
+        help="Standard deviation multiplier for AVWAP upper/lower band 1",
+    )
+    parser.add_argument(
+        "--avwap-multiplier-2",
+        type=float,
+        help="Standard deviation multiplier for AVWAP upper/lower band 2",
+    )
+    parser.add_argument(
+        "--avwap-multiplier-3",
+        type=float,
+        help="Standard deviation multiplier for AVWAP upper/lower band 3",
+    )
+    parser.add_argument(
+        "--rigid-stop-loss-pct",
+        type=float,
+        help="Fixed stop loss percent from executed entry price; 0 disables the rigid stop",
+    )
+    parser.add_argument(
+        "--trailing-activation-threshold-pct",
+        type=float,
+        help="Additional percent penetration beyond AVWAP band 1 before trailing activates",
+    )
+    parser.add_argument(
+        "--trailing-gap-pct",
+        type=float,
+        help="Percent gap between the favorable extreme and the trailing stop",
+    )
+    parser.add_argument(
+        "--maker-fee-pct",
+        type=float,
+        help="Entry fee as a decimal percentage (e.g. 0.0002 = 2 bps)",
+    )
+    parser.add_argument(
+        "--taker-fee-pct",
+        type=float,
+        help="Exit fee as a decimal percentage (e.g. 0.0006 = 6 bps)",
+    )
+    parser.add_argument(
+        "--entry-slippage-pct",
+        type=float,
+        help="Entry slippage as a decimal percentage",
+    )
+    parser.add_argument(
+        "--exit-slippage-pct",
+        type=float,
+        help="Exit slippage as a decimal percentage",
+    )
+    parser.add_argument(
+        "--use-gap-cross-detection",
+        action=argparse.BooleanOptionalAction,
+        help="Treat gaps through the AVWAP line or stop level as exact intersection fills",
+    )
+    parser.add_argument(
+        "--max-decision-log-entries",
+        type=int,
+        help="Maximum number of decision-log rows retained in the report payload",
+    )
+    parser.add_argument(
+        "--start", type=parse_datetime, help="Start datetime (ISO8601, UTC)"
+    )
+    parser.add_argument(
+        "--end", type=parse_datetime, help="End datetime (ISO8601, UTC)"
+    )
+    parser.add_argument("--initial-capital", type=float, help="Starting capital")
+    parser.add_argument("--warmup-days", type=int, help="Warmup days before start date")
+    parser.add_argument(
+        "--override-download", action="store_true", help="Re-download all candles"
+    )
+    parser.add_argument("--store-kind", choices=("postgres",), help="Storage type")
+    parser.add_argument(
+        "--store-path",
+        type=Path,
+        help="Optional .env file path for postgres settings",
+    )
+    parser.add_argument("--http-proxy", help="HTTP proxy URL")
+    parser.add_argument("--https-proxy", help="HTTPS proxy URL")
+    parser.add_argument("--proxy", help="Shortcut for both HTTP and HTTPS proxy")
+    parser.add_argument(
+        "--stats-output", type=Path, help="Path to write statistics JSON"
+    )
+    parser.add_argument(
+        "--plot-output", type=Path, help="Path to save plot (HTML/PNG/SVG/PDF)"
+    )
+    parser.add_argument(
+        "--show-plot", action="store_true", help="Display plot in browser"
+    )
+    parser.add_argument(
+        "--no-stochastic",
+        action="store_true",
+        help="Hide stochastic oscillator subplot",
+    )
+    parser.add_argument(
+        "--no-equity", action="store_true", help="Hide equity curve subplot"
+    )
+    parser.add_argument("--log-level", default="INFO", help="Logging level")
+    return parser
+
+
+def select_strategy_parser(argv: list[str] | None) -> argparse.ArgumentParser:
+    strategy_parser = argparse.ArgumentParser(add_help=False)
+    strategy_parser.add_argument(
+        "--strategy",
+        choices=(
+            "engulfing",
+            "pinbar_magic_v3",
+            "ema_avwap_pullback",
+            "stochastic_fsm",
+            "strong_trend_stair",
+        ),
+    )
+    strategy_args, _ = strategy_parser.parse_known_args(argv)
+    strategy = (
+        strategy_args.strategy
+        or os.getenv("BACKTEST_STRATEGY", os.getenv("STRATEGY_KIND", "engulfing"))
+    ).strip().lower()
+
+    if strategy == "engulfing":
+        return build_engulfing_parser()
+    if strategy == "pinbar_magic_v3":
+        return build_pinbar_magic_v3_parser()
+    if strategy == "ema_avwap_pullback":
+        return build_ema_avwap_pullback_parser()
+    if strategy == "stochastic_fsm":
+        return build_stochastic_fsm_parser()
+    if strategy == "strong_trend_stair":
+        return build_strong_trend_stair_parser()
+    raise ValueError(
+        "Unsupported strategy "
+        f"'{strategy}'. Expected one of: engulfing, pinbar_magic_v3, "
+        "ema_avwap_pullback, stochastic_fsm, strong_trend_stair"
+    )
+
+
+class _ArgNamespace:
+    def __init__(self, args: argparse.Namespace) -> None:
+        self._args = args
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._args, name, None)
+
+
+def resolve_engulfing_config(
     args: argparse.Namespace, env_config: Dict[str, str]
 ) -> Dict[str, Any]:
-    """Resolve configuration from CLI args and environment, with CLI taking precedence."""
+    """Resolve engulfing configuration from CLI args and environment."""
+    args = _ArgNamespace(args)  # type: ignore[assignment]
     config: Dict[str, Any] = {}
 
-    # Strategy config
     config["strategy"] = (
         (args.strategy or env_config.get("strategy") or "engulfing").strip().lower()
+    )
+    config["symbol"] = args.symbol or env_config["symbol"] or None
+    config["timeframe"] = args.timeframe or env_config["timeframe"] or None
+    config["window_size"] = args.window_size or (
+        int(env_config["window_size"]) if env_config.get("window_size") else None
+    )
+    config["leverage"] = args.leverage or (
+        float(env_config["leverage"]) if env_config["leverage"] else None
+    )
+    config["take_profit_pct"] = args.take_profit_pct or (
+        float(env_config["take_profit_pct"]) if env_config["take_profit_pct"] else None
+    )
+    config["doji_size"] = (
+        args.doji_size
+        if args.doji_size is not None
+        else float(env_config.get("doji_size", "0.05"))
+    )
+    config["stop_loss_mode"] = args.stop_loss_mode or env_config.get(
+        "stop_loss_mode", "percent"
+    )
+    config["stop_loss_pct"] = (
+        args.stop_loss_pct
+        if args.stop_loss_pct is not None
+        else float(env_config.get("stop_loss_pct", "0.005"))
+    )
+    config["exchange_fee_pct"] = (
+        args.exchange_fee_pct
+        if args.exchange_fee_pct is not None
+        else float(env_config.get("exchange_fee_pct", "0.0004"))
+    )
+    if args.skip_wick_filter is not None:
+        config["skip_wick_filter"] = args.skip_wick_filter
+    else:
+        config["skip_wick_filter"] = str_to_bool(
+            env_config.get("skip_wick_filter"), False
+        )
+    if args.skip_bollinger_cross is not None:
+        config["skip_bollinger_cross"] = args.skip_bollinger_cross
+    else:
+        config["skip_bollinger_cross"] = str_to_bool(
+            env_config.get("skip_bollinger_cross"), False
+        )
+    config["bollinger_period"] = args.bollinger_period or int(
+        env_config.get("bollinger_period", "20")
+    )
+    config["bollinger_stddev"] = args.bollinger_stddev or float(
+        env_config.get("bollinger_stddev", "2.0")
+    )
+    if args.volume_filter is not None:
+        config["volume_filter_enabled"] = args.volume_filter
+    else:
+        config["volume_filter_enabled"] = str_to_bool(
+            env_config.get("volume_filter_enabled"), True
+        )
+    if args.stoch_enabled is not None:
+        config["stoch_enabled"] = args.stoch_enabled
+    else:
+        config["stoch_enabled"] = str_to_bool(env_config.get("stoch_enabled"), True)
+    config["stoch_first_line"] = args.stoch_first_line or env_config.get(
+        "stoch_first_line", "k"
+    )
+    config["stoch_first_period"] = args.stoch_first_period or int(
+        env_config.get("stoch_first_period", "20")
+    )
+    config["stoch_first_threshold"] = (
+        args.stoch_first_threshold
+        if args.stoch_first_threshold is not None
+        else (
+            float(env_config["stoch_first_threshold"])
+            if env_config.get("stoch_first_threshold")
+            else None
+        )
+    )
+    config["stoch_second_line"] = args.stoch_second_line or env_config.get(
+        "stoch_second_line", "k"
+    )
+    config["stoch_second_period"] = args.stoch_second_period or int(
+        env_config.get("stoch_second_period", "100")
+    )
+    config["stoch_second_threshold"] = (
+        args.stoch_second_threshold
+        if args.stoch_second_threshold is not None
+        else (
+            float(env_config["stoch_second_threshold"])
+            if env_config.get("stoch_second_threshold")
+            else None
+        )
+    )
+    config["stoch_comparison"] = args.stoch_comparison or env_config.get(
+        "stoch_comparison", "gt"
+    )
+    config["stoch_d_smoothing"] = args.stoch_d_smoothing or int(
+        env_config.get("stoch_d_smoothing", "3")
+    )
+
+    config["start"] = args.start or (
+        parse_datetime(env_config["start"]) if env_config["start"] else None
+    )
+    config["end"] = args.end or (
+        parse_datetime(env_config["end"]) if env_config["end"] else None
+    )
+    config["initial_capital"] = args.initial_capital or (
+        float(env_config["initial_capital"]) if env_config["initial_capital"] else None
+    )
+    config["override_download"] = args.override_download or (
+        env_config.get("override_download", "false").lower() == "true"
+    )
+    config["warmup_days"] = args.warmup_days or (
+        int(env_config["warmup_days"]) if env_config["warmup_days"] else 0
+    )
+
+    config["store_kind"] = "postgres"
+    env_store_path = env_config.get("store_path", "")
+    config["store_path"] = args.store_path or (
+        Path(env_store_path) if env_store_path else None
+    )
+
+    config["http_proxy"] = args.http_proxy or env_config.get("http_proxy") or None
+    config["https_proxy"] = args.https_proxy or env_config.get("https_proxy") or None
+    config["proxy"] = args.proxy or env_config.get("proxy") or None
+
+    config["stats_output"] = args.stats_output or Path(
+        env_config.get("stats_output", "./backtest_stats.json")
+    )
+    config["plot_output"] = args.plot_output or (
+        Path(env_config["plot_output"]) if env_config.get("plot_output") else None
+    )
+    config["show_plot"] = args.show_plot or (
+        env_config.get("show_plot", "false").lower() == "true"
+    )
+    config["show_stochastic"] = not args.no_stochastic
+    config["show_equity"] = not args.no_equity
+
+    config["log_level"] = args.log_level or env_config.get("log_level", "INFO")
+
+    return config
+
+
+def resolve_pinbar_magic_v3_config(
+    args: argparse.Namespace, env_config: Dict[str, str]
+) -> Dict[str, Any]:
+    """Resolve Pinbar Magic v3 configuration from CLI args and environment."""
+    args = _ArgNamespace(args)  # type: ignore[assignment]
+    config: Dict[str, Any] = {}
+
+    config["strategy"] = (
+        (args.strategy or env_config.get("strategy") or "pinbar_magic_v3")
+        .strip()
+        .lower()
+    )
+    config["symbol"] = args.symbol or env_config["symbol"] or None
+    config["timeframe"] = args.timeframe or env_config["timeframe"] or None
+    config["leverage"] = args.leverage or (
+        float(env_config["leverage"]) if env_config["leverage"] else None
+    )
+    config["equity_risk_pct"] = (
+        args.equity_risk_pct
+        if args.equity_risk_pct is not None
+        else float(env_config.get("equity_risk_pct", "3"))
+    )
+    config["atr_multiple"] = (
+        args.atr_multiple
+        if args.atr_multiple is not None
+        else float(env_config.get("atr_multiple", "0.5"))
+    )
+    config["trail_points"] = (
+        args.trail_points
+        if args.trail_points is not None
+        else float(env_config.get("trail_points", "1"))
+    )
+    config["trail_offset"] = (
+        args.trail_offset
+        if args.trail_offset is not None
+        else float(env_config.get("trail_offset", "1"))
+    )
+    config["symbol_mintick"] = (
+        args.symbol_mintick
+        if args.symbol_mintick is not None
+        else float(env_config.get("symbol_mintick", "1"))
+    )
+    config["slow_sma_period"] = (
+        args.slow_sma_period
+        if args.slow_sma_period is not None
+        else int(env_config.get("slow_sma_period", "50"))
+    )
+    config["medium_ema_period"] = (
+        args.medium_ema_period
+        if args.medium_ema_period is not None
+        else int(env_config.get("medium_ema_period", "18"))
+    )
+    config["fast_ema_period"] = (
+        args.fast_ema_period
+        if args.fast_ema_period is not None
+        else int(env_config.get("fast_ema_period", "6"))
+    )
+    config["atr_period"] = (
+        args.atr_period
+        if args.atr_period is not None
+        else int(env_config.get("atr_period", "14"))
+    )
+    config["entry_cancel_bars"] = (
+        args.entry_cancel_bars
+        if args.entry_cancel_bars is not None
+        else int(env_config.get("entry_cancel_bars", "3"))
+    )
+    config["entry_activation_mode"] = args.entry_activation_mode or env_config.get(
+        "entry_activation_mode", "next_bar"
+    )
+    config["trailing_tick_timeframe"] = args.trailing_tick_timeframe or env_config.get(
+        "trailing_tick_timeframe", "15m"
+    )
+    if args.use_trailing_tick_emulation is not None:
+        config["use_trailing_tick_emulation"] = args.use_trailing_tick_emulation
+    else:
+        config["use_trailing_tick_emulation"] = str_to_bool(
+            env_config.get("use_trailing_tick_emulation"), False
+        )
+    if args.use_stop_fill_open_gap is not None:
+        config["use_stop_fill_open_gap"] = args.use_stop_fill_open_gap
+    else:
+        config["use_stop_fill_open_gap"] = str_to_bool(
+            env_config.get("use_stop_fill_open_gap"), True
+        )
+    if args.enable_friday_close is not None:
+        config["enable_friday_close"] = args.enable_friday_close
+    else:
+        config["enable_friday_close"] = str_to_bool(
+            env_config.get("enable_friday_close"), True
+        )
+    config["friday_close_hour_utc"] = (
+        args.friday_close_hour_utc
+        if args.friday_close_hour_utc is not None
+        else int(env_config.get("friday_close_hour_utc", "16"))
+    )
+    if args.enable_ema_cross_close is not None:
+        config["enable_ema_cross_close"] = args.enable_ema_cross_close
+    else:
+        config["enable_ema_cross_close"] = str_to_bool(
+            env_config.get("enable_ema_cross_close"), True
+        )
+    if args.risk_equity_include_unrealized is not None:
+        config["risk_equity_include_unrealized"] = args.risk_equity_include_unrealized
+    else:
+        config["risk_equity_include_unrealized"] = str_to_bool(
+            env_config.get("risk_equity_include_unrealized"), True
+        )
+    config["risk_equity_mark_source"] = args.risk_equity_mark_source or env_config.get(
+        "risk_equity_mark_source", "close"
+    )
+
+    config["start"] = args.start or (
+        parse_datetime(env_config["start"]) if env_config["start"] else None
+    )
+    config["end"] = args.end or (
+        parse_datetime(env_config["end"]) if env_config["end"] else None
+    )
+    config["initial_capital"] = args.initial_capital or (
+        float(env_config["initial_capital"]) if env_config["initial_capital"] else None
+    )
+    config["override_download"] = args.override_download or (
+        env_config.get("override_download", "false").lower() == "true"
+    )
+    config["warmup_days"] = args.warmup_days or (
+        int(env_config["warmup_days"]) if env_config["warmup_days"] else 0
+    )
+
+    config["store_kind"] = "postgres"
+    env_store_path = env_config.get("store_path", "")
+    config["store_path"] = args.store_path or (
+        Path(env_store_path) if env_store_path else None
+    )
+
+    config["http_proxy"] = args.http_proxy or env_config.get("http_proxy") or None
+    config["https_proxy"] = args.https_proxy or env_config.get("https_proxy") or None
+    config["proxy"] = args.proxy or env_config.get("proxy") or None
+
+    config["stats_output"] = args.stats_output or Path(
+        env_config.get("stats_output", "./backtest_stats.json")
+    )
+    config["plot_output"] = args.plot_output or (
+        Path(env_config["plot_output"]) if env_config.get("plot_output") else None
+    )
+    config["show_plot"] = args.show_plot or (
+        env_config.get("show_plot", "false").lower() == "true"
+    )
+    config["show_stochastic"] = not args.no_stochastic
+    config["show_equity"] = not args.no_equity
+
+    config["log_level"] = args.log_level or env_config.get("log_level", "INFO")
+
+    return config
+
+
+def resolve_ema_avwap_pullback_config(
+    args: argparse.Namespace, env_config: Dict[str, str]
+) -> Dict[str, Any]:
+    """Resolve EMA + AVWAP pullback configuration from CLI args and environment."""
+    args = _ArgNamespace(args)  # type: ignore[assignment]
+    config: Dict[str, Any] = {}
+
+    config["strategy"] = (
+        (args.strategy or env_config.get("strategy") or "ema_avwap_pullback")
+        .strip()
+        .lower()
+    )
+    config["symbol"] = args.symbol or env_config["symbol"] or None
+    config["timeframe"] = args.timeframe or env_config["timeframe"] or None
+    config["leverage"] = args.leverage or (
+        float(env_config["leverage"]) if env_config["leverage"] else None
+    )
+    config["equity_risk_pct"] = (
+        args.equity_risk_pct
+        if args.equity_risk_pct is not None
+        else float(env_config.get("equity_risk_pct", "1"))
+    )
+    config["ema_length"] = (
+        args.ema_length
+        if args.ema_length is not None
+        else int(env_config.get("ema_length", "55"))
+    )
+    config["consecutive_count"] = (
+        args.consecutive_count
+        if args.consecutive_count is not None
+        else int(env_config.get("consecutive_count", "4"))
+    )
+    config["ema_validation_mode"] = args.ema_validation_mode or env_config.get(
+        "ema_validation_mode", "body"
+    )
+    config["setup_waiting_replacement_mode"] = (
+        args.setup_waiting_replacement_mode
+        or env_config.get("setup_waiting_replacement_mode", "keep_waiting")
+    )
+    config["position_sizing_mode"] = (
+        args.position_sizing_mode
+        or env_config.get("position_sizing_mode", "risk_distance")
+    )
+    config["avwap_multiplier_1"] = (
+        args.avwap_multiplier_1
+        if args.avwap_multiplier_1 is not None
+        else float(env_config.get("avwap_multiplier_1", "1.0"))
+    )
+    config["avwap_multiplier_2"] = (
+        args.avwap_multiplier_2
+        if args.avwap_multiplier_2 is not None
+        else float(env_config.get("avwap_multiplier_2", "2.0"))
+    )
+    config["avwap_multiplier_3"] = (
+        args.avwap_multiplier_3
+        if args.avwap_multiplier_3 is not None
+        else float(env_config.get("avwap_multiplier_3", "3.0"))
+    )
+    config["rigid_stop_loss_pct"] = (
+        args.rigid_stop_loss_pct
+        if args.rigid_stop_loss_pct is not None
+        else float(env_config.get("rigid_stop_loss_pct", "0"))
+    )
+    config["trailing_activation_threshold_pct"] = (
+        args.trailing_activation_threshold_pct
+        if args.trailing_activation_threshold_pct is not None
+        else float(env_config.get("trailing_activation_threshold_pct", "0"))
+    )
+    config["trailing_gap_pct"] = (
+        args.trailing_gap_pct
+        if args.trailing_gap_pct is not None
+        else float(env_config.get("trailing_gap_pct", "1.0"))
+    )
+    config["maker_fee_pct"] = (
+        args.maker_fee_pct
+        if args.maker_fee_pct is not None
+        else float(env_config.get("maker_fee_pct", "0.0002"))
+    )
+    config["taker_fee_pct"] = (
+        args.taker_fee_pct
+        if args.taker_fee_pct is not None
+        else float(env_config.get("taker_fee_pct", "0.0006"))
+    )
+    config["entry_slippage_pct"] = (
+        args.entry_slippage_pct
+        if args.entry_slippage_pct is not None
+        else float(env_config.get("entry_slippage_pct", "0"))
+    )
+    config["exit_slippage_pct"] = (
+        args.exit_slippage_pct
+        if args.exit_slippage_pct is not None
+        else float(env_config.get("exit_slippage_pct", "0"))
+    )
+    if args.use_gap_cross_detection is not None:
+        config["use_gap_cross_detection"] = args.use_gap_cross_detection
+    else:
+        config["use_gap_cross_detection"] = str_to_bool(
+            env_config.get("use_gap_cross_detection"), True
+        )
+    config["max_decision_log_entries"] = (
+        args.max_decision_log_entries
+        if args.max_decision_log_entries is not None
+        else int(env_config.get("max_decision_log_entries", "20000"))
+    )
+
+    config["start"] = args.start or (
+        parse_datetime(env_config["start"]) if env_config["start"] else None
+    )
+    config["end"] = args.end or (
+        parse_datetime(env_config["end"]) if env_config["end"] else None
+    )
+    config["initial_capital"] = args.initial_capital or (
+        float(env_config["initial_capital"]) if env_config["initial_capital"] else None
+    )
+    config["override_download"] = args.override_download or (
+        env_config.get("override_download", "false").lower() == "true"
+    )
+    config["warmup_days"] = args.warmup_days or (
+        int(env_config["warmup_days"]) if env_config["warmup_days"] else 0
+    )
+
+    config["store_kind"] = "postgres"
+    env_store_path = env_config.get("store_path", "")
+    config["store_path"] = args.store_path or (
+        Path(env_store_path) if env_store_path else None
+    )
+
+    config["http_proxy"] = args.http_proxy or env_config.get("http_proxy") or None
+    config["https_proxy"] = args.https_proxy or env_config.get("https_proxy") or None
+    config["proxy"] = args.proxy or env_config.get("proxy") or None
+
+    config["stats_output"] = args.stats_output or Path(
+        env_config.get("stats_output", "./backtest_stats.json")
+    )
+    config["plot_output"] = args.plot_output or (
+        Path(env_config["plot_output"]) if env_config.get("plot_output") else None
+    )
+    config["show_plot"] = args.show_plot or (
+        env_config.get("show_plot", "false").lower() == "true"
+    )
+    config["show_stochastic"] = not args.no_stochastic
+    config["show_equity"] = not args.no_equity
+
+    config["log_level"] = args.log_level or env_config.get("log_level", "INFO")
+
+    return config
+
+
+def resolve_stochastic_fsm_config(
+    args: argparse.Namespace, env_config: Dict[str, str]
+) -> Dict[str, Any]:
+    """Resolve stochastic FSM configuration from CLI args and environment."""
+    args = _ArgNamespace(args)  # type: ignore[assignment]
+    config: Dict[str, Any] = {}
+
+    config["strategy"] = (
+        (args.strategy or env_config.get("strategy") or "stochastic_fsm")
+        .strip()
+        .lower()
     )
     config["symbols"] = [
         sym.strip().upper()
         for sym in (args.symbols or env_config.get("symbols", "")).split(",")
         if sym.strip()
     ]
-    config["symbol"] = args.symbol or env_config["symbol"] or None
-    config["timeframe"] = args.timeframe or env_config["timeframe"] or None
-    config["base_timeframe"] = (
-        args.base_timeframe or env_config.get("base_timeframe", "1h")
+    config["base_timeframe"] = args.base_timeframe or env_config.get(
+        "base_timeframe", "1h"
     )
-    config["higher_timeframe"] = (
-        args.higher_timeframe or env_config.get("higher_timeframe", "4h")
+    config["higher_timeframe"] = args.higher_timeframe or env_config.get(
+        "higher_timeframe", "4h"
     )
     config["higher_timeframe_2"] = (
         args.higher_timeframe_2 or env_config.get("higher_timeframe_2") or None
+    )
+    config["take_profit_pct"] = args.take_profit_pct or (
+        float(env_config["take_profit_pct"]) if env_config["take_profit_pct"] else None
     )
     config["k_period"] = (
         args.k_period
@@ -790,9 +1788,8 @@ def resolve_config(
         if args.max_position_days is not None
         else float(env_config.get("max_position_days", "30"))
     )
-    config["aligned_high_stoch_mode"] = (
-        args.aligned_high_stoch_mode
-        or env_config.get("aligned_high_stoch_mode", "v3")
+    config["aligned_high_stoch_mode"] = args.aligned_high_stoch_mode or env_config.get(
+        "aligned_high_stoch_mode", "v3"
     )
     config["signal_offset"] = (
         args.signal_offset
@@ -862,190 +1859,66 @@ def resolve_config(
         config["take_profit_use_first_entry_price"] = str_to_bool(
             env_config.get("take_profit_use_first_entry_price"), True
         )
-    config["window_size"] = args.window_size or (
-        int(env_config["window_size"]) if env_config["window_size"] else None
+
+    config["start"] = args.start or (
+        parse_datetime(env_config["start"]) if env_config["start"] else None
     )
+    config["end"] = args.end or (
+        parse_datetime(env_config["end"]) if env_config["end"] else None
+    )
+    config["initial_capital"] = args.initial_capital or (
+        float(env_config["initial_capital"]) if env_config["initial_capital"] else None
+    )
+    config["override_download"] = args.override_download or (
+        env_config.get("override_download", "false").lower() == "true"
+    )
+    config["warmup_days"] = args.warmup_days or (
+        int(env_config["warmup_days"]) if env_config["warmup_days"] else 0
+    )
+
+    config["store_kind"] = "postgres"
+    env_store_path = env_config.get("store_path", "")
+    config["store_path"] = args.store_path or (
+        Path(env_store_path) if env_store_path else None
+    )
+
+    config["http_proxy"] = args.http_proxy or env_config.get("http_proxy") or None
+    config["https_proxy"] = args.https_proxy or env_config.get("https_proxy") or None
+    config["proxy"] = args.proxy or env_config.get("proxy") or None
+
+    config["stats_output"] = args.stats_output or Path(
+        env_config.get("stats_output", "./backtest_stats.json")
+    )
+    config["plot_output"] = args.plot_output or (
+        Path(env_config["plot_output"]) if env_config.get("plot_output") else None
+    )
+    config["show_plot"] = args.show_plot or (
+        env_config.get("show_plot", "false").lower() == "true"
+    )
+    config["show_stochastic"] = not args.no_stochastic
+    config["show_equity"] = not args.no_equity
+
+    config["log_level"] = args.log_level or env_config.get("log_level", "INFO")
+
+    return config
+
+
+def resolve_strong_trend_stair_config(
+    args: argparse.Namespace, env_config: Dict[str, str]
+) -> Dict[str, Any]:
+    """Resolve strong trend stair configuration from CLI args and environment."""
+    args = _ArgNamespace(args)  # type: ignore[assignment]
+    config: Dict[str, Any] = {}
+
+    config["strategy"] = (
+        (args.strategy or env_config.get("strategy") or "strong_trend_stair")
+        .strip()
+        .lower()
+    )
+    config["symbol"] = args.symbol or env_config["symbol"] or None
+    config["timeframe"] = args.timeframe or env_config["timeframe"] or None
     config["leverage"] = args.leverage or (
         float(env_config["leverage"]) if env_config["leverage"] else None
-    )
-    config["take_profit_pct"] = args.take_profit_pct or (
-        float(env_config["take_profit_pct"]) if env_config["take_profit_pct"] else None
-    )
-    config["doji_size"] = (
-        args.doji_size
-        if args.doji_size is not None
-        else float(env_config.get("doji_size", "0.05"))
-    )
-    config["stop_loss_mode"] = args.stop_loss_mode or env_config.get(
-        "stop_loss_mode", "percent"
-    )
-    config["stop_loss_pct"] = (
-        args.stop_loss_pct
-        if args.stop_loss_pct is not None
-        else float(env_config.get("stop_loss_pct", "0.005"))
-    )
-    config["exchange_fee_pct"] = (
-        args.exchange_fee_pct
-        if args.exchange_fee_pct is not None
-        else float(env_config.get("exchange_fee_pct", "0.0004"))
-    )
-    if args.skip_wick_filter is not None:
-        config["skip_wick_filter"] = args.skip_wick_filter
-    else:
-        config["skip_wick_filter"] = str_to_bool(
-            env_config.get("skip_wick_filter"), False
-        )
-    if args.skip_bollinger_cross is not None:
-        config["skip_bollinger_cross"] = args.skip_bollinger_cross
-    else:
-        config["skip_bollinger_cross"] = str_to_bool(
-            env_config.get("skip_bollinger_cross"), False
-        )
-    config["bollinger_period"] = args.bollinger_period or int(
-        env_config.get("bollinger_period", "20")
-    )
-    config["bollinger_stddev"] = args.bollinger_stddev or float(
-        env_config.get("bollinger_stddev", "2.0")
-    )
-    if args.volume_filter is not None:
-        config["volume_filter_enabled"] = args.volume_filter
-    else:
-        config["volume_filter_enabled"] = str_to_bool(
-            env_config.get("volume_filter_enabled"), True
-        )
-    if args.stoch_enabled is not None:
-        config["stoch_enabled"] = args.stoch_enabled
-    else:
-        config["stoch_enabled"] = str_to_bool(env_config.get("stoch_enabled"), True)
-    config["stoch_first_line"] = args.stoch_first_line or env_config.get(
-        "stoch_first_line", "k"
-    )
-    config["stoch_first_period"] = args.stoch_first_period or int(
-        env_config.get("stoch_first_period", "20")
-    )
-    config["stoch_first_threshold"] = (
-        args.stoch_first_threshold
-        if args.stoch_first_threshold is not None
-        else (
-            float(env_config["stoch_first_threshold"])
-            if env_config.get("stoch_first_threshold")
-            else None
-        )
-    )
-    config["stoch_second_line"] = args.stoch_second_line or env_config.get(
-        "stoch_second_line", "k"
-    )
-    config["stoch_second_period"] = args.stoch_second_period or int(
-        env_config.get("stoch_second_period", "100")
-    )
-    config["stoch_second_threshold"] = (
-        args.stoch_second_threshold
-        if args.stoch_second_threshold is not None
-        else (
-            float(env_config["stoch_second_threshold"])
-            if env_config.get("stoch_second_threshold")
-            else None
-        )
-    )
-    config["stoch_comparison"] = args.stoch_comparison or env_config.get(
-        "stoch_comparison", "gt"
-    )
-    config["stoch_d_smoothing"] = args.stoch_d_smoothing or int(
-        env_config.get("stoch_d_smoothing", "3")
-    )
-    config["equity_risk_pct"] = (
-        args.equity_risk_pct
-        if args.equity_risk_pct is not None
-        else float(env_config.get("equity_risk_pct", "3"))
-    )
-    config["atr_multiple"] = (
-        args.atr_multiple
-        if args.atr_multiple is not None
-        else float(env_config.get("atr_multiple", "0.5"))
-    )
-    config["trail_points"] = (
-        args.trail_points
-        if args.trail_points is not None
-        else float(env_config.get("trail_points", "1"))
-    )
-    config["trail_offset"] = (
-        args.trail_offset
-        if args.trail_offset is not None
-        else float(env_config.get("trail_offset", "1"))
-    )
-    config["slow_sma_period"] = (
-        args.slow_sma_period
-        if args.slow_sma_period is not None
-        else int(env_config.get("slow_sma_period", "50"))
-    )
-    config["medium_ema_period"] = (
-        args.medium_ema_period
-        if args.medium_ema_period is not None
-        else int(env_config.get("medium_ema_period", "18"))
-    )
-    config["fast_ema_period"] = (
-        args.fast_ema_period
-        if args.fast_ema_period is not None
-        else int(env_config.get("fast_ema_period", "6"))
-    )
-    config["atr_period"] = (
-        args.atr_period
-        if args.atr_period is not None
-        else int(env_config.get("atr_period", "14"))
-    )
-    config["entry_cancel_bars"] = (
-        args.entry_cancel_bars
-        if args.entry_cancel_bars is not None
-        else int(env_config.get("entry_cancel_bars", "3"))
-    )
-    config["entry_activation_mode"] = (
-        args.entry_activation_mode
-        or env_config.get("entry_activation_mode", "next_bar")
-    )
-    config["trailing_tick_timeframe"] = (
-        args.trailing_tick_timeframe
-        or env_config.get("trailing_tick_timeframe", "15m")
-    )
-    if args.use_trailing_tick_emulation is not None:
-        config["use_trailing_tick_emulation"] = args.use_trailing_tick_emulation
-    else:
-        config["use_trailing_tick_emulation"] = str_to_bool(
-            env_config.get("use_trailing_tick_emulation"), False
-        )
-    if args.use_stop_fill_open_gap is not None:
-        config["use_stop_fill_open_gap"] = args.use_stop_fill_open_gap
-    else:
-        config["use_stop_fill_open_gap"] = str_to_bool(
-            env_config.get("use_stop_fill_open_gap"), True
-        )
-    if args.enable_friday_close is not None:
-        config["enable_friday_close"] = args.enable_friday_close
-    else:
-        config["enable_friday_close"] = str_to_bool(
-            env_config.get("enable_friday_close"), True
-        )
-    config["friday_close_hour_utc"] = (
-        args.friday_close_hour_utc
-        if args.friday_close_hour_utc is not None
-        else int(env_config.get("friday_close_hour_utc", "16"))
-    )
-    if args.enable_ema_cross_close is not None:
-        config["enable_ema_cross_close"] = args.enable_ema_cross_close
-    else:
-        config["enable_ema_cross_close"] = str_to_bool(
-            env_config.get("enable_ema_cross_close"), True
-        )
-    if args.risk_equity_include_unrealized is not None:
-        config["risk_equity_include_unrealized"] = (
-            args.risk_equity_include_unrealized
-        )
-    else:
-        config["risk_equity_include_unrealized"] = str_to_bool(
-            env_config.get("risk_equity_include_unrealized"), True
-        )
-    config["risk_equity_mark_source"] = (
-        args.risk_equity_mark_source
-        or env_config.get("risk_equity_mark_source", "close")
     )
     config["position_size_pct"] = (
         args.position_size_pct
@@ -1122,7 +1995,6 @@ def resolve_config(
             env_config.get("reverse_on_opposite_signal"), False
         )
 
-    # Backtest config
     config["start"] = args.start or (
         parse_datetime(env_config["start"]) if env_config["start"] else None
     )
@@ -1139,17 +2011,16 @@ def resolve_config(
         int(env_config["warmup_days"]) if env_config["warmup_days"] else 0
     )
 
-    # Storage config
     config["store_kind"] = "postgres"
     env_store_path = env_config.get("store_path", "")
-    config["store_path"] = args.store_path or (Path(env_store_path) if env_store_path else None)
+    config["store_path"] = args.store_path or (
+        Path(env_store_path) if env_store_path else None
+    )
 
-    # Network config
     config["http_proxy"] = args.http_proxy or env_config.get("http_proxy") or None
     config["https_proxy"] = args.https_proxy or env_config.get("https_proxy") or None
     config["proxy"] = args.proxy or env_config.get("proxy") or None
 
-    # Output config
     config["stats_output"] = args.stats_output or Path(
         env_config.get("stats_output", "./backtest_stats.json")
     )
@@ -1162,36 +2033,103 @@ def resolve_config(
     config["show_stochastic"] = not args.no_stochastic
     config["show_equity"] = not args.no_equity
 
-    # Logging config
     config["log_level"] = args.log_level or env_config.get("log_level", "INFO")
 
     return config
 
 
-def validate_config(config: Dict[str, object]) -> None:
-    """Validate that all required configuration is present."""
-    strategy = str(config.get("strategy", "engulfing"))
-    common_required = ["start", "end", "initial_capital"]
+def resolve_strategy_config(
+    args: argparse.Namespace, env_config: Dict[str, str]
+) -> Dict[str, Any]:
+    strategy = (
+        (getattr(args, "strategy", None) or env_config.get("strategy") or "engulfing")
+        .strip()
+        .lower()
+    )
     if strategy == "engulfing":
-        strategy_required = ["symbol", "timeframe", "window_size", "leverage", "take_profit_pct"]
-    elif strategy == "pinbar_magic_v2":
-        strategy_required = ["symbol", "timeframe", "leverage"]
-    elif strategy == "stochastic_fsm":
-        strategy_required = ["symbols", "base_timeframe", "higher_timeframe"]
-    elif strategy == "strong_trend_stair":
-        strategy_required = ["symbol", "timeframe", "leverage"]
-    else:
-        raise ValueError(
-            "Unsupported strategy "
-            f"'{strategy}'. Expected one of: engulfing, pinbar_magic_v2, stochastic_fsm, strong_trend_stair"
-        )
+        return resolve_engulfing_config(args, env_config)
+    if strategy == "pinbar_magic_v3":
+        return resolve_pinbar_magic_v3_config(args, env_config)
+    if strategy == "ema_avwap_pullback":
+        return resolve_ema_avwap_pullback_config(args, env_config)
+    if strategy == "stochastic_fsm":
+        return resolve_stochastic_fsm_config(args, env_config)
+    if strategy == "strong_trend_stair":
+        return resolve_strong_trend_stair_config(args, env_config)
+    raise ValueError(
+        "Unsupported strategy "
+        f"'{strategy}'. Expected one of: engulfing, pinbar_magic_v3, "
+        "ema_avwap_pullback, stochastic_fsm, strong_trend_stair"
+    )
 
+
+def validate_engulfing_config(config: Dict[str, object]) -> None:
+    """Validate that all required configuration is present for engulfing strategy."""
+    common_required = ["start", "end", "initial_capital"]
+    strategy_required = [
+        "symbol",
+        "timeframe",
+        "window_size",
+        "leverage",
+        "take_profit_pct",
+    ]
     required = common_required + strategy_required
     missing = [key for key in required if config.get(key) is None]
-    if strategy == "stochastic_fsm" and not config.get("symbols"):
+    if missing:
+        raise ValueError(
+            f"Missing required configuration for engulfing strategy: {', '.join(missing)}"
+        )
+
+
+def validate_pinbar_magic_v3_config(config: Dict[str, object]) -> None:
+    """Validate that all required configuration is present for pinbar_magic_v3 strategy."""
+    common_required = ["start", "end", "initial_capital"]
+    strategy_required = ["symbol", "timeframe", "leverage"]
+    required = common_required + strategy_required
+    missing = [key for key in required if config.get(key) is None]
+    if missing:
+        raise ValueError(
+            f"Missing required configuration for pinbar_magic_v3 strategy: {', '.join(missing)}"
+        )
+
+
+def validate_ema_avwap_pullback_config(config: Dict[str, object]) -> None:
+    """Validate that all required configuration is present for ema_avwap_pullback strategy."""
+    common_required = ["start", "end", "initial_capital"]
+    strategy_required = ["symbol", "timeframe", "leverage"]
+    required = common_required + strategy_required
+    missing = [key for key in required if config.get(key) is None]
+    if missing:
+        raise ValueError(
+            "Missing required configuration for ema_avwap_pullback strategy: "
+            + ", ".join(missing)
+        )
+
+
+def validate_stochastic_fsm_config(config: Dict[str, object]) -> None:
+    """Validate that all required configuration is present for stochastic_fsm strategy."""
+    common_required = ["start", "end", "initial_capital"]
+    strategy_required = ["symbols", "base_timeframe", "higher_timeframe"]
+    required = common_required + strategy_required
+    missing = [key for key in required if config.get(key) is None]
+    if not config.get("symbols"):
         missing.append("symbols")
     if missing:
-        raise ValueError(f"Missing required configuration: {', '.join(missing)}")
+        raise ValueError(
+            f"Missing required configuration for stochastic_fsm strategy: {', '.join(missing)}"
+        )
+
+
+def validate_strong_trend_stair_config(config: Dict[str, object]) -> None:
+    """Validate that all required configuration is present for strong_trend_stair strategy."""
+    common_required = ["start", "end", "initial_capital"]
+    strategy_required = ["symbol", "timeframe", "leverage"]
+    required = common_required + strategy_required
+    missing = [key for key in required if config.get(key) is None]
+    if missing:
+        raise ValueError(
+            f"Missing required configuration for strong_trend_stair strategy: {', '.join(missing)}"
+        )
 
 
 def resolve_proxies(config: Dict[str, object]) -> Dict[str, str] | None:
@@ -1253,16 +2191,18 @@ def build_engulfing_strategy(config: Dict[str, Any]) -> EngulfingStrategy:
     )
 
 
-def build_pinbar_magic_v2_strategy(config: Dict[str, Any]) -> PinBarMagicStrategyV2:
-    return PinBarMagicStrategyV2(
-        PinBarMagicStrategyConfigV2(
+def build_pinbar_magic_v3_strategy(config: Dict[str, Any]) -> PinBarMagicStrategyV3:
+    return PinBarMagicStrategyV3(
+        PinBarMagicStrategyConfigV3(
             symbol=str(config["symbol"]),
             timeframe=str(config["timeframe"]),
+            initial_equity=float(config["initial_capital"]),
             leverage=float(config["leverage"]),
             equity_risk_pct=float(config["equity_risk_pct"]),
             atr_multiple=float(config["atr_multiple"]),
             trail_points=float(config["trail_points"]),
             trail_offset=float(config["trail_offset"]),
+            symbol_mintick=float(config["symbol_mintick"]),
             slow_sma_period=int(config["slow_sma_period"]),
             medium_ema_period=int(config["medium_ema_period"]),
             fast_ema_period=int(config["fast_ema_period"]),
@@ -1275,8 +2215,49 @@ def build_pinbar_magic_v2_strategy(config: Dict[str, Any]) -> PinBarMagicStrateg
             enable_friday_close=bool(config["enable_friday_close"]),
             friday_close_hour_utc=int(config["friday_close_hour_utc"]),
             enable_ema_cross_close=bool(config["enable_ema_cross_close"]),
-            risk_equity_include_unrealized=bool(config["risk_equity_include_unrealized"]),
-            risk_equity_mark_source=str(config["risk_equity_mark_source"]).strip().lower(),
+            risk_equity_include_unrealized=bool(
+                config["risk_equity_include_unrealized"]
+            ),
+            risk_equity_mark_source=str(config["risk_equity_mark_source"])
+            .strip()
+            .lower(),
+        )
+    )
+
+
+def build_ema_avwap_pullback_strategy(
+    config: Dict[str, Any],
+) -> EmaAvwapPullbackStrategy:
+    return EmaAvwapPullbackStrategy(
+        EmaAvwapPullbackStrategyConfig(
+            symbol=str(config["symbol"]),
+            timeframe=str(config["timeframe"]),
+            initial_equity=float(config["initial_capital"]),
+            leverage=float(config["leverage"]),
+            equity_risk_pct=float(config["equity_risk_pct"]),
+            ema_length=int(config["ema_length"]),
+            consecutive_count=int(config["consecutive_count"]),
+            ema_validation_mode=str(config["ema_validation_mode"]).strip().lower(),
+            setup_waiting_replacement_mode=str(
+                config["setup_waiting_replacement_mode"]
+            )
+            .strip()
+            .lower(),
+            position_sizing_mode=str(config["position_sizing_mode"]).strip().lower(),
+            avwap_multiplier_1=float(config["avwap_multiplier_1"]),
+            avwap_multiplier_2=float(config["avwap_multiplier_2"]),
+            avwap_multiplier_3=float(config["avwap_multiplier_3"]),
+            rigid_stop_loss_pct=float(config["rigid_stop_loss_pct"]),
+            trailing_activation_threshold_pct=float(
+                config["trailing_activation_threshold_pct"]
+            ),
+            trailing_gap_pct=float(config["trailing_gap_pct"]),
+            maker_fee_pct=float(config["maker_fee_pct"]),
+            taker_fee_pct=float(config["taker_fee_pct"]),
+            entry_slippage_pct=float(config["entry_slippage_pct"]),
+            exit_slippage_pct=float(config["exit_slippage_pct"]),
+            use_gap_cross_detection=bool(config["use_gap_cross_detection"]),
+            max_decision_log_entries=int(config["max_decision_log_entries"]),
         )
     )
 
@@ -1287,7 +2268,9 @@ def build_stochastic_fsm_strategy(config: Dict[str, Any]) -> StochasticRsiFsmStr
             symbols=list(config["symbols"]),  # type: ignore[arg-type]
             tf_1=str(config["base_timeframe"]),
             tf_2=str(config["higher_timeframe"]),
-            tf_3=str(config["higher_timeframe_2"]) if config.get("higher_timeframe_2") else None,
+            tf_3=str(config["higher_timeframe_2"])
+            if config.get("higher_timeframe_2")
+            else None,
             k_period=int(config["k_period"]),
             k_slowing=int(config["k_slowing"]),
             d_period=int(config["d_period"]),
@@ -1318,16 +2301,22 @@ def build_stochastic_fsm_strategy(config: Dict[str, Any]) -> StochasticRsiFsmStr
             enable_reversal_reentry=bool(config["enable_reversal_reentry"]),
             enable_grid_martingales=bool(config["enable_grid_martingales"]),
             grid_martingales_percent=float(config["grid_martingales_percent"]),
-            trailing_use_first_entry_price=bool(config["trailing_use_first_entry_price"]),
+            trailing_use_first_entry_price=bool(
+                config["trailing_use_first_entry_price"]
+            ),
             trailing_use_close_for_stop_activation=bool(
                 config["trailing_use_close_for_stop_activation"]
             ),
-            take_profit_use_first_entry_price=bool(config["take_profit_use_first_entry_price"]),
+            take_profit_use_first_entry_price=bool(
+                config["take_profit_use_first_entry_price"]
+            ),
         )
     )
 
 
-def build_strong_trend_stair_strategy(config: Dict[str, Any]) -> StrongTrendStairStrategy:
+def build_strong_trend_stair_strategy(
+    config: Dict[str, Any],
+) -> StrongTrendStairStrategy:
     return StrongTrendStairStrategy(
         StrongTrendStairStrategyConfig(
             symbol=str(config["symbol"]),
@@ -1356,8 +2345,10 @@ def build_strategy(config: Dict[str, Any]) -> Any:
     strategy_name = str(config["strategy"])
     if strategy_name == "engulfing":
         return build_engulfing_strategy(config)
-    if strategy_name == "pinbar_magic_v2":
-        return build_pinbar_magic_v2_strategy(config)
+    if strategy_name == "pinbar_magic_v3":
+        return build_pinbar_magic_v3_strategy(config)
+    if strategy_name == "ema_avwap_pullback":
+        return build_ema_avwap_pullback_strategy(config)
     if strategy_name == "stochastic_fsm":
         return build_stochastic_fsm_strategy(config)
     if strategy_name == "strong_trend_stair":
@@ -1365,9 +2356,70 @@ def build_strategy(config: Dict[str, Any]) -> Any:
     raise ValueError(f"Unsupported strategy: {strategy_name}")
 
 
+def plot_results(
+    strategy_name: str,
+    config: Dict[str, Any],
+    report: BacktestReport,
+    store: Any,
+) -> None:
+    """Plot backtest results, handling multi-symbol strategies gracefully."""
+    # Determine symbol and timeframe for plotting
+    if strategy_name == "stochastic_fsm":
+        symbols = config.get("symbols", [])
+        if not symbols:
+            logging.warning("No symbols configured for stochastic_fsm; skipping plot.")
+            return
+        symbol = symbols[0]
+        if len(symbols) > 1:
+            logging.warning(
+                f"stochastic_fsm uses multiple symbols ({', '.join(symbols)}). "
+                f"Plotting only the first symbol: {symbol}"
+            )
+        timeframe = str(config["base_timeframe"])
+    else:
+        symbol = str(config["symbol"])
+        timeframe = str(config["timeframe"])
+
+    try:
+        fig = plot_backtest_from_store(
+            report=report,
+            store=store,
+            symbol=symbol,
+            timeframe=timeframe,
+            show_stochastic=bool(config["show_stochastic"]),
+            show_equity=bool(config["show_equity"]),
+            initial_candles=150,  # Show last 150 candles initially for performance
+        )
+
+        if fig is not None and config.get("plot_output"):
+            plot_output: Path = config["plot_output"]  # type: ignore
+            plot_output.parent.mkdir(parents=True, exist_ok=True)
+            ext = plot_output.suffix.lower()
+            if ext == ".html":
+                save_plot(fig, str(plot_output), format="html")
+            elif ext in (".png", ".jpg", ".jpeg"):
+                save_plot(fig, str(plot_output), format="png")
+            elif ext == ".svg":
+                save_plot(fig, str(plot_output), format="svg")
+            elif ext == ".pdf":
+                save_plot(fig, str(plot_output), format="pdf")
+            else:
+                save_plot(fig, str(plot_output), format="html")
+            logging.info(f"Plot saved to {plot_output}")
+
+        if fig is not None and config.get("show_plot"):
+            logging.info("Displaying plot in browser...")
+            show_plot(fig)
+
+    except ImportError:
+        logging.warning("Plotly not available. Install with: pip install plotly")
+    except Exception as exc:
+        logging.error(f"Failed to create plot: {exc}", exc_info=True)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Main entry point for backtest runner."""
-    parser = build_parser()
+    parser = select_strategy_parser(argv)
     args = parser.parse_args(argv)
 
     # Setup logging
@@ -1377,27 +2429,42 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # Load and resolve configuration
-    env_config = load_env_config()
-    config = resolve_config(args, env_config)
-    validate_config(config)
+    env_config = load_env_config(args.strategy)
+    config = resolve_strategy_config(args, env_config)
+    strategy = str(config.get("strategy", "engulfing"))
+    if strategy == "engulfing":
+        validate_engulfing_config(config)
+    elif strategy == "pinbar_magic_v3":
+        validate_pinbar_magic_v3_config(config)
+    elif strategy == "ema_avwap_pullback":
+        validate_ema_avwap_pullback_config(config)
+    elif strategy == "stochastic_fsm":
+        validate_stochastic_fsm_config(config)
+    elif strategy == "strong_trend_stair":
+        validate_strong_trend_stair_config(config)
+    else:
+        raise ValueError(
+            f"Unsupported strategy '{strategy}'. Expected one of: engulfing, pinbar_magic_v3, "
+            "ema_avwap_pullback, stochastic_fsm, strong_trend_stair"
+        )
 
     # Resolve proxies
     proxies = resolve_proxies(config)
 
     # Build components
-    store = build_store(str(config["store_kind"]), config["store_path"])  # type: ignore[arg-type]
+    store = build_store(str(config["store_kind"]), config["store_path"])
 
-    client_logger = logging.getLogger("candle_downloader.binance")
-    client = BinanceClient(
-        BinanceClientConfig(proxies=proxies or None), logger=client_logger
+    binance_client_logger = logging.getLogger("candle_downloader.binance")
+    binance_client = BinanceClient(
+        BinanceClientConfig(proxies=proxies or None), logger=binance_client_logger
     )
-    downloader = CandleDownloader(client=client, store=store)
+    candle_downloader = CandleDownloader(client=binance_client, store=store)
 
     strategy = build_strategy(config)
     strategy_name = str(config["strategy"])
 
     # Create backtester
-    backtester = BaseBacktester(strategy=strategy, downloader=downloader, store=store)
+    backtester = BaseBacktester(strategy=strategy, downloader=candle_downloader, store=store)
 
     # Run backtest
     backtest_config = BacktestRunConfig(
@@ -1426,51 +2493,11 @@ def main(argv: list[str] | None = None) -> int:
     logging.info(f"  CAGR: {stats.cagr_pct:.2f}%")
 
     # Plot results
-    try:
-        if strategy_name == "stochastic_fsm":
-            logging.info(
-                "Skipping plot for stochastic_fsm because current plotter expects a single symbol/timeframe."
-            )
-            fig = None
-        else:
-            fig = plot_backtest_from_store(
-                report=report,
-                store=store,
-                symbol=str(config["symbol"]),
-                timeframe=str(config["timeframe"]),
-                show_stochastic=bool(config["show_stochastic"]),
-                show_equity=bool(config["show_equity"]),
-                initial_candles=150,  # Show last 150 candles initially for performance
-            )
-
-        if fig is not None and config.get("plot_output"):
-            plot_output: Path = config["plot_output"]  # type: ignore
-            plot_output.parent.mkdir(parents=True, exist_ok=True)
-            ext = plot_output.suffix.lower()
-            if ext == ".html":
-                save_plot(fig, str(plot_output), format="html")
-            elif ext in (".png", ".jpg", ".jpeg"):
-                save_plot(fig, str(plot_output), format="png")
-            elif ext == ".svg":
-                save_plot(fig, str(plot_output), format="svg")
-            elif ext == ".pdf":
-                save_plot(fig, str(plot_output), format="pdf")
-            else:
-                save_plot(fig, str(plot_output), format="html")
-            logging.info(f"Plot saved to {plot_output}")
-
-        if fig is not None and config.get("show_plot"):
-            logging.info("Displaying plot in browser...")
-            show_plot(fig)
-
-    except ImportError:
-        logging.warning("Plotly not available. Install with: pip install plotly")
-    except Exception as exc:
-        logging.error(f"Failed to create plot: {exc}", exc_info=True)
+    plot_results(strategy_name, config, report, store)
 
     # Cleanup
     store.close()
-    client.close()
+    binance_client.close()
 
     return 0
 
