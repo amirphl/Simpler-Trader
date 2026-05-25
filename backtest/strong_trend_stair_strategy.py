@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from candle_downloader.models import Candle
 
 from .base import BacktestContext, BacktestStrategy, TradePerformance
-from .scalping_FVG_strategy import ema as calc_ema
+from .indicators import ema as calc_ema
 
 
 @dataclass(frozen=True)
@@ -36,14 +36,16 @@ class StrongTrendStairStrategyConfig:
     reverse_on_opposite_signal: bool = False
 
     def __post_init__(self) -> None:
-        if not self.symbol:
+        symbol = self.symbol.strip().upper()
+        timeframe = self.timeframe.strip()
+        if not symbol:
             raise ValueError("symbol must not be empty")
-        if not self.timeframe:
+        if not timeframe:
             raise ValueError("timeframe must not be empty")
         if self.leverage <= 0:
             raise ValueError("leverage must be positive")
-        if self.position_balance_pct <= 0:
-            raise ValueError("position_balance_pct must be positive")
+        if self.position_balance_pct <= 0 or self.position_balance_pct > 100:
+            raise ValueError("position_balance_pct must be in (0, 100]")
         if self.starting_balance_usd is not None and self.starting_balance_usd <= 0:
             raise ValueError("starting_balance_usd must be positive when provided")
         if self.hard_stop_loss_pct <= 0:
@@ -65,10 +67,14 @@ class StrongTrendStairStrategyConfig:
             <= 0
         ):
             raise ValueError("period lengths must be positive")
+        if self.ema_fast_len >= self.ema_mid_len or self.ema_mid_len >= self.ema_slow_len:
+            raise ValueError("EMA lengths must satisfy fast < mid < slow")
         if self.st_factor <= 0:
             raise ValueError("st_factor must be positive")
         if self.adx_min < 0:
             raise ValueError("adx_min must be non-negative")
+        object.__setattr__(self, "symbol", symbol)
+        object.__setattr__(self, "timeframe", timeframe)
 
 
 @dataclass
@@ -76,9 +82,32 @@ class _PositionState:
     direction: str  # "long" | "short"
     entry_time: datetime
     entry_index: int
+    entry_balance_usd: float
     entry_price: float
     qty: float
+    initial_stop_price: float
     stop_price: float
+    trailing_active: bool = False
+
+
+@dataclass(frozen=True)
+class _SignalSnapshot:
+    direction: str  # "long" | "short"
+    candle_index: int
+    close_price: float
+    close_time: datetime
+
+
+@dataclass(frozen=True)
+class _IndicatorSnapshot:
+    fast: float
+    mid: float
+    slow: float
+    supertrend: float
+    plus_di: float
+    minus_di: float
+    adx: float
+    slow_prev: float
 
 
 class StrongTrendStairStrategy(BacktestStrategy):
@@ -115,35 +144,41 @@ class StrongTrendStairStrategy(BacktestStrategy):
         st_line = self._supertrend_line(candles, cfg.st_atr_len, cfg.st_factor)
         di_plus, di_minus, adx = self._dmi(candles, cfg.di_len, cfg.adx_smooth)
 
+        ignore_count = context.ignore_candles.get(cfg.symbol, {}).get(cfg.timeframe, 0)
         min_idx = max(
+            ignore_count,
             cfg.ema_slow_len + cfg.slope_lookback,
             cfg.st_atr_len + 2,
             cfg.di_len + cfg.adx_smooth + 2,
         )
+        if len(candles) <= min_idx:
+            return [], {"note": "insufficient_data", "candles": len(candles)}
+
         trades: List[TradePerformance] = []
         position: Optional[_PositionState] = None
 
         account_balance = (
-            cfg.starting_balance_usd
-            if cfg.starting_balance_usd is not None
-            else context.config.initial_capital
+            cfg.starting_balance_usd if cfg.starting_balance_usd is not None else 100.0
         )
         self._starting_balance_usd = account_balance
 
         stats: Dict[str, Any] = {
             "entries_long": 0,
             "entries_short": 0,
+            "entries_skipped_non_positive_balance": 0,
             "stop_exits": 0,
             "forced_close_at_end": 0,
             "reversal_exits": 0,
             "reversal_entries": 0,
+            "opposite_signals_ignored": 0,
             "trend_signals_long": 0,
             "trend_signals_short": 0,
             "trailing_activations": 0,
             "trailing_updates": 0,
             "max_locked_usd": 0.0,
+            "ending_balance_usd": account_balance,
         }
-        trailing_active = False
+        last_in_range_candle: Optional[Candle] = None
 
         for idx in range(min_idx, len(candles)):
             candle = candles[idx]
@@ -151,77 +186,35 @@ class StrongTrendStairStrategy(BacktestStrategy):
                 continue
             if candle.open_time > context.config.end:
                 break
+            last_in_range_candle = candle
 
-            fast = ema_fast[idx]
-            mid = ema_mid[idx]
-            slow = ema_slow[idx]
-            st = st_line[idx]
-            plus = di_plus[idx]
-            minus = di_minus[idx]
-            adx_now = adx[idx]
-            slow_prev_idx = idx - cfg.slope_lookback
-            slow_prev = ema_slow[slow_prev_idx] if slow_prev_idx >= 0 else None
-            if any(
-                v is None
-                for v in (fast, mid, slow, st, plus, minus, adx_now, slow_prev)
-            ):
+            indicator = self._indicator_snapshot(
+                index=idx,
+                ema_fast=ema_fast,
+                ema_mid=ema_mid,
+                ema_slow=ema_slow,
+                st_line=st_line,
+                di_plus=di_plus,
+                di_minus=di_minus,
+                adx=adx,
+            )
+            if indicator is None:
                 continue
 
-            fast_f = float(fast)
-            mid_f = float(mid)
-            slow_f = float(slow)
-            st_f = float(st)
-            plus_f = float(plus)
-            minus_f = float(minus)
-            adx_f = float(adx_now)
-            slow_prev_f = float(slow_prev)
-
-            bull = (
-                candle.close > st_f
-                and candle.close > slow_f
-                and fast_f > mid_f > slow_f
-                and slow_f > slow_prev_f
-                and adx_f >= cfg.adx_min
-                and plus_f > minus_f
-            )
-            bear = (
-                candle.close < st_f
-                and candle.close < slow_f
-                and fast_f < mid_f < slow_f
-                and slow_f < slow_prev_f
-                and adx_f >= cfg.adx_min
-                and minus_f > plus_f
-            )
+            bull = self._is_bull_trend(candle=candle, indicator=indicator)
+            bear = self._is_bear_trend(candle=candle, indicator=indicator)
             if bull:
                 stats["trend_signals_long"] += 1
             if bear:
                 stats["trend_signals_short"] += 1
+            signal = self._build_signal(candle, index=idx, bull=bull, bear=bear)
 
             if position is not None:
-                # Best-case intrabar trailing model:
-                # favorable excursion first, then possible stop hit.
-                favorable_mark = (
-                    candle.high if position.direction == "long" else candle.low
+                updated_this_candle = self._apply_trailing_stop(
+                    position=position,
+                    candle=candle,
+                    stats=stats,
                 )
-                new_stop = self._candidate_stop(position, favorable_mark)
-                updated_this_candle = False
-                if new_stop is not None:
-                    if not trailing_active:
-                        trailing_active = True
-                        stats["trailing_activations"] += 1
-                    prev_stop = position.stop_price
-                    if position.direction == "long":
-                        position.stop_price = max(position.stop_price, new_stop)
-                    else:
-                        position.stop_price = min(position.stop_price, new_stop)
-                    if abs(position.stop_price - prev_stop) > 1e-12:
-                        stats["trailing_updates"] += 1
-                        updated_this_candle = True
-                    favorable_pnl = self._open_pnl_usd(position, favorable_mark)
-                    stats["max_locked_usd"] = max(
-                        float(stats["max_locked_usd"]),
-                        max(0.0, favorable_pnl),
-                    )
 
                 stop_hit, stop_fill = self._stop_hit_price(
                     position,
@@ -239,101 +232,201 @@ class StrongTrendStairStrategy(BacktestStrategy):
                     account_balance += trade.pnl
                     stats["stop_exits"] += 1
                     position = None
-                    trailing_active = False
                     continue
 
-                if cfg.reverse_on_opposite_signal:
-                    desired_direction: Optional[str] = None
-                    if bull:
-                        desired_direction = "long"
-                    elif bear:
-                        desired_direction = "short"
-                    if (
-                        desired_direction is not None
-                        and desired_direction != position.direction
-                    ):
+                if signal is not None and signal.direction != position.direction:
+                    if cfg.reverse_on_opposite_signal:
                         trade = self._close_trade(
                             position=position,
-                            exit_price=candle.close,
-                            exit_time=candle.close_time,
+                            exit_price=signal.close_price,
+                            exit_time=signal.close_time,
                             reason="reversal",
                         )
                         trades.append(trade)
                         account_balance += trade.pnl
                         stats["reversal_exits"] += 1
                         position = None
-                        trailing_active = False
 
-                        qty = self._position_qty(candle.close, account_balance)
-                        if qty > 0:
-                            entry = candle.close
-                            if desired_direction == "long":
-                                position = _PositionState(
-                                    direction="long",
-                                    entry_time=candle.close_time,
-                                    entry_index=idx,
-                                    entry_price=entry,
-                                    qty=qty,
-                                    stop_price=entry
-                                    * (1.0 - cfg.hard_stop_loss_pct / 100.0),
-                                )
+                        reopened = self._open_position(
+                            signal=signal,
+                            balance=account_balance,
+                        )
+                        if reopened is not None:
+                            position = reopened
+                            if signal.direction == "long":
                                 stats["entries_long"] += 1
                             else:
-                                position = _PositionState(
-                                    direction="short",
-                                    entry_time=candle.close_time,
-                                    entry_index=idx,
-                                    entry_price=entry,
-                                    qty=qty,
-                                    stop_price=entry
-                                    * (1.0 + cfg.hard_stop_loss_pct / 100.0),
-                                )
                                 stats["entries_short"] += 1
                             stats["reversal_entries"] += 1
+                        else:
+                            stats["entries_skipped_non_positive_balance"] += 1
+                    else:
+                        stats["opposite_signals_ignored"] += 1
                 continue
 
-            if bull:
-                qty = self._position_qty(candle.close, account_balance)
-                if qty > 0:
-                    entry = candle.close
-                    position = _PositionState(
-                        direction="long",
-                        entry_time=candle.close_time,
-                        entry_index=idx,
-                        entry_price=entry,
-                        qty=qty,
-                        stop_price=entry * (1.0 - cfg.hard_stop_loss_pct / 100.0),
-                    )
-                    stats["entries_long"] += 1
-                    trailing_active = False
-            elif bear:
-                qty = self._position_qty(candle.close, account_balance)
-                if qty > 0:
-                    entry = candle.close
-                    position = _PositionState(
-                        direction="short",
-                        entry_time=candle.close_time,
-                        entry_index=idx,
-                        entry_price=entry,
-                        qty=qty,
-                        stop_price=entry * (1.0 + cfg.hard_stop_loss_pct / 100.0),
-                    )
-                    stats["entries_short"] += 1
-                    trailing_active = False
+            if signal is None:
+                continue
+            opened = self._open_position(signal=signal, balance=account_balance)
+            if opened is None:
+                stats["entries_skipped_non_positive_balance"] += 1
+                continue
+            position = opened
+            if signal.direction == "long":
+                stats["entries_long"] += 1
+            else:
+                stats["entries_short"] += 1
 
-        if position is not None:
-            last = candles[-1]
+        if position is not None and last_in_range_candle is not None:
             trade = self._close_trade(
                 position=position,
-                exit_price=last.close,
-                exit_time=last.close_time,
+                exit_price=last_in_range_candle.close,
+                exit_time=last_in_range_candle.close_time,
                 reason="forced_end_close",
             )
             trades.append(trade)
             account_balance += trade.pnl
             stats["forced_close_at_end"] += 1
 
+        stats["ending_balance_usd"] = account_balance
         return trades, stats
+
+    def _build_signal(
+        self, candle: Candle, *, index: int, bull: bool, bear: bool
+    ) -> Optional[_SignalSnapshot]:
+        if bull == bear:
+            return None
+        return _SignalSnapshot(
+            direction="long" if bull else "short",
+            candle_index=index,
+            close_price=candle.close,
+            close_time=candle.close_time,
+        )
+
+    def _indicator_snapshot(
+        self,
+        *,
+        index: int,
+        ema_fast: Sequence[Optional[float]],
+        ema_mid: Sequence[Optional[float]],
+        ema_slow: Sequence[Optional[float]],
+        st_line: Sequence[Optional[float]],
+        di_plus: Sequence[Optional[float]],
+        di_minus: Sequence[Optional[float]],
+        adx: Sequence[Optional[float]],
+    ) -> Optional[_IndicatorSnapshot]:
+        slow_prev_idx = index - self._config.slope_lookback
+        slow_prev = ema_slow[slow_prev_idx] if slow_prev_idx >= 0 else None
+        values = (
+            ema_fast[index],
+            ema_mid[index],
+            ema_slow[index],
+            st_line[index],
+            di_plus[index],
+            di_minus[index],
+            adx[index],
+            slow_prev,
+        )
+        if any(value is None for value in values):
+            return None
+        return _IndicatorSnapshot(
+            fast=float(values[0]),
+            mid=float(values[1]),
+            slow=float(values[2]),
+            supertrend=float(values[3]),
+            plus_di=float(values[4]),
+            minus_di=float(values[5]),
+            adx=float(values[6]),
+            slow_prev=float(values[7]),
+        )
+
+    def _is_bull_trend(
+        self,
+        *,
+        candle: Candle,
+        indicator: _IndicatorSnapshot,
+    ) -> bool:
+        cfg = self._config
+        return (
+            candle.close > indicator.supertrend
+            and candle.close > indicator.slow
+            and indicator.fast > indicator.mid > indicator.slow
+            and indicator.slow > indicator.slow_prev
+            and indicator.adx >= cfg.adx_min
+            and indicator.plus_di > indicator.minus_di
+        )
+
+    def _is_bear_trend(
+        self,
+        *,
+        candle: Candle,
+        indicator: _IndicatorSnapshot,
+    ) -> bool:
+        cfg = self._config
+        return (
+            candle.close < indicator.supertrend
+            and candle.close < indicator.slow
+            and indicator.fast < indicator.mid < indicator.slow
+            and indicator.slow < indicator.slow_prev
+            and indicator.adx >= cfg.adx_min
+            and indicator.minus_di > indicator.plus_di
+        )
+
+    def _open_position(
+        self, *, signal: _SignalSnapshot, balance: float
+    ) -> Optional[_PositionState]:
+        qty = self._position_qty(signal.close_price, balance)
+        if qty <= 0:
+            return None
+        initial_stop_price = self._initial_stop_price(
+            direction=signal.direction,
+            entry_price=signal.close_price,
+        )
+        return _PositionState(
+            direction=signal.direction,
+            entry_time=signal.close_time,
+            entry_index=signal.candle_index,
+            entry_balance_usd=balance,
+            entry_price=signal.close_price,
+            qty=qty,
+            initial_stop_price=initial_stop_price,
+            stop_price=initial_stop_price,
+        )
+
+    def _apply_trailing_stop(
+        self,
+        *,
+        position: _PositionState,
+        candle: Candle,
+        stats: Dict[str, Any],
+    ) -> bool:
+        # Best-case intrabar model: favorable excursion occurs before the stop test.
+        favorable_mark = candle.high if position.direction == "long" else candle.low
+        new_stop = self._candidate_stop(position, favorable_mark)
+        if new_stop is None:
+            return False
+
+        prev_stop = position.stop_price
+        if position.direction == "long":
+            position.stop_price = max(position.stop_price, new_stop)
+        else:
+            position.stop_price = min(position.stop_price, new_stop)
+
+        if not position.trailing_active:
+            position.trailing_active = True
+            stats["trailing_activations"] += 1
+
+        if abs(position.stop_price - prev_stop) <= 1e-12:
+            return False
+
+        stats["trailing_updates"] += 1
+        locked_pnl = max(0.0, self._open_pnl_usd(position, position.stop_price))
+        stats["max_locked_usd"] = max(float(stats["max_locked_usd"]), locked_pnl)
+        return True
+
+    def _initial_stop_price(self, *, direction: str, entry_price: float) -> float:
+        if direction == "long":
+            return entry_price * (1.0 - self._config.hard_stop_loss_pct / 100.0)
+        return entry_price * (1.0 + self._config.hard_stop_loss_pct / 100.0)
 
     def _open_pnl_usd(self, position: _PositionState, mark_price: float) -> float:
         if position.direction == "long":
@@ -341,7 +434,6 @@ class StrongTrendStairStrategy(BacktestStrategy):
         return (position.entry_price - mark_price) * position.qty
 
     def _position_margin_usd(self, balance: float) -> float:
-        # return max(1, balance * (self._config.position_balance_pct / 100.0))
         return balance * (self._config.position_balance_pct / 100.0)
 
     def _position_qty(self, price: float, balance: float) -> float:
@@ -360,8 +452,7 @@ class StrongTrendStairStrategy(BacktestStrategy):
         if margin <= 0:
             return 0.0
         pnl = self._open_pnl_usd(position, mark_price)
-        # return (pnl / margin) * 100.0
-        return pnl / margin
+        return (pnl / margin) * 100.0
 
     def _candidate_stop(
         self, position: _PositionState, favorable_mark: float
@@ -432,12 +523,15 @@ class StrongTrendStairStrategy(BacktestStrategy):
             notes=reason,
             metadata={
                 "direction": position.direction,
+                "entry_index": position.entry_index,
                 "entry_price": position.entry_price,
                 "exit_price": exit_price,
                 "qty": position.qty,
+                "initial_stop_price": position.initial_stop_price,
                 "stop_at_exit": position.stop_price,
                 "position_margin_usd": margin,
                 "position_size_pct": self._config.position_balance_pct,
+                "entry_balance_usd": position.entry_balance_usd,
                 "starting_balance_usd": self._starting_balance_usd,
                 "notional_usd": notional,
                 "leverage": self._config.leverage,
