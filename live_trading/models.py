@@ -24,7 +24,11 @@ ALLOWED_TIMEFRAMES = (
     "12h",
     "1d",
 )
-ALLOWED_STRATEGIES = ("heiken_ashi", "pinbar_magic_v2", "strong_trend_stair")
+ALLOWED_STRATEGIES = (
+    "heiken_ashi",
+    "pinbar_magic_v3",
+    "strong_trend_stair",
+)
 
 
 class CandlePattern(Enum):
@@ -43,7 +47,9 @@ class LiveTradingConfig:
     api_key: str
     api_secret: str
     testnet: bool = True
-    strategy_name: Literal["heiken_ashi", "pinbar_magic_v2", "strong_trend_stair"] = "pinbar_magic_v2"
+    strategy_name: Literal[
+        "heiken_ashi", "pinbar_magic_v3", "strong_trend_stair"
+    ] = "pinbar_magic_v3"
 
     # Trading parameters
     timeframe: str = "1h"  # e.g., "15m", "1h"
@@ -60,6 +66,7 @@ class LiveTradingConfig:
     atr_multiple: float = 0.5
     trail_points: float = 1.0
     trail_offset: float = 1.0
+    symbol_mintick: float = 1.0
     slow_sma_period: int = 50
     medium_ema_period: int = 18
     fast_ema_period: int = 6
@@ -96,6 +103,8 @@ class LiveTradingConfig:
         30  # Delay after timeframe close to ensure candle availability
     )
     execution_interval_minutes: int = 5  # How often to run the strategy loop
+    poll_interval_seconds: float = 5.0
+    trailing_check_interval_seconds: float = 5.0
 
     # Notifications
     telegram_enabled: bool = False
@@ -109,10 +118,12 @@ class LiveTradingConfig:
         if self.timeframe not in ALLOWED_TIMEFRAMES:
             raise ValueError(f"Invalid timeframe: {self.timeframe}")
         if self.trailing_tick_timeframe not in ALLOWED_TIMEFRAMES:
-            raise ValueError(f"Invalid trailing_tick_timeframe: {self.trailing_tick_timeframe}")
+            raise ValueError(
+                f"Invalid trailing_tick_timeframe: {self.trailing_tick_timeframe}"
+            )
         if self.strategy_name not in ALLOWED_STRATEGIES:
             raise ValueError(
-                "strategy_name must be one of: heiken_ashi, pinbar_magic_v2, strong_trend_stair"
+                "strategy_name must be one of: heiken_ashi, pinbar_magic_v3, strong_trend_stair"
             )
 
         # Scanner parameters are only required by Heiken Ashi flow.
@@ -140,13 +151,18 @@ class LiveTradingConfig:
             raise ValueError("trail_points must be positive")
         if self.trail_offset < 0:
             raise ValueError("trail_offset must be non-negative")
-        if min(
-            self.slow_sma_period,
-            self.medium_ema_period,
-            self.fast_ema_period,
-            self.atr_period,
-            self.entry_cancel_bars,
-        ) <= 0:
+        if self.symbol_mintick <= 0:
+            raise ValueError("symbol_mintick must be positive")
+        if (
+            min(
+                self.slow_sma_period,
+                self.medium_ema_period,
+                self.fast_ema_period,
+                self.atr_period,
+                self.entry_cancel_bars,
+            )
+            <= 0
+        ):
             raise ValueError("period-based values must be positive")
         if self.entry_activation_mode not in {"next_bar", "same_bar"}:
             raise ValueError("entry_activation_mode must be one of: next_bar, same_bar")
@@ -154,7 +170,7 @@ class LiveTradingConfig:
             raise ValueError(
                 "risk_equity_mark_source must be one of: close, open, hl2, ohlc4"
             )
-        if self.strategy_name == "pinbar_magic_v2":
+        if self.strategy_name == "pinbar_magic_v3":
             for symbol in self.pinbar_symbols:
                 if not symbol or not str(symbol).strip():
                     raise ValueError("pinbar_symbols must not contain empty values")
@@ -174,6 +190,10 @@ class LiveTradingConfig:
             raise ValueError("candle_ready_delay_seconds must be non-negative")
         if self.execution_interval_minutes <= 0:
             raise ValueError("execution_interval_minutes must be positive")
+        if self.poll_interval_seconds <= 0:
+            raise ValueError("poll_interval_seconds must be positive")
+        if self.trailing_check_interval_seconds <= 0:
+            raise ValueError("trailing_check_interval_seconds must be positive")
         if self.telegram_enabled:
             if not self.telegram_bot_token:
                 raise ValueError(
