@@ -14,9 +14,9 @@ from signal_notifier import TelegramClient, TelegramConfig
 from live_trading import LiveTradingConfig
 from live_trading.coordinator import LiveTradingCoordinator
 from live_trading.exchange import ExchangeConfig, MarginMode
-from live_trading.pinbar_magic_coordinator import (
-    PinBarMagicCoordinatorV2,
-    PinBarMagicCoordinatorV2Config,
+from live_trading.pinbar_magic_coordinator_v3 import (
+    PinBarMagicCoordinatorV3,
+    PinBarMagicCoordinatorV3Config,
 )
 from live_trading.strong_trend_stair_coordinator import (
     StrongTrendStairConfig,
@@ -25,405 +25,10 @@ from live_trading.strong_trend_stair_coordinator import (
 
 DEFAULT_CONFIG_BY_STRATEGY: Dict[str, Path] = {
     "heiken_ashi": Path("./configs/live_trading.heiken_ashi.env"),
-    "pinbar_magic_v2": Path("./configs/live_trading.pinbar_magic_v2.env"),
+    "pinbar_magic_v3": Path("./configs/live_trading.pinbar_magic_v3.env"),
     "strong_trend_stair": Path("./configs/live_trading.strong_trend_stair.env"),
 }
 ALLOWED_STRATEGIES = tuple(DEFAULT_CONFIG_BY_STRATEGY.keys())
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="Live trading bot with configurable strategy engine",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-
-    parser.add_argument(
-        "--config-file",
-        type=Path,
-        default=None,
-        help=(
-            "Optional .env-style config file. "
-            "If omitted, strategy-specific default is used "
-            "(./configs/live_trading.<strategy>.env)."
-        ),
-    )
-
-    # Exchange settings
-    parser.add_argument(
-        "--exchange",
-        choices=["binance", "bybit", "bitunix"],
-        help="Exchange to use for trading",
-    )
-    parser.add_argument(
-        "--trading-mode",
-        choices=["spot", "futures"],
-        default="futures",
-        help="Trading mode (for exchanges that support both)",
-    )
-    parser.add_argument("--api-key", help="Exchange API key")
-    parser.add_argument("--api-secret", help="Exchange API secret")
-    parser.add_argument(
-        "--api-passphrase", help="Exchange API passphrase (if required)"
-    )
-    parser.add_argument(
-        "--testnet",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Use testnet for testing",
-    )
-    parser.add_argument(
-        "--live",
-        action="store_true",
-        help="Use live trading mode (WARNING: trades real money)",
-    )
-
-    # Trading parameters
-    parser.add_argument(
-        "--timeframe",
-        choices=["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"],
-        help="Trading timeframe (must be divisible, e.g., 1h runs at 00:00, 01:00, ...)",
-    )
-    parser.add_argument(
-        "--strategy-name",
-        choices=["heiken_ashi", "pinbar_magic_v2", "strong_trend_stair"],
-        default="pinbar_magic_v2",
-        help="Live strategy implementation to execute",
-    )
-    parser.add_argument(
-        "--symbol",
-        default="ETHUSDT",
-        help="Single symbol for strong_trend_stair strategy.",
-    )
-    parser.add_argument(
-        "--tick-interval-seconds",
-        type=float,
-        default=1.0,
-        help="Tick loop interval for strong_trend_stair strategy.",
-    )
-    parser.add_argument(
-        "--hard-stop-loss-pct",
-        type=float,
-        default=5.0,
-        help="Hard stop loss percent on price move for strong_trend_stair strategy.",
-    )
-    parser.add_argument(
-        "--trail-start-pct",
-        type=float,
-        default=2.0,
-        help="Profit threshold percent where stair trailing starts.",
-    )
-    parser.add_argument(
-        "--trail-offset-pct",
-        type=float,
-        default=1.0,
-        help="Trailing offset percent from favorable move.",
-    )
-    parser.add_argument(
-        "--ema-fast-len",
-        type=int,
-        default=50,
-        help="Fast EMA length for trend filter.",
-    )
-    parser.add_argument(
-        "--ema-mid-len",
-        type=int,
-        default=100,
-        help="Mid EMA length for trend filter.",
-    )
-    parser.add_argument(
-        "--ema-slow-len",
-        type=int,
-        default=200,
-        help="Slow EMA length for trend filter.",
-    )
-    parser.add_argument(
-        "--slope-lookback",
-        type=int,
-        default=10,
-        help="Lookback candles for slow EMA slope check.",
-    )
-    parser.add_argument(
-        "--st-atr-len",
-        type=int,
-        default=10,
-        help="Supertrend ATR length.",
-    )
-    parser.add_argument(
-        "--st-factor",
-        type=float,
-        default=3.0,
-        help="Supertrend factor.",
-    )
-    parser.add_argument(
-        "--di-len",
-        type=int,
-        default=14,
-        help="DI length.",
-    )
-    parser.add_argument(
-        "--adx-smooth",
-        type=int,
-        default=14,
-        help="ADX smoothing length.",
-    )
-    parser.add_argument(
-        "--adx-min",
-        type=float,
-        default=20.0,
-        help="Minimum ADX threshold for trend qualification.",
-    )
-    parser.add_argument(
-        "--reverse-on-opposite-signal",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Enable immediate reversal when opposite trend signal appears.",
-    )
-    parser.add_argument(
-        "--top-m-symbols",
-        type=int,
-        default=100,
-        help="Number of top symbols to scan by volume",
-    )
-    parser.add_argument(
-        "--top-n-signals",
-        type=int,
-        default=5,
-        help="Number of top movers to consider for trading",
-    )
-    parser.add_argument(
-        "--price-change-threshold",
-        type=float,
-        default=2.0,
-        help="Minimum price change percentage",
-    )
-
-    # Signal parameters
-    parser.add_argument(
-        "--heiken-ashi-candles",
-        type=int,
-        default=3,
-        help="Number of HA candles before reversal",
-    )
-    parser.add_argument(
-        "--leverage",
-        type=int,
-        default=10,
-        help="Leverage multiplier",
-    )
-    parser.add_argument(
-        "--take-profit-pct",
-        type=float,
-        default=1.0,
-        help="Take profit percentage (default: 1 percent)",
-    )
-
-    # Pin Bar Magic V2 parameters
-    parser.add_argument(
-        "--pinbar-symbols",
-        default="",
-        help="Comma-separated symbols for PinBar strategy; empty means scanner-based selection.",
-    )
-    parser.add_argument(
-        "--equity-risk-pct",
-        type=float,
-        default=3.0,
-        help="Risk per trade as %% of equity",
-    )
-    parser.add_argument(
-        "--atr-multiple", type=float, default=0.5, help="ATR multiplier for risk stop"
-    )
-    parser.add_argument(
-        "--trail-points", type=float, default=1.0, help="Trailing activation distance"
-    )
-    parser.add_argument(
-        "--trail-offset", type=float, default=1.0, help="Trailing stop offset"
-    )
-    parser.add_argument(
-        "--slow-sma-period", type=int, default=50, help="Slow SMA period"
-    )
-    parser.add_argument(
-        "--medium-ema-period", type=int, default=18, help="Medium EMA period"
-    )
-    parser.add_argument(
-        "--fast-ema-period", type=int, default=6, help="Fast EMA period"
-    )
-    parser.add_argument("--atr-period", type=int, default=14, help="ATR period")
-    parser.add_argument(
-        "--entry-cancel-bars", type=int, default=3, help="Pending entry timeout in bars"
-    )
-    parser.add_argument(
-        "--entry-activation-mode",
-        choices=["next_bar", "same_bar"],
-        default="next_bar",
-        help="Pending stop-entry activation timing",
-    )
-    parser.add_argument(
-        "--trailing-tick-timeframe",
-        choices=["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h", "1d"],
-        default="15m",
-        help="Tick emulation timeframe for trailing model",
-    )
-    parser.add_argument(
-        "--use-trailing-tick-emulation",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Enable close-based tick emulation for trailing logic",
-    )
-    parser.add_argument(
-        "--use-stop-fill-open-gap",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Allow stop entries to fill at candle open on gap-through",
-    )
-    parser.add_argument(
-        "--enable-friday-close",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Force close positions on configured Friday hour",
-    )
-    parser.add_argument(
-        "--friday-close-hour-utc",
-        type=int,
-        default=16,
-        help="UTC hour for Friday forced close",
-    )
-    parser.add_argument(
-        "--enable-ema-cross-close",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Close on fast/medium EMA cross",
-    )
-    parser.add_argument(
-        "--risk-equity-include-unrealized",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Include unrealized PnL in risk equity",
-    )
-    parser.add_argument(
-        "--risk-equity-mark-source",
-        choices=["close", "open", "hl2", "ohlc4"],
-        default="close",
-        help="Mark price source for unrealized-risk equity calculations",
-    )
-
-    # Position management
-    parser.add_argument(
-        "--margin-mode",
-        choices=["isolated", "cross"],
-        default="isolated",
-        help="Margin mode for positions",
-    )
-    parser.add_argument(
-        "--disable-symbol-hours",
-        type=float,
-        default=24,
-        help="Hours to disable symbol after trade (0 = no disable)",
-    )
-    parser.add_argument(
-        "--position-size-usdt",
-        type=float,
-        default=100.0,
-        help="Position size in USDT",
-    )
-    parser.add_argument(
-        "--max-entry-notional-usdt",
-        type=float,
-        default=15.0,
-        help="Maximum entry notional in USDT before leverage is applied",
-    )
-    parser.add_argument(
-        "--max-concurrent-positions",
-        type=int,
-        default=5,
-        help="Maximum number of concurrent positions",
-    )
-    parser.add_argument(
-        "--max-position-size-pct",
-        type=float,
-        default=10.0,
-        help="Maximum position size as fraction of balance",
-    )
-
-    # Data persistence
-    parser.add_argument(
-        "--state-file",
-        type=Path,
-        default=Path("./data/live_trading_state.json"),
-        help="Path for state persistence",
-    )
-    parser.add_argument(
-        "--positions-db",
-        type=Path,
-        default=Path("./data/live_trading_positions.db"),
-        help="Path for positions database",
-    )
-    parser.add_argument(
-        "--klines-db",
-        type=Path,
-        default=None,
-        help=(
-            "Optional .env file path for candle Postgres settings "
-            "(CANDLE_DB_* / POSTGRES_* vars). "
-            "Defaults to resolved strategy config file."
-        ),
-    )
-    parser.add_argument(
-        "--log-file",
-        type=Path,
-        default=Path("./logs/live_trading.log"),
-        help="Path for log file",
-    )
-
-    # Scheduling
-    parser.add_argument(
-        "--candle-ready-delay-seconds",
-        type=int,
-        default=30,
-        help="Seconds to wait after timeframe close before running strategy",
-    )
-    parser.add_argument(
-        "--exchange-base-url",
-        default="",
-        help="Optional override for exchange API base URL (used for bitunix)",
-    )
-    parser.add_argument(
-        "--execution-interval-minutes",
-        type=int,
-        default=5,
-        help="How often to run the strategy loop",
-    )
-
-    # Network
-    parser.add_argument("--http-proxy", help="HTTP proxy")
-    parser.add_argument("--https-proxy", help="HTTPS proxy")
-    parser.add_argument("--proxy", help="Proxy for both HTTP and HTTPS")
-
-    # Notifications
-    parser.add_argument(
-        "--telegram-enabled",
-        action=argparse.BooleanOptionalAction,
-        default=False,
-        help="Enable Telegram notifications for executed trades",
-    )
-    parser.add_argument("--telegram-token", help="Telegram bot token")
-    parser.add_argument("--telegram-chat-id", help="Telegram chat or channel ID")
-    parser.add_argument("--telegram-proxy", help="Proxy URL for Telegram requests")
-    parser.add_argument(
-        "--telegram-timeout",
-        type=float,
-        default=10.0,
-        help="Timeout for Telegram requests in seconds",
-    )
-
-    # Logging
-    parser.add_argument(
-        "--log-level",
-        default="INFO",
-        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
-        help="Logging level",
-    )
-
-    return parser
 
 
 def _load_env_file(path: Optional[Path]) -> Dict[str, str]:
@@ -478,40 +83,20 @@ def resolve_config_file(args: argparse.Namespace) -> Path:
     """Resolve config file path from CLI or strategy-specific default."""
     if args.config_file is not None:
         return args.config_file
-    strategy = str(getattr(args, "strategy_name", "pinbar_magic_v2")).strip().lower()
+    strategy = str(getattr(args, "strategy_name", "pinbar_magic_v3")).strip().lower()
     if strategy in DEFAULT_CONFIG_BY_STRATEGY:
         return DEFAULT_CONFIG_BY_STRATEGY[strategy]
-    return DEFAULT_CONFIG_BY_STRATEGY["pinbar_magic_v2"]
+    return DEFAULT_CONFIG_BY_STRATEGY["pinbar_magic_v3"]
 
 
 def _normalize_strategy_name(value: str) -> str:
     normalized = str(value).strip().lower()
     if normalized in DEFAULT_CONFIG_BY_STRATEGY:
         return normalized
-    return "pinbar_magic_v2"
+    return "pinbar_magic_v3"
 
 
-def _discover_strategy(pre_args: argparse.Namespace) -> str:
-    if getattr(pre_args, "strategy_name", None):
-        return _normalize_strategy_name(pre_args.strategy_name)
-
-    env_strategy = os.getenv("STRATEGY_NAME", "") or os.getenv(
-        "LIVE_STRATEGY_NAME", ""
-    )
-    if env_strategy:
-        return _normalize_strategy_name(env_strategy)
-
-    cfg = getattr(pre_args, "config_file", None)
-    if isinstance(cfg, Path) and cfg.exists():
-        values = _load_env_file(cfg)
-        file_strategy = values.get("STRATEGY_NAME") or values.get("LIVE_STRATEGY_NAME")
-        if file_strategy:
-            return _normalize_strategy_name(file_strategy)
-
-    return "pinbar_magic_v2"
-
-
-def _load_shared_env_config(read_env: Callable[..., str]) -> Dict[str, str]:
+def _load_heiken_ashi_env_config(read_env: Callable[..., str]) -> Dict[str, str]:
     return {
         "exchange": read_env("EXCHANGE"),
         "trading_mode": read_env("TRADING_MODE"),
@@ -535,6 +120,8 @@ def _load_shared_env_config(read_env: Callable[..., str]) -> Dict[str, str]:
         "log_file": read_env("LOG_FILE"),
         "candle_ready_delay_seconds": read_env("CANDLE_READY_DELAY_SECONDS"),
         "execution_interval_minutes": read_env("EXECUTION_INTERVAL_MINUTES"),
+        "poll_interval_seconds": read_env("POLL_INTERVAL_SECONDS"),
+        "trailing_check_interval_seconds": read_env("TRAILING_CHECK_INTERVAL_SECONDS"),
         "exchange_base_url": read_env("EXCHANGE_BASE_URL"),
         "http_proxy": read_env("HTTP_PROXY"),
         "https_proxy": read_env("HTTPS_PROXY"),
@@ -545,11 +132,6 @@ def _load_shared_env_config(read_env: Callable[..., str]) -> Dict[str, str]:
         "telegram_proxy": read_env("TELEGRAM_PROXY"),
         "telegram_timeout": read_env("TELEGRAM_TIMEOUT"),
         "log_level": read_env("LOG_LEVEL"),
-    }
-
-
-def _load_heiken_ashi_env_config(read_env: Callable[..., str]) -> Dict[str, str]:
-    return {
         "top_m_symbols": read_env("TOP_M_SYMBOLS"),
         "top_n_signals": read_env("TOP_N_SIGNALS"),
         "price_change_threshold": read_env("PRICE_CHANGE_THRESHOLD"),
@@ -557,20 +139,57 @@ def _load_heiken_ashi_env_config(read_env: Callable[..., str]) -> Dict[str, str]
     }
 
 
-def _load_pinbar_magic_v2_env_config(read_env: Callable[..., str]) -> Dict[str, str]:
+def _load_pinbar_magic_v3_env_config(read_env: Callable[..., str]) -> Dict[str, str]:
     return {
+        "exchange": read_env("EXCHANGE"),
+        "trading_mode": read_env("TRADING_MODE"),
+        "api_key": read_env("API_KEY"),
+        "api_secret": read_env("API_SECRET"),
+        "api_passphrase": read_env("API_PASSPHRASE", "PASS_PHRASE"),
+        "testnet": read_env("TESTNET"),
+        "timeframe": read_env("TIMEFRAME"),
+        "strategy_name": read_env("STRATEGY_NAME", "LIVE_STRATEGY_NAME"),
+        "leverage": read_env("LEVERAGE"),
+        "take_profit_pct": read_env("TAKE_PROFIT_PCT"),
+        "margin_mode": read_env("MARGIN_MODE"),
+        "disable_symbol_hours": read_env("DISABLE_SYMBOL_HOURS"),
+        "position_size_usdt": read_env("POSITION_SIZE_USDT"),
+        "max_entry_notional_usdt": read_env("MAX_ENTRY_NOTIONAL_USDT"),
+        "max_concurrent_positions": read_env("MAX_CONCURRENT_POSITIONS"),
+        "max_position_size_pct": read_env("MAX_POSITION_SIZE_PCT"),
+        "state_file": read_env("STATE_FILE"),
+        "positions_db": read_env("POSITIONS_DB"),
+        "klines_db": read_env("KLINES_DB"),
+        "log_file": read_env("LOG_FILE"),
+        "candle_ready_delay_seconds": read_env("CANDLE_READY_DELAY_SECONDS"),
+        "execution_interval_minutes": read_env("EXECUTION_INTERVAL_MINUTES"),
+        "poll_interval_seconds": read_env("POLL_INTERVAL_SECONDS"),
+        "trailing_check_interval_seconds": read_env("TRAILING_CHECK_INTERVAL_SECONDS"),
+        "exchange_base_url": read_env("EXCHANGE_BASE_URL"),
+        "http_proxy": read_env("HTTP_PROXY"),
+        "https_proxy": read_env("HTTPS_PROXY"),
+        "proxy": read_env("PROXY"),
+        "telegram_enabled": read_env("TELEGRAM_ENABLED"),
+        "telegram_token": read_env("TELEGRAM_BOT_TOKEN", "TELEGRAM_TOKEN"),
+        "telegram_chat_id": read_env("TELEGRAM_CHAT_ID"),
+        "telegram_proxy": read_env("TELEGRAM_PROXY"),
+        "telegram_timeout": read_env("TELEGRAM_TIMEOUT"),
+        "log_level": read_env("LOG_LEVEL"),
         "pinbar_symbols": read_env("PINBAR_SYMBOLS"),
         "equity_risk_pct": read_env("EQUITY_RISK_PCT", "STRATEGY_EQUITY_RISK_PCT"),
         "atr_multiple": read_env("ATR_MULTIPLE", "STRATEGY_ATR_MULTIPLE"),
         "trail_points": read_env("TRAIL_POINTS", "STRATEGY_TRAIL_POINTS"),
         "trail_offset": read_env("TRAIL_OFFSET", "STRATEGY_TRAIL_OFFSET"),
+        "symbol_mintick": read_env("SYMBOL_MINTICK", "STRATEGY_SYMBOL_MINTICK"),
         "slow_sma_period": read_env("SLOW_SMA_PERIOD", "STRATEGY_SLOW_SMA_PERIOD"),
         "medium_ema_period": read_env(
             "MEDIUM_EMA_PERIOD", "STRATEGY_MEDIUM_EMA_PERIOD"
         ),
         "fast_ema_period": read_env("FAST_EMA_PERIOD", "STRATEGY_FAST_EMA_PERIOD"),
         "atr_period": read_env("ATR_PERIOD", "STRATEGY_ATR_PERIOD"),
-        "entry_cancel_bars": read_env("ENTRY_CANCEL_BARS", "STRATEGY_ENTRY_CANCEL_BARS"),
+        "entry_cancel_bars": read_env(
+            "ENTRY_CANCEL_BARS", "STRATEGY_ENTRY_CANCEL_BARS"
+        ),
         "entry_activation_mode": read_env(
             "ENTRY_ACTIVATION_MODE", "STRATEGY_ENTRY_ACTIVATION_MODE"
         ),
@@ -608,9 +227,43 @@ def _load_pinbar_magic_v2_env_config(read_env: Callable[..., str]) -> Dict[str, 
 
 def _load_strong_trend_stair_env_config(read_env: Callable[..., str]) -> Dict[str, str]:
     return {
+        "exchange": read_env("EXCHANGE"),
+        "trading_mode": read_env("TRADING_MODE"),
+        "api_key": read_env("API_KEY"),
+        "api_secret": read_env("API_SECRET"),
+        "api_passphrase": read_env("API_PASSPHRASE", "PASS_PHRASE"),
+        "testnet": read_env("TESTNET"),
+        "timeframe": read_env("TIMEFRAME"),
+        "strategy_name": read_env("STRATEGY_NAME", "LIVE_STRATEGY_NAME"),
+        "leverage": read_env("LEVERAGE"),
+        "take_profit_pct": read_env("TAKE_PROFIT_PCT"),
+        "margin_mode": read_env("MARGIN_MODE"),
+        "disable_symbol_hours": read_env("DISABLE_SYMBOL_HOURS"),
+        "position_size_usdt": read_env("POSITION_SIZE_USDT"),
+        "max_entry_notional_usdt": read_env("MAX_ENTRY_NOTIONAL_USDT"),
+        "max_concurrent_positions": read_env("MAX_CONCURRENT_POSITIONS"),
+        "max_position_size_pct": read_env("MAX_POSITION_SIZE_PCT"),
+        "state_file": read_env("STATE_FILE"),
+        "positions_db": read_env("POSITIONS_DB"),
+        "klines_db": read_env("KLINES_DB"),
+        "log_file": read_env("LOG_FILE"),
+        "candle_ready_delay_seconds": read_env("CANDLE_READY_DELAY_SECONDS"),
+        "execution_interval_minutes": read_env("EXECUTION_INTERVAL_MINUTES"),
+        "exchange_base_url": read_env("EXCHANGE_BASE_URL"),
+        "http_proxy": read_env("HTTP_PROXY"),
+        "https_proxy": read_env("HTTPS_PROXY"),
+        "proxy": read_env("PROXY"),
+        "telegram_enabled": read_env("TELEGRAM_ENABLED"),
+        "telegram_token": read_env("TELEGRAM_BOT_TOKEN", "TELEGRAM_TOKEN"),
+        "telegram_chat_id": read_env("TELEGRAM_CHAT_ID"),
+        "telegram_proxy": read_env("TELEGRAM_PROXY"),
+        "telegram_timeout": read_env("TELEGRAM_TIMEOUT"),
+        "log_level": read_env("LOG_LEVEL"),
         "symbol": read_env("SYMBOL"),
         "tick_interval_seconds": read_env("TICK_INTERVAL_SECONDS"),
-        "hard_stop_loss_pct": read_env("HARD_STOP_LOSS_PCT", "STRATEGY_HARD_STOP_LOSS_PCT"),
+        "hard_stop_loss_pct": read_env(
+            "HARD_STOP_LOSS_PCT", "STRATEGY_HARD_STOP_LOSS_PCT"
+        ),
         "trail_start_pct": read_env("TRAIL_START_PCT", "STRATEGY_TRAIL_START_PCT"),
         "trail_offset_pct": read_env("TRAIL_OFFSET_PCT", "STRATEGY_TRAIL_OFFSET_PCT"),
         "ema_fast_len": read_env("EMA_FAST_LEN"),
@@ -628,14 +281,14 @@ def _load_strong_trend_stair_env_config(read_env: Callable[..., str]) -> Dict[st
 
 STRATEGY_ENV_LOADERS: Dict[str, Callable[[Callable[..., str]], Dict[str, str]]] = {
     "heiken_ashi": _load_heiken_ashi_env_config,
-    "pinbar_magic_v2": _load_pinbar_magic_v2_env_config,
+    "pinbar_magic_v3": _load_pinbar_magic_v3_env_config,
     "strong_trend_stair": _load_strong_trend_stair_env_config,
 }
 
 
 def load_env_config(
     config_file: Optional[Path] = None,
-    strategy_name: str = "pinbar_magic_v2",
+    strategy_name: str = "pinbar_magic_v3",
 ) -> Dict[str, str]:
     """Load configuration from config file and environment variables.
 
@@ -656,16 +309,16 @@ def load_env_config(
                 return file_value
         return ""
 
-    config = _load_shared_env_config(read_env)
-
     selected = _normalize_strategy_name(strategy_name)
     strategy_loader = STRATEGY_ENV_LOADERS.get(selected)
     if strategy_loader is not None:
-        config.update(strategy_loader(read_env))
-    return config
+        return strategy_loader(read_env)
+    return {}
 
 
-def _apply_shared_env_defaults(args: argparse.Namespace, config: Dict[str, str]) -> None:
+def _apply_heiken_ashi_env_defaults(
+    args: argparse.Namespace, config: Dict[str, str]
+) -> None:
     if config["exchange"]:
         args.exchange = config["exchange"].strip().lower()
     if config["trading_mode"]:
@@ -685,21 +338,287 @@ def _apply_shared_env_defaults(args: argparse.Namespace, config: Dict[str, str])
     if config["leverage"]:
         args.leverage = _parse_int(config["leverage"], "LEVERAGE")
     if config["take_profit_pct"]:
-        args.take_profit_pct = _parse_float(config["take_profit_pct"], "TAKE_PROFIT_PCT")
+        args.take_profit_pct = _parse_float(
+            config["take_profit_pct"], "TAKE_PROFIT_PCT"
+        )
     if config["margin_mode"]:
         args.margin_mode = config["margin_mode"].strip().lower()
     if config["disable_symbol_hours"]:
-        args.disable_symbol_hours = _parse_float(config["disable_symbol_hours"], "DISABLE_SYMBOL_HOURS")
+        args.disable_symbol_hours = _parse_float(
+            config["disable_symbol_hours"], "DISABLE_SYMBOL_HOURS"
+        )
     if config["position_size_usdt"]:
-        args.position_size_usdt = _parse_float(config["position_size_usdt"], "POSITION_SIZE_USDT")
+        args.position_size_usdt = _parse_float(
+            config["position_size_usdt"], "POSITION_SIZE_USDT"
+        )
     if config["max_entry_notional_usdt"]:
         args.max_entry_notional_usdt = _parse_float(
             config["max_entry_notional_usdt"], "MAX_ENTRY_NOTIONAL_USDT"
         )
     if config["max_concurrent_positions"]:
-        args.max_concurrent_positions = _parse_int(config["max_concurrent_positions"], "MAX_CONCURRENT_POSITIONS")
+        args.max_concurrent_positions = _parse_int(
+            config["max_concurrent_positions"], "MAX_CONCURRENT_POSITIONS"
+        )
     if config["max_position_size_pct"]:
-        args.max_position_size_pct = _parse_float(config["max_position_size_pct"], "MAX_POSITION_SIZE_PCT")
+        args.max_position_size_pct = _parse_float(
+            config["max_position_size_pct"], "MAX_POSITION_SIZE_PCT"
+        )
+    if config["state_file"]:
+        args.state_file = Path(config["state_file"])
+    if config["positions_db"]:
+        args.positions_db = Path(config["positions_db"])
+    if config["klines_db"]:
+        args.klines_db = Path(config["klines_db"])
+    if config["log_file"]:
+        args.log_file = Path(config["log_file"])
+    if config["candle_ready_delay_seconds"]:
+        args.candle_ready_delay_seconds = _parse_int(
+            config["candle_ready_delay_seconds"], "CANDLE_READY_DELAY_SECONDS"
+        )
+    if config["execution_interval_minutes"]:
+        args.execution_interval_minutes = _parse_int(
+            config["execution_interval_minutes"], "EXECUTION_INTERVAL_MINUTES"
+        )
+    if config["poll_interval_seconds"]:
+        args.poll_interval_seconds = _parse_float(
+            config["poll_interval_seconds"], "POLL_INTERVAL_SECONDS"
+        )
+    if config["trailing_check_interval_seconds"]:
+        args.trailing_check_interval_seconds = _parse_float(
+            config["trailing_check_interval_seconds"],
+            "TRAILING_CHECK_INTERVAL_SECONDS",
+        )
+    if config["exchange_base_url"]:
+        args.exchange_base_url = config["exchange_base_url"]
+    if config["http_proxy"]:
+        args.http_proxy = config["http_proxy"]
+    if config["https_proxy"]:
+        args.https_proxy = config["https_proxy"]
+    if config["proxy"]:
+        args.proxy = config["proxy"]
+    if config["telegram_enabled"]:
+        args.telegram_enabled = _parse_bool(config["telegram_enabled"])
+    if config["telegram_token"]:
+        args.telegram_token = config["telegram_token"]
+    if config["telegram_chat_id"]:
+        args.telegram_chat_id = config["telegram_chat_id"]
+    if config["telegram_proxy"]:
+        args.telegram_proxy = config["telegram_proxy"]
+    if config["telegram_timeout"]:
+        args.telegram_timeout = _parse_float(
+            config["telegram_timeout"], "TELEGRAM_TIMEOUT"
+        )
+    if config["log_level"]:
+        args.log_level = config["log_level"].strip().upper()
+    if config.get("top_m_symbols"):
+        args.top_m_symbols = _parse_int(config["top_m_symbols"], "TOP_M_SYMBOLS")
+    if config.get("top_n_signals"):
+        args.top_n_signals = _parse_int(config["top_n_signals"], "TOP_N_SIGNALS")
+    if config.get("price_change_threshold"):
+        args.price_change_threshold = _parse_float(
+            config["price_change_threshold"], "PRICE_CHANGE_THRESHOLD"
+        )
+    if config.get("heiken_ashi_candles"):
+        args.heiken_ashi_candles = _parse_int(
+            config["heiken_ashi_candles"], "HEIKEN_ASHI_CANDLES"
+        )
+
+
+def _apply_pinbar_magic_v3_env_defaults(
+    args: argparse.Namespace, config: Dict[str, str]
+) -> None:
+    if config["exchange"]:
+        args.exchange = config["exchange"].strip().lower()
+    if config["trading_mode"]:
+        args.trading_mode = config["trading_mode"].strip().lower()
+    if config["api_key"]:
+        args.api_key = config["api_key"]
+    if config["api_secret"]:
+        args.api_secret = config["api_secret"]
+    if config["api_passphrase"]:
+        args.api_passphrase = config["api_passphrase"]
+    if config["testnet"]:
+        args.testnet = _parse_bool(config["testnet"])
+    if config["timeframe"]:
+        args.timeframe = config["timeframe"].strip().lower()
+    if config["strategy_name"]:
+        args.strategy_name = config["strategy_name"].strip().lower()
+    if config["leverage"]:
+        args.leverage = _parse_int(config["leverage"], "LEVERAGE")
+    if config["take_profit_pct"]:
+        args.take_profit_pct = _parse_float(
+            config["take_profit_pct"], "TAKE_PROFIT_PCT"
+        )
+    if config["margin_mode"]:
+        args.margin_mode = config["margin_mode"].strip().lower()
+    if config["disable_symbol_hours"]:
+        args.disable_symbol_hours = _parse_float(
+            config["disable_symbol_hours"], "DISABLE_SYMBOL_HOURS"
+        )
+    if config["position_size_usdt"]:
+        args.position_size_usdt = _parse_float(
+            config["position_size_usdt"], "POSITION_SIZE_USDT"
+        )
+    if config["max_entry_notional_usdt"]:
+        args.max_entry_notional_usdt = _parse_float(
+            config["max_entry_notional_usdt"], "MAX_ENTRY_NOTIONAL_USDT"
+        )
+    if config["max_concurrent_positions"]:
+        args.max_concurrent_positions = _parse_int(
+            config["max_concurrent_positions"], "MAX_CONCURRENT_POSITIONS"
+        )
+    if config["max_position_size_pct"]:
+        args.max_position_size_pct = _parse_float(
+            config["max_position_size_pct"], "MAX_POSITION_SIZE_PCT"
+        )
+    if config["state_file"]:
+        args.state_file = Path(config["state_file"])
+    if config["positions_db"]:
+        args.positions_db = Path(config["positions_db"])
+    if config["klines_db"]:
+        args.klines_db = Path(config["klines_db"])
+    if config["log_file"]:
+        args.log_file = Path(config["log_file"])
+    if config["candle_ready_delay_seconds"]:
+        args.candle_ready_delay_seconds = _parse_int(
+            config["candle_ready_delay_seconds"], "CANDLE_READY_DELAY_SECONDS"
+        )
+    if config["execution_interval_minutes"]:
+        args.execution_interval_minutes = _parse_int(
+            config["execution_interval_minutes"], "EXECUTION_INTERVAL_MINUTES"
+        )
+    if config["poll_interval_seconds"]:
+        args.poll_interval_seconds = _parse_float(
+            config["poll_interval_seconds"], "POLL_INTERVAL_SECONDS"
+        )
+    if config["trailing_check_interval_seconds"]:
+        args.trailing_check_interval_seconds = _parse_float(
+            config["trailing_check_interval_seconds"],
+            "TRAILING_CHECK_INTERVAL_SECONDS",
+        )
+    if config["exchange_base_url"]:
+        args.exchange_base_url = config["exchange_base_url"]
+    if config["http_proxy"]:
+        args.http_proxy = config["http_proxy"]
+    if config["https_proxy"]:
+        args.https_proxy = config["https_proxy"]
+    if config["proxy"]:
+        args.proxy = config["proxy"]
+    if config["telegram_enabled"]:
+        args.telegram_enabled = _parse_bool(config["telegram_enabled"])
+    if config["telegram_token"]:
+        args.telegram_token = config["telegram_token"]
+    if config["telegram_chat_id"]:
+        args.telegram_chat_id = config["telegram_chat_id"]
+    if config["telegram_proxy"]:
+        args.telegram_proxy = config["telegram_proxy"]
+    if config["telegram_timeout"]:
+        args.telegram_timeout = _parse_float(
+            config["telegram_timeout"], "TELEGRAM_TIMEOUT"
+        )
+    if config["log_level"]:
+        args.log_level = config["log_level"].strip().upper()
+    if config.get("pinbar_symbols"):
+        args.pinbar_symbols = config["pinbar_symbols"]
+    if config.get("equity_risk_pct"):
+        args.equity_risk_pct = _parse_float(
+            config["equity_risk_pct"], "EQUITY_RISK_PCT"
+        )
+    if config.get("atr_multiple"):
+        args.atr_multiple = _parse_float(config["atr_multiple"], "ATR_MULTIPLE")
+    if config.get("trail_points"):
+        args.trail_points = _parse_float(config["trail_points"], "TRAIL_POINTS")
+    if config.get("trail_offset"):
+        args.trail_offset = _parse_float(config["trail_offset"], "TRAIL_OFFSET")
+    if config.get("symbol_mintick"):
+        args.symbol_mintick = _parse_float(config["symbol_mintick"], "SYMBOL_MINTICK")
+    if config.get("slow_sma_period"):
+        args.slow_sma_period = _parse_int(config["slow_sma_period"], "SLOW_SMA_PERIOD")
+    if config.get("medium_ema_period"):
+        args.medium_ema_period = _parse_int(
+            config["medium_ema_period"], "MEDIUM_EMA_PERIOD"
+        )
+    if config.get("fast_ema_period"):
+        args.fast_ema_period = _parse_int(config["fast_ema_period"], "FAST_EMA_PERIOD")
+    if config.get("atr_period"):
+        args.atr_period = _parse_int(config["atr_period"], "ATR_PERIOD")
+    if config.get("entry_cancel_bars"):
+        args.entry_cancel_bars = _parse_int(
+            config["entry_cancel_bars"], "ENTRY_CANCEL_BARS"
+        )
+    if config.get("entry_activation_mode"):
+        args.entry_activation_mode = config["entry_activation_mode"].strip().lower()
+    if config.get("trailing_tick_timeframe"):
+        args.trailing_tick_timeframe = config["trailing_tick_timeframe"].strip().lower()
+    if config.get("use_trailing_tick_emulation"):
+        args.use_trailing_tick_emulation = _parse_bool(
+            config["use_trailing_tick_emulation"]
+        )
+    if config.get("use_stop_fill_open_gap"):
+        args.use_stop_fill_open_gap = _parse_bool(config["use_stop_fill_open_gap"])
+    if config.get("enable_friday_close"):
+        args.enable_friday_close = _parse_bool(config["enable_friday_close"])
+    if config.get("friday_close_hour_utc"):
+        args.friday_close_hour_utc = _parse_int(
+            config["friday_close_hour_utc"], "FRIDAY_CLOSE_HOUR_UTC"
+        )
+    if config.get("enable_ema_cross_close"):
+        args.enable_ema_cross_close = _parse_bool(config["enable_ema_cross_close"])
+    if config.get("risk_equity_include_unrealized"):
+        args.risk_equity_include_unrealized = _parse_bool(
+            config["risk_equity_include_unrealized"]
+        )
+    if config.get("risk_equity_mark_source"):
+        args.risk_equity_mark_source = config["risk_equity_mark_source"].strip().lower()
+
+
+def _apply_strong_trend_stair_env_defaults(
+    args: argparse.Namespace, config: Dict[str, str]
+) -> None:
+    if config["exchange"]:
+        args.exchange = config["exchange"].strip().lower()
+    if config["trading_mode"]:
+        args.trading_mode = config["trading_mode"].strip().lower()
+    if config["api_key"]:
+        args.api_key = config["api_key"]
+    if config["api_secret"]:
+        args.api_secret = config["api_secret"]
+    if config["api_passphrase"]:
+        args.api_passphrase = config["api_passphrase"]
+    if config["testnet"]:
+        args.testnet = _parse_bool(config["testnet"])
+    if config["timeframe"]:
+        args.timeframe = config["timeframe"].strip().lower()
+    if config["strategy_name"]:
+        args.strategy_name = config["strategy_name"].strip().lower()
+    if config["leverage"]:
+        args.leverage = _parse_int(config["leverage"], "LEVERAGE")
+    if config["take_profit_pct"]:
+        args.take_profit_pct = _parse_float(
+            config["take_profit_pct"], "TAKE_PROFIT_PCT"
+        )
+    if config["margin_mode"]:
+        args.margin_mode = config["margin_mode"].strip().lower()
+    if config["disable_symbol_hours"]:
+        args.disable_symbol_hours = _parse_float(
+            config["disable_symbol_hours"], "DISABLE_SYMBOL_HOURS"
+        )
+    if config["position_size_usdt"]:
+        args.position_size_usdt = _parse_float(
+            config["position_size_usdt"], "POSITION_SIZE_USDT"
+        )
+    if config["max_entry_notional_usdt"]:
+        args.max_entry_notional_usdt = _parse_float(
+            config["max_entry_notional_usdt"], "MAX_ENTRY_NOTIONAL_USDT"
+        )
+    if config["max_concurrent_positions"]:
+        args.max_concurrent_positions = _parse_int(
+            config["max_concurrent_positions"], "MAX_CONCURRENT_POSITIONS"
+        )
+    if config["max_position_size_pct"]:
+        args.max_position_size_pct = _parse_float(
+            config["max_position_size_pct"], "MAX_POSITION_SIZE_PCT"
+        )
     if config["state_file"]:
         args.state_file = Path(config["state_file"])
     if config["positions_db"]:
@@ -733,78 +652,29 @@ def _apply_shared_env_defaults(args: argparse.Namespace, config: Dict[str, str])
     if config["telegram_proxy"]:
         args.telegram_proxy = config["telegram_proxy"]
     if config["telegram_timeout"]:
-        args.telegram_timeout = _parse_float(config["telegram_timeout"], "TELEGRAM_TIMEOUT")
+        args.telegram_timeout = _parse_float(
+            config["telegram_timeout"], "TELEGRAM_TIMEOUT"
+        )
     if config["log_level"]:
         args.log_level = config["log_level"].strip().upper()
-
-
-def _apply_heiken_ashi_env_defaults(args: argparse.Namespace, config: Dict[str, str]) -> None:
-    if config.get("top_m_symbols"):
-        args.top_m_symbols = _parse_int(config["top_m_symbols"], "TOP_M_SYMBOLS")
-    if config.get("top_n_signals"):
-        args.top_n_signals = _parse_int(config["top_n_signals"], "TOP_N_SIGNALS")
-    if config.get("price_change_threshold"):
-        args.price_change_threshold = _parse_float(
-            config["price_change_threshold"], "PRICE_CHANGE_THRESHOLD"
-        )
-    if config.get("heiken_ashi_candles"):
-        args.heiken_ashi_candles = _parse_int(config["heiken_ashi_candles"], "HEIKEN_ASHI_CANDLES")
-
-
-def _apply_pinbar_magic_v2_env_defaults(args: argparse.Namespace, config: Dict[str, str]) -> None:
-    if config.get("pinbar_symbols"):
-        args.pinbar_symbols = config["pinbar_symbols"]
-    if config.get("equity_risk_pct"):
-        args.equity_risk_pct = _parse_float(config["equity_risk_pct"], "EQUITY_RISK_PCT")
-    if config.get("atr_multiple"):
-        args.atr_multiple = _parse_float(config["atr_multiple"], "ATR_MULTIPLE")
-    if config.get("trail_points"):
-        args.trail_points = _parse_float(config["trail_points"], "TRAIL_POINTS")
-    if config.get("trail_offset"):
-        args.trail_offset = _parse_float(config["trail_offset"], "TRAIL_OFFSET")
-    if config.get("slow_sma_period"):
-        args.slow_sma_period = _parse_int(config["slow_sma_period"], "SLOW_SMA_PERIOD")
-    if config.get("medium_ema_period"):
-        args.medium_ema_period = _parse_int(config["medium_ema_period"], "MEDIUM_EMA_PERIOD")
-    if config.get("fast_ema_period"):
-        args.fast_ema_period = _parse_int(config["fast_ema_period"], "FAST_EMA_PERIOD")
-    if config.get("atr_period"):
-        args.atr_period = _parse_int(config["atr_period"], "ATR_PERIOD")
-    if config.get("entry_cancel_bars"):
-        args.entry_cancel_bars = _parse_int(config["entry_cancel_bars"], "ENTRY_CANCEL_BARS")
-    if config.get("entry_activation_mode"):
-        args.entry_activation_mode = config["entry_activation_mode"].strip().lower()
-    if config.get("trailing_tick_timeframe"):
-        args.trailing_tick_timeframe = config["trailing_tick_timeframe"].strip().lower()
-    if config.get("use_trailing_tick_emulation"):
-        args.use_trailing_tick_emulation = _parse_bool(config["use_trailing_tick_emulation"])
-    if config.get("use_stop_fill_open_gap"):
-        args.use_stop_fill_open_gap = _parse_bool(config["use_stop_fill_open_gap"])
-    if config.get("enable_friday_close"):
-        args.enable_friday_close = _parse_bool(config["enable_friday_close"])
-    if config.get("friday_close_hour_utc"):
-        args.friday_close_hour_utc = _parse_int(config["friday_close_hour_utc"], "FRIDAY_CLOSE_HOUR_UTC")
-    if config.get("enable_ema_cross_close"):
-        args.enable_ema_cross_close = _parse_bool(config["enable_ema_cross_close"])
-    if config.get("risk_equity_include_unrealized"):
-        args.risk_equity_include_unrealized = _parse_bool(config["risk_equity_include_unrealized"])
-    if config.get("risk_equity_mark_source"):
-        args.risk_equity_mark_source = config["risk_equity_mark_source"].strip().lower()
-
-
-def _apply_strong_trend_stair_env_defaults(args: argparse.Namespace, config: Dict[str, str]) -> None:
     if config.get("symbol"):
         args.symbol = config["symbol"].strip().upper()
     if config.get("tick_interval_seconds"):
-        args.tick_interval_seconds = _parse_float(config["tick_interval_seconds"], "TICK_INTERVAL_SECONDS")
+        args.tick_interval_seconds = _parse_float(
+            config["tick_interval_seconds"], "TICK_INTERVAL_SECONDS"
+        )
     if config.get("hard_stop_loss_pct"):
         args.hard_stop_loss_pct = _parse_float(
             config["hard_stop_loss_pct"], "HARD_STOP_LOSS_PCT"
         )
     if config.get("trail_start_pct"):
-        args.trail_start_pct = _parse_float(config["trail_start_pct"], "TRAIL_START_PCT")
+        args.trail_start_pct = _parse_float(
+            config["trail_start_pct"], "TRAIL_START_PCT"
+        )
     if config.get("trail_offset_pct"):
-        args.trail_offset_pct = _parse_float(config["trail_offset_pct"], "TRAIL_OFFSET_PCT")
+        args.trail_offset_pct = _parse_float(
+            config["trail_offset_pct"], "TRAIL_OFFSET_PCT"
+        )
     if config.get("ema_fast_len"):
         args.ema_fast_len = _parse_int(config["ema_fast_len"], "EMA_FAST_LEN")
     if config.get("ema_mid_len"):
@@ -824,12 +694,16 @@ def _apply_strong_trend_stair_env_defaults(args: argparse.Namespace, config: Dic
     if config.get("adx_min"):
         args.adx_min = _parse_float(config["adx_min"], "ADX_MIN")
     if config.get("reverse_on_opposite_signal"):
-        args.reverse_on_opposite_signal = _parse_bool(config["reverse_on_opposite_signal"])
+        args.reverse_on_opposite_signal = _parse_bool(
+            config["reverse_on_opposite_signal"]
+        )
 
 
-STRATEGY_DEFAULT_APPLIERS: Dict[str, Callable[[argparse.Namespace, Dict[str, str]], None]] = {
+STRATEGY_DEFAULT_APPLIERS: Dict[
+    str, Callable[[argparse.Namespace, Dict[str, str]], None]
+] = {
     "heiken_ashi": _apply_heiken_ashi_env_defaults,
-    "pinbar_magic_v2": _apply_pinbar_magic_v2_env_defaults,
+    "pinbar_magic_v3": _apply_pinbar_magic_v3_env_defaults,
     "strong_trend_stair": _apply_strong_trend_stair_env_defaults,
 }
 
@@ -839,7 +713,6 @@ def apply_env_defaults(
 ) -> argparse.Namespace:
     """Apply environment variable defaults to arguments."""
     selected = _normalize_strategy_name(strategy_name)
-    _apply_shared_env_defaults(args, config)
     strategy_applier = STRATEGY_DEFAULT_APPLIERS.get(selected)
     if strategy_applier is not None:
         strategy_applier(args, config)
@@ -863,6 +736,15 @@ def setup_logging(args: argparse.Namespace) -> logging.Logger:
     )
 
     return logging.getLogger("live_trading")
+
+
+def _redact_config_value(key: str, value: object) -> object:
+    sensitive_terms = ("key", "secret", "token", "passphrase", "password")
+    if any(term in key.lower() for term in sensitive_terms):
+        if value:
+            return "***REDACTED***"
+        return value
+    return value
 
 
 def create_exchange(args: argparse.Namespace, logger: logging.Logger):
@@ -932,7 +814,7 @@ def create_telegram_client(
     if not config.telegram_enabled:
         return None
 
-    logger.info("Initializing Telegram client for chat %s", config.telegram_chat_id)
+    logger.info("Initializing Telegram client")
     telegram_logger = logging.getLogger("live_trading.telegram")
     telegram_config = TelegramConfig(
         bot_token=config.telegram_bot_token,
@@ -940,25 +822,23 @@ def create_telegram_client(
         proxy=config.telegram_proxy,
         timeout=config.telegram_timeout_seconds,
     )
-    telegram_logger.info(
-        "Telegram notifications enabled for chat %s", config.telegram_chat_id
-    )
+    telegram_logger.info("Telegram notifications enabled")
     return TelegramClient(telegram_config, telegram_logger)
 
 
-def build_pinbar_magic_coordinator_config(
+def build_pinbar_magic_v3_coordinator_config(
     config: LiveTradingConfig,
-) -> PinBarMagicCoordinatorV2Config:
+) -> PinBarMagicCoordinatorV3Config:
     symbols = tuple(symbol.upper() for symbol in config.pinbar_symbols if symbol) or (
         "ETHUSDT",
     )
-    return PinBarMagicCoordinatorV2Config(
+    return PinBarMagicCoordinatorV3Config(
         symbols=symbols,
         timeframe=config.timeframe,
         trailing_tick_timeframe=config.trailing_tick_timeframe,
         use_trailing_tick_emulation=config.use_trailing_tick_emulation,
-        poll_interval_seconds=5.0,
-        trailing_check_interval_seconds=5.0,
+        poll_interval_seconds=config.poll_interval_seconds,
+        trailing_check_interval_seconds=config.trailing_check_interval_seconds,
         leverage=config.leverage,
         margin_mode=config.margin_mode,
         max_concurrent_positions=config.max_concurrent_positions,
@@ -967,6 +847,7 @@ def build_pinbar_magic_coordinator_config(
         atr_multiple=config.atr_multiple,
         trail_points=config.trail_points,
         trail_offset=config.trail_offset,
+        symbol_mintick=config.symbol_mintick,
         slow_sma_period=config.slow_sma_period,
         medium_ema_period=config.medium_ema_period,
         fast_ema_period=config.fast_ema_period,
@@ -980,6 +861,10 @@ def build_pinbar_magic_coordinator_config(
         risk_equity_mark_source=config.risk_equity_mark_source,
         use_stop_fill_open_gap=config.use_stop_fill_open_gap,
         disable_symbol_hours=config.disable_symbol_hours,
+        state_file=config.state_file,
+        positions_db=config.positions_db,
+        klines_db=config.klines_db,
+        log_file=config.log_file,
     )
 
 
@@ -1009,23 +894,33 @@ def build_strong_trend_stair_config(
     )
 
 
-def main(argv: Optional[List[str]] = None) -> int:
-    """Main entry point."""
-    parser = build_parser()
+def _arg(args: argparse.Namespace, name: str, default: object) -> object:
+    return getattr(args, name, default)
+
+
+def run_main(
+    parser: argparse.ArgumentParser,
+    strategy_name: str,
+    argv: Optional[List[str]] = None,
+) -> int:
+    """Run the live-trading entrypoint with a strategy-specific parser."""
+    effective_argv = list(sys.argv[1:] if argv is None else argv)
+    if any(token in {"-h", "--help"} for token in effective_argv):
+        parser.parse_args(effective_argv)
+        return 0
+
     # Parse once to discover strategy/config-file, then re-parse with scoped env defaults.
     pre_parser = argparse.ArgumentParser(add_help=False)
     pre_parser.add_argument("--strategy-name", choices=ALLOWED_STRATEGIES, default=None)
     pre_parser.add_argument("--config-file", type=Path, default=None)
-    pre_args, _ = pre_parser.parse_known_args(argv)
-    selected_strategy = _discover_strategy(pre_args)
+    pre_args, _ = pre_parser.parse_known_args(effective_argv)
+    selected_strategy = _normalize_strategy_name(strategy_name)
     resolved_config_file = (
         pre_args.config_file
         if pre_args.config_file is not None
         else DEFAULT_CONFIG_BY_STRATEGY[selected_strategy]
     )
-    env_config = load_env_config(
-        resolved_config_file, strategy_name=selected_strategy
-    )
+    env_config = load_env_config(resolved_config_file, strategy_name=selected_strategy)
     try:
         env_defaults = apply_env_defaults(
             parser.parse_args([]), env_config, selected_strategy
@@ -1033,7 +928,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     except ValueError as exc:
         parser.error(str(exc))
     parser.set_defaults(**vars(env_defaults))
-    args = parser.parse_args(argv)
+    args = parser.parse_args(effective_argv)
+    if args.strategy_name != selected_strategy:
+        parser.error(
+            f"--strategy-name/config strategy must be {selected_strategy!r} "
+            f"for this entrypoint, got {args.strategy_name!r}"
+        )
     args.config_file = resolved_config_file
     if args.klines_db is None:
         args.klines_db = resolved_config_file
@@ -1078,31 +978,36 @@ def main(argv: Optional[List[str]] = None) -> int:
             testnet=args.testnet and not args.live,
             strategy_name=args.strategy_name,
             timeframe=args.timeframe,
-            top_m_symbols=args.top_m_symbols,
-            top_n_signals=args.top_n_signals,
-            price_change_threshold_pct=args.price_change_threshold,
-            pinbar_symbols=_parse_symbols_csv(args.pinbar_symbols),
-            heiken_ashi_candles_before=args.heiken_ashi_candles,
-            leverage=args.leverage,
-            take_profit_pct=args.take_profit_pct,
-            equity_risk_pct=args.equity_risk_pct,
-            atr_multiple=args.atr_multiple,
-            trail_points=args.trail_points,
-            trail_offset=args.trail_offset,
-            slow_sma_period=args.slow_sma_period,
-            medium_ema_period=args.medium_ema_period,
-            fast_ema_period=args.fast_ema_period,
-            atr_period=args.atr_period,
-            entry_cancel_bars=args.entry_cancel_bars,
-            entry_activation_mode=args.entry_activation_mode,
-            trailing_tick_timeframe=args.trailing_tick_timeframe,
-            use_trailing_tick_emulation=args.use_trailing_tick_emulation,
-            use_stop_fill_open_gap=args.use_stop_fill_open_gap,
-            enable_friday_close=args.enable_friday_close,
-            friday_close_hour_utc=args.friday_close_hour_utc,
-            enable_ema_cross_close=args.enable_ema_cross_close,
-            risk_equity_include_unrealized=args.risk_equity_include_unrealized,
-            risk_equity_mark_source=args.risk_equity_mark_source,
+            top_m_symbols=int(_arg(args, "top_m_symbols", 100)),
+            top_n_signals=int(_arg(args, "top_n_signals", 5)),
+            price_change_threshold_pct=float(_arg(args, "price_change_threshold", 2.0)),
+            pinbar_symbols=_parse_symbols_csv(str(_arg(args, "pinbar_symbols", ""))),
+            heiken_ashi_candles_before=int(_arg(args, "heiken_ashi_candles", 3)),
+            leverage=int(_arg(args, "leverage", 10)),
+            take_profit_pct=float(_arg(args, "take_profit_pct", 1.0)),
+            equity_risk_pct=float(_arg(args, "equity_risk_pct", 3.0)),
+            atr_multiple=float(_arg(args, "atr_multiple", 0.5)),
+            trail_points=float(_arg(args, "trail_points", 1.0)),
+            trail_offset=float(_arg(args, "trail_offset", 1.0)),
+            symbol_mintick=float(_arg(args, "symbol_mintick", 1.0)),
+            slow_sma_period=int(_arg(args, "slow_sma_period", 50)),
+            medium_ema_period=int(_arg(args, "medium_ema_period", 18)),
+            fast_ema_period=int(_arg(args, "fast_ema_period", 6)),
+            atr_period=int(_arg(args, "atr_period", 14)),
+            entry_cancel_bars=int(_arg(args, "entry_cancel_bars", 3)),
+            entry_activation_mode=str(_arg(args, "entry_activation_mode", "next_bar")),
+            trailing_tick_timeframe=str(_arg(args, "trailing_tick_timeframe", "15m")),
+            use_trailing_tick_emulation=bool(
+                _arg(args, "use_trailing_tick_emulation", False)
+            ),
+            use_stop_fill_open_gap=bool(_arg(args, "use_stop_fill_open_gap", True)),
+            enable_friday_close=bool(_arg(args, "enable_friday_close", True)),
+            friday_close_hour_utc=int(_arg(args, "friday_close_hour_utc", 16)),
+            enable_ema_cross_close=bool(_arg(args, "enable_ema_cross_close", True)),
+            risk_equity_include_unrealized=bool(
+                _arg(args, "risk_equity_include_unrealized", True)
+            ),
+            risk_equity_mark_source=str(_arg(args, "risk_equity_mark_source", "close")),
             margin_mode=margin_mode,
             disable_symbol_hours=args.disable_symbol_hours,
             position_size_usdt=args.position_size_usdt,
@@ -1115,6 +1020,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             log_file=args.log_file,
             candle_ready_delay_seconds=args.candle_ready_delay_seconds,
             execution_interval_minutes=args.execution_interval_minutes,
+            poll_interval_seconds=float(_arg(args, "poll_interval_seconds", 5.0)),
+            trailing_check_interval_seconds=float(
+                _arg(args, "trailing_check_interval_seconds", 5.0)
+            ),
             telegram_enabled=args.telegram_enabled,
             telegram_bot_token=args.telegram_token or "",
             telegram_chat_id=args.telegram_chat_id or "",
@@ -1125,14 +1034,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         logger.info("Live trading configuration (all properties):")
         for key, raw_value in vars(config).items():
             value = raw_value.value if hasattr(raw_value, "value") else raw_value
-            logger.info("  %s=%r", key, value)
+            logger.info("  %s=%r", key, _redact_config_value(key, value))
 
         telegram_client = create_telegram_client(config, logger)
 
         # Create and run coordinator
-        if config.strategy_name == "pinbar_magic_v2":
-            pinbar_cfg = build_pinbar_magic_coordinator_config(config)
-            coordinator = PinBarMagicCoordinatorV2(
+        if config.strategy_name == "pinbar_magic_v3":
+            pinbar_cfg = build_pinbar_magic_v3_coordinator_config(config)
+            coordinator = PinBarMagicCoordinatorV3(
                 exchange=exchange,
                 config=pinbar_cfg,
                 telegram_client=telegram_client,
@@ -1165,4 +1074,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(
+        "Use one of the strategy entrypoints in cmd/live_trading/*.py instead."
+    )
