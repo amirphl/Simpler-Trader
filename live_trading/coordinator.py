@@ -29,7 +29,7 @@ class LiveTradingCoordinator:
         if config.strategy_name != "heiken_ashi":
             raise ValueError(
                 "LiveTradingCoordinator only supports heiken_ashi strategy; "
-                "use pinbar_magic_coordinator for pinbar_magic_v2."
+                "use pinbar_magic_coordinator_v3 for pinbar_magic_v3."
             )
 
         self._config = config
