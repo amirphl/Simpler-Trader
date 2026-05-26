@@ -226,12 +226,12 @@ class PositionManager:
             True if position opened successfully
         """
         if (
-            signal.strategy == "pinbar_magic_v2"
-            or signal.metadata.get("strategy") == "pinbar_magic_v2"
+            signal.strategy == "pinbar_magic_v3"
+            or signal.metadata.get("strategy") == "pinbar_magic_v3"
         ):
             self._log.warning(
                 "PinBarMagic signal received by PositionManager. "
-                "Use live_trading.pinbar_magic_coordinator for PinBar Magic v2 execution."
+                "Use live_trading.pinbar_magic_coordinator_v3 for PinBar Magic v3 execution."
             )
             return False
 
@@ -489,14 +489,14 @@ class PositionManager:
         """Compatibility no-op. PinBar logic moved to pinbar_magic_coordinator."""
         self._log.warning(
             "apply_pinbar_position_management() is deprecated in PositionManager; "
-            "use pinbar_magic_coordinator instead."
+            "use pinbar_magic_coordinator or pinbar_magic_coordinator_v3 instead."
         )
 
     def activate_due_pinbar_entries(self, current_time: datetime) -> None:
         """Compatibility no-op. PinBar logic moved to pinbar_magic_coordinator."""
         self._log.warning(
             "activate_due_pinbar_entries() is deprecated in PositionManager; "
-            "use pinbar_magic_coordinator instead."
+            "use pinbar_magic_coordinator or pinbar_magic_coordinator_v3 instead."
         )
 
     def cleanup_state(self, current_time: datetime) -> None:
