@@ -14,6 +14,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Dict, Optional
 
 from candle_downloader.models import Candle
@@ -29,7 +30,7 @@ from .models import (
     TradingSignal,
     TradingState,
 )
-from .pinbar_magic_strategy import PinBarMagicLiveStrategy
+from .pinbar_magic_strategy_v3 import PinBarMagicLiveStrategyV3
 
 # Number of consecutive _sync_positions cycles where the active position must be
 # absent from the exchange response before it is marked closed locally.  A single
@@ -90,6 +91,10 @@ class PinBarMagicCoordinatorV3Config:
     risk_equity_mark_source: str = "close"
     use_stop_fill_open_gap: bool = True
     disable_symbol_hours: float = 0.0
+    state_file: Path = Path("./data/pinbar_magic_v3_live_trading_state.json")
+    positions_db: Path = Path("./data/pinbar_magic_v3_live_trading_positions.db")
+    klines_db: Path = Path("./configs/live_trading.pinbar_magic_v3.env")
+    log_file: Path = Path("./logs/pinbar_magic_v3_live_trading.log")
 
 
 class PinBarMagicCoordinatorV3:
@@ -117,7 +122,7 @@ class PinBarMagicCoordinatorV3:
         # against transient API / rate-limit gaps silently killing local state.
         self._position_miss_count: int = 0
 
-        self._strategy = PinBarMagicLiveStrategy(
+        self._strategy = PinBarMagicLiveStrategyV3(
             config=self._build_strategy_config(self._cfg),
             exchange=self._exchange,
             state=self._state,
@@ -145,6 +150,7 @@ class PinBarMagicCoordinatorV3:
     def _build_strategy_config(
         self, cfg: PinBarMagicCoordinatorV3Config
     ) -> LiveTradingConfig:
+        # TODO: Define separate live trading config. Not a general one.
         return LiveTradingConfig(
             exchange_name="runtime",
             api_key="",
@@ -175,6 +181,10 @@ class PinBarMagicCoordinatorV3:
             max_entry_notional_usdt=cfg.max_entry_notional_usdt,
             disable_symbol_hours=cfg.disable_symbol_hours,
             margin_mode=cfg.margin_mode,
+            state_file=cfg.state_file,
+            positions_db=cfg.positions_db,
+            klines_db=cfg.klines_db,
+            log_file=cfg.log_file,
         )
 
     def run_forever(self) -> None:
@@ -361,15 +371,30 @@ class PinBarMagicCoordinatorV3:
         side = signal.side
         stop_for_risk = signal.stop_loss
         if stop_for_risk is None:
+            self._log.warning(
+                "PinBarMagic: _queue_signal rejected for %s – missing stop loss",
+                symbol,
+            )
             return False
 
         current = self._state.active_positions.get(symbol)
         if current is not None and current.side == side:
+            self._log.warning(
+                "PinBarMagic: _queue_signal rejected for %s %s – already have active position",
+                symbol,
+                side.value,
+            )
             return False
         if (
             current is None
             and len(self._state.active_positions) >= self._cfg.max_concurrent_positions
         ):
+            self._log.warning(
+                "PinBarMagic: _queue_signal rejected for %s %s – max concurrent positions reached (%d)",
+                symbol,
+                side.value,
+                self._cfg.max_concurrent_positions,
+            )
             return False
 
         entry_price = float(signal.entry_price)
@@ -436,6 +461,13 @@ class PinBarMagicCoordinatorV3:
         key = self._pending_key(symbol, side)
         existing = self._state.pending_entries.get(key)
         if existing is not None:
+            self._log.info(
+                "Replacing existing pending entry for %s %s (queued at %s) with newer signal (timestamp %s)",
+                symbol,
+                side.value,
+                existing.signal_time.isoformat(),
+                signal_time.isoformat(),
+            )
             self._cancel_pending_entry(existing, "Replaced by newer signal")
 
         self._state.pending_entries[key] = PendingEntryRecord(
@@ -451,6 +483,7 @@ class PinBarMagicCoordinatorV3:
             created_time=self._ensure_aware(datetime.now(timezone.utc)),
             signal_time=signal_time,
             activate_time=self._activate_time(signal_time),
+            order_id=None,
             status="PENDING",
             notes=signal.reason,
         )
@@ -1060,6 +1093,12 @@ class PinBarMagicCoordinatorV3:
         placer = getattr(self._exchange, "place_stop_entry_order", None)
         if callable(placer):
             try:
+                # TODO: resolve this error:
+                # Type "object" is not assignable to return type "OrderResult | None"
+                #   Type "object" is not assignable to type "OrderResult | None"
+                #     "object" is not assignable to "OrderResult"
+                #     "object" is not assignable to "None"
+
                 return placer(
                     symbol=pending.symbol,
                     side=pending.side,
@@ -1148,12 +1187,11 @@ class PinBarMagicCoordinatorV3:
                 position.side.value,
                 exc,
             )
-            # Still mark locally as closed to prevent repeated close attempts;
-            # operator must investigate the exchange state manually.
-            result = None
+            position.notes = f"{position.notes}; close failed: {reason}".strip("; ")
+            return
 
         exit_price: Optional[float] = None
-        if result is not None and result.price > 0:
+        if result.price > 0:
             exit_price = result.price
         if exit_price is None:
             exit_price = self._get_last_price(position.symbol)
@@ -1214,7 +1252,7 @@ class PinBarMagicCoordinatorV3:
                 sl_stop_type="MARK_PRICE",
             )
             if result:
-                order_id = result.get("orderId") if isinstance(result, dict) else None
+                order_id = result.get("orderId")
                 self._log.info(
                     "Updated position stop for %s (%s) to %.6f (order=%s)",
                     exchange_position.symbol,
@@ -1243,7 +1281,6 @@ class PinBarMagicCoordinatorV3:
     # ------------------------------------------------------------------
 
     def _cancel_pending_entry(self, pending: PendingEntryRecord, reason: str) -> None:
-        cancelled = False
         if pending.order_id:
             try:
                 cancelled = bool(
@@ -1261,22 +1298,18 @@ class PinBarMagicCoordinatorV3:
                 )
                 cancelled = False
             if not cancelled:
+                # Do NOT fall back to cancel_all_orders: in a multi-process
+                # multi-timeframe setup another coordinator may have already
+                # filled this order and set a stop-loss.  Cancelling all orders
+                # blindly would wipe that stop.  A failed cancel means the order
+                # was either filled (position is protected) or already gone.
                 self._log.warning(
-                    "Cancel by order ID failed for %s %s; falling back to cancel_all_orders (%s)",
+                    "Cancel by order ID failed for %s order=%s (%s) – "
+                    "order may already be filled or expired; skipping cancel_all_orders",
                     pending.symbol,
                     pending.order_id,
                     reason,
                 )
-                try:
-                    self._exchange.cancel_all_orders(pending.symbol)
-                except Exception:
-                    self._log.warning(
-                        "Failed to cancel all orders for %s during pending entry "
-                        "cancellation (%s)",
-                        pending.symbol,
-                        reason,
-                        exc_info=True,
-                    )
         pending.status = "CANCELLED"
         pending.notes = f"{pending.notes}; {reason}".strip("; ")
         self._state.pending_entries.pop(pending.order_key, None)
@@ -1284,20 +1317,12 @@ class PinBarMagicCoordinatorV3:
     def _find_matching_pending(
         self, symbol: str, side: PositionSide
     ) -> Optional[PendingEntryRecord]:
+        # Only match by the exact symbol:side key.  In a multi-process
+        # multi-timeframe setup each coordinator only owns the entries it
+        # queued, so a position whose side doesn't match any local pending
+        # entry was opened by another coordinator and must not be claimed here.
         key = self._pending_key(symbol, side)
-        pending = self._state.pending_entries.get(key)
-        if pending is not None:
-            return pending
-        same_symbol = [
-            x for x in self._state.pending_entries.values() if x.symbol == symbol
-        ]
-        if len(same_symbol) == 1:
-            return same_symbol[0]
-        self._log.warning(
-            "Multiple pending entries found for symbol %s, unable to match position",
-            symbol,
-        )
-        return None
+        return self._state.pending_entries.get(key)
 
     def _pending_key(self, symbol: str, side: PositionSide) -> str:
         return f"{symbol}:{side.value}"
@@ -1404,12 +1429,20 @@ class PinBarMagicCoordinatorV3:
         try:
             lines = [
                 f"[PINBAR OPEN] {position.symbol}",
+                f"Timeframe: {self._cfg.timeframe}",
                 f"Side: {position.side.value.upper()}",
                 f"Entry: {position.entry_price:.8g}",
                 f"Qty: {position.quantity:.8g}",
                 f"Leverage: {position.leverage}x",
                 f"Stop: {pending.stop_for_risk:.8g}",
                 f"Mode: {position.margin_mode.value}",
+                f"Trail Points: {self._cfg.trail_points}",
+                f"Trail Offset: {self._cfg.trail_offset}",
+                f"Mintick: {self._cfg.symbol_mintick}",
+                f"Slow SMA: {self._cfg.slow_sma_period}",
+                f"Medium EMA: {self._cfg.medium_ema_period}",
+                f"Fast EMA: {self._cfg.fast_ema_period}",
+                f"ATR Period: {self._cfg.atr_period}",
                 f"Time: {datetime.now(timezone.utc).isoformat()}",
             ]
             self._telegram.send_message("\n".join(lines))
@@ -1429,12 +1462,20 @@ class PinBarMagicCoordinatorV3:
             pnl = position.pnl
             lines = [
                 f"[PINBAR CLOSE] {position.symbol}",
+                f"Timeframe: {self._cfg.timeframe}",
                 f"Side: {position.side.value.upper()}",
                 f"Entry: {position.entry_price:.8g}",
                 f"Exit: {exit_price:.8g}" if exit_price is not None else "Exit: n/a",
                 f"Qty: {position.quantity:.8g}",
                 f"PnL: {pnl:.8g}" if pnl is not None else "PnL: n/a",
                 f"Reason: {reason}",
+                f"Trail Points: {self._cfg.trail_points}",
+                f"Trail Offset: {self._cfg.trail_offset}",
+                f"Mintick: {self._cfg.symbol_mintick}",
+                f"Slow SMA: {self._cfg.slow_sma_period}",
+                f"Medium EMA: {self._cfg.medium_ema_period}",
+                f"Fast EMA: {self._cfg.fast_ema_period}",
+                f"ATR Period: {self._cfg.atr_period}",
                 f"Time: {datetime.now(timezone.utc).isoformat()}",
             ]
             self._telegram.send_message("\n".join(lines))
