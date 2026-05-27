@@ -20,7 +20,7 @@ _KLINES_RETRIES = 3
 _KLINES_RETRY_DELAY_SECONDS = 1.0
 
 
-class PinBarMagicLiveStrategy(BaseLiveTradingStrategy):
+class PinBarMagicLiveStrategyV3(BaseLiveTradingStrategy):
     """Live Pin Bar Magic strategy aligned with backtest pinbar_magic_strategy_v3."""
 
     def generate_signals_for_symbols(
