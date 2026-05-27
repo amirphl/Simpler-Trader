@@ -263,7 +263,7 @@ class BitunixExchange(Exchange):
             positions = self._client.get_pending_positions()
         except Exception as exc:
             self._log.error("Bitunix: failed to fetch pending positions: %s", exc)
-            return []
+            raise RuntimeError("Bitunix failed to fetch current positions") from exc
 
         normalized: List[Position] = []
         for pos in positions or []:
