@@ -255,19 +255,19 @@ class Exchange(ABC):
         """
         pass
 
-    @abstractmethod
-    def place_stop_entry_order(
-        self,
-        symbol: str,
-        side: PositionSide,
-        quantity: float,
-        stop_price: float,
-        leverage: int,
-        margin_mode: MarginMode,
-        stop_loss: Optional[float] = None,
-    ) -> OrderResult:
-        """Placeholder stop-entry implementation."""
-        pass
+    # @abstractmethod
+    # def place_stop_entry_order(
+    #     self,
+    #     symbol: str,
+    #     side: PositionSide,
+    #     quantity: float,
+    #     stop_price: float,
+    #     leverage: int,
+    #     margin_mode: MarginMode,
+    #     stop_loss: Optional[float] = None,
+    # ) -> OrderResult:
+    #     """Placeholder stop-entry implementation."""
+    #     pass
 
     @abstractmethod
     def place_stop_loss_order(
@@ -284,9 +284,7 @@ class Exchange(ABC):
         pass
 
     @abstractmethod
-    def update_position_stop_loss(
-        self, position: Position, stop_price: float
-    ) -> bool:
+    def update_position_stop_loss(self, position: Position, stop_price: float) -> bool:
         """Update a position-level stop loss using the position id."""
         pass
 
