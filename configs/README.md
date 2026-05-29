@@ -4,11 +4,12 @@ This directory contains runtime configuration files.
 
 ## Files
 
+- `backtest.ema_avwap_pullback.env.example`: template for EMA + AVWAP pullback backtests
 - `live_trading.heiken_ashi.env.example`: template for Heiken Ashi strategy
-- `live_trading.pinbar_magic_v2.env.example`: template for PinBar Magic v2 strategy
+- `live_trading.pinbar_magic_v3.env.example`: template for PinBar Magic v3 strategy
 - `live_trading.strong_trend_stair.env.example`: template for Strong Trend Stair strategy
 - `live_trading.heiken_ashi.env`: local runtime config for Heiken Ashi (do not commit secrets)
-- `live_trading.pinbar_magic_v2.env`: local runtime config for PinBar Magic v2 (do not commit secrets)
+- `live_trading.pinbar_magic_v3.env`: local runtime config for PinBar Magic v3 (do not commit secrets)
 - `live_trading.strong_trend_stair.env`: local runtime config for Strong Trend Stair (do not commit secrets)
 
 ## Live Trading Config
@@ -17,7 +18,7 @@ Use strategy-specific templates:
 
 ```bash
 cp configs/live_trading.heiken_ashi.env.example configs/live_trading.heiken_ashi.env
-cp configs/live_trading.pinbar_magic_v2.env.example configs/live_trading.pinbar_magic_v2.env
+cp configs/live_trading.pinbar_magic_v3.env.example configs/live_trading.pinbar_magic_v3.env
 cp configs/live_trading.strong_trend_stair.env.example configs/live_trading.strong_trend_stair.env
 ```
 
@@ -26,16 +27,16 @@ Then run:
 ```bash
 ./scripts/run_live_trading.sh
 # or
-python -m cmd.live_trading.main --strategy-name heiken_ashi
-python -m cmd.live_trading.main --strategy-name pinbar_magic_v2
-python -m cmd.live_trading.main --strategy-name strong_trend_stair
+python -m cmd.live_trading.heiken_ashi_main
+python -m cmd.live_trading.pinbar_magic_v3_main
+python -m cmd.live_trading.strong_trend_stair_main
 # explicit file override:
-python -m cmd.live_trading.main --strategy-name pinbar_magic_v2 --config-file ./configs/live_trading.pinbar_magic_v2.env
+python -m cmd.live_trading.pinbar_magic_v3_main --config-file ./configs/live_trading.pinbar_magic_v3.env
 ```
 
 ## Config Resolution Order (Live Trading)
 
-In `cmd.live_trading.main`, values are resolved in this order:
+In each strategy-specific live trading main module, values are resolved in this order:
 
 1. CLI arguments
 2. OS environment variables
@@ -43,18 +44,30 @@ In `cmd.live_trading.main`, values are resolved in this order:
 
 ## Important Variables
 
+## Backtest Config
+
+Example:
+
+```bash
+cp configs/backtest.ema_avwap_pullback.env.example configs/backtest.ema_avwap_pullback.env
+./scripts/run_ema_avwap_pullback_backtest.sh
+```
+
 ### Strategy Selection
 
-- `STRATEGY_NAME=heiken_ashi` or `pinbar_magic_v2` or `strong_trend_stair`
+- `STRATEGY_NAME=heiken_ashi` or `pinbar_magic_v3` or `strong_trend_stair`
 - `TIMEFRAME=...`
 
-### Pin Bar Magic v2 Variables
+`STRATEGY_NAME` still matters when using `./scripts/run_live_trading.sh`, because the script uses it to choose the correct `cmd.live_trading.*_main` module.
+
+### Pin Bar Magic v3 Variables
 
 - `PINBAR_SYMBOLS=ETHUSDT` (single-symbol live flow; ETH default)
 - `EQUITY_RISK_PCT`
 - `ATR_MULTIPLE`
-- `TRAIL_POINTS`
-- `TRAIL_OFFSET`
+- `TRAIL_POINTS` (ticks)
+- `TRAIL_OFFSET` (ticks)
+- `SYMBOL_MINTICK`
 - `SLOW_SMA_PERIOD`
 - `MEDIUM_EMA_PERIOD`
 - `FAST_EMA_PERIOD`
@@ -67,9 +80,11 @@ In `cmd.live_trading.main`, values are resolved in this order:
 - `ENABLE_EMA_CROSS_CLOSE=true|false`
 - `RISK_EQUITY_INCLUDE_UNREALIZED=true|false`
 - `RISK_EQUITY_MARK_SOURCE=close|open|hl2|ohlc4`
+- `POLL_INTERVAL_SECONDS`
+- `TRAILING_CHECK_INTERVAL_SECONDS`
 
 Note:
-- PinBar Magic v2 no longer relies on symbol scanning in the live coordinator.
+- PinBar Magic v3 does not rely on symbol scanning in the live coordinator.
 - `TOP_M_SYMBOLS`, `TOP_N_SIGNALS`, and `PRICE_CHANGE_THRESHOLD` are scanner-oriented knobs used by Heiken Ashi flow, not the ETH-only PinBar coordinator path.
 
 ### Exchange / Risk / Scheduling
@@ -79,13 +94,18 @@ Note:
 - `POSITION_SIZE_USDT`, `MAX_CONCURRENT_POSITIONS`, `MAX_POSITION_SIZE_PCT`
 - `MARGIN_MODE`, `DISABLE_SYMBOL_HOURS`
 - `CANDLE_READY_DELAY_SECONDS`, `EXECUTION_INTERVAL_MINUTES`
+- `STATE_FILE`, `POSITIONS_DB`, `KLINES_DB`, `LOG_FILE`
+- `KLINES_DB` is treated as an optional `.env` file for candle PostgreSQL settings, not as a SQLite candle database path.
 
 ### Strong Trend Stair Variables
 
 - `SYMBOL` (single symbol)
+- `LEVERAGE`, `MARGIN_MODE`, `POSITION_SIZE_USDT`
 - `TICK_INTERVAL_SECONDS`
-- `HARD_LOSS_USD`
-- `TRAIL_START_USD`
+- `HARD_STOP_LOSS_PCT`
+- `TRAIL_START_PCT`
+- `TRAIL_OFFSET_PCT`
+- `REVERSE_ON_OPPOSITE_SIGNAL=true|false`
 - `EMA_FAST_LEN`, `EMA_MID_LEN`, `EMA_SLOW_LEN`
 - `SLOPE_LOOKBACK`
 - `ST_ATR_LEN`, `ST_FACTOR`
@@ -137,5 +157,5 @@ python3 scripts/check_missing_candles.py \
 
 Never commit real credentials in:
 - `configs/live_trading.heiken_ashi.env`
-- `configs/live_trading.pinbar_magic_v2.env`
+- `configs/live_trading.pinbar_magic_v3.env`
 - `configs/live_trading.strong_trend_stair.env`
