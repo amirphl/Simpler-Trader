@@ -9,7 +9,7 @@ from typing import List, Optional
 
 from ._shared import load_env_config, resolve_config_file
 from .heiken_ashi_main import main as heiken_ashi_main
-from .pinbar_magic_v2_main import main as pinbar_magic_v2_main
+from .pinbar_magic_v3_main import main as pinbar_magic_v3_main
 from .strong_trend_stair_main import main as strong_trend_stair_main
 
 
@@ -17,7 +17,11 @@ def _resolve_strategy(argv: Optional[List[str]] = None) -> str:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument(
         "--strategy-name",
-        choices=["heiken_ashi", "pinbar_magic_v2", "strong_trend_stair"],
+        choices=[
+            "heiken_ashi",
+            "pinbar_magic_v3",
+            "strong_trend_stair",
+        ],
         default=None,
     )
     parser.add_argument("--config-file", type=Path, default=None)
@@ -28,22 +32,30 @@ def _resolve_strategy(argv: Optional[List[str]] = None) -> str:
 
     resolved_config_file = resolve_config_file(pre_args)
     env_config = load_env_config(resolved_config_file)
-    strategy = str(env_config.get("strategy_name") or "pinbar_magic_v2").strip().lower()
+    strategy = str(env_config.get("strategy_name") or "pinbar_magic_v3").strip().lower()
     if strategy == "heiken_ashi":
         return "heiken_ashi"
     if strategy == "strong_trend_stair":
         return "strong_trend_stair"
-    return "pinbar_magic_v2"
+    if strategy == "pinbar_magic_v3":
+        return "pinbar_magic_v3"
+    raise ValueError(f"Unsupported strategy name in config: {strategy!r}")
 
 
 def main(argv: Optional[List[str]] = None) -> int:
     effective_argv = list(sys.argv[1:] if argv is None else argv)
-    strategy = _resolve_strategy(effective_argv)
+    try:
+        strategy = _resolve_strategy(effective_argv)
+    except ValueError as exc:
+        print(exc, file=sys.stderr)
+        return 2
     if strategy == "heiken_ashi":
         return heiken_ashi_main(effective_argv)
     if strategy == "strong_trend_stair":
         return strong_trend_stair_main(effective_argv)
-    return pinbar_magic_v2_main(effective_argv)
+    if strategy == "pinbar_magic_v3":
+        return pinbar_magic_v3_main(effective_argv)
+    return pinbar_magic_v3_main(effective_argv)
 
 
 if __name__ == "__main__":
