@@ -8,9 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, Sequence
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+if __package__:
+    from ._bootstrap import ensure_project_root_on_path
+else:  # pragma: no cover - direct script execution
+    from _bootstrap import ensure_project_root_on_path
+
+ensure_project_root_on_path()
 
 from candle_downloader.binance import BinanceClient, BinanceClientConfig, MAX_BATCH
 from candle_downloader.binance import interval_to_milliseconds
@@ -55,6 +58,8 @@ def expected_times(start_ms: int, end_ms: int, interval_ms: int) -> Iterable[int
 def fetch_open_times_sqlite(
     path: str, symbol: str, timeframe: str, start_ms: int, end_ms: int
 ) -> set[int]:
+    if not Path(path).exists():
+        raise FileNotFoundError(f"SQLite database not found: {path}")
     conn = sqlite3.connect(path)
     try:
         cur = conn.execute(
@@ -67,6 +72,29 @@ def fetch_open_times_sqlite(
             (symbol, timeframe, start_ms, end_ms),
         )
         return {int(row[0]) for row in cur.fetchall()}
+    finally:
+        conn.close()
+
+
+def fetch_duplicate_open_times_sqlite(
+    path: str, symbol: str, timeframe: str, start_ms: int, end_ms: int
+) -> Dict[int, int]:
+    if not Path(path).exists():
+        raise FileNotFoundError(f"SQLite database not found: {path}")
+    conn = sqlite3.connect(path)
+    try:
+        cur = conn.execute(
+            """
+            SELECT open_time, COUNT(*) AS duplicate_count
+            FROM candles
+            WHERE symbol = ? AND interval = ? AND open_time >= ? AND open_time < ?
+            GROUP BY open_time
+            HAVING COUNT(*) > 1
+            ORDER BY open_time ASC
+            """,
+            (symbol, timeframe, start_ms, end_ms),
+        )
+        return {int(row[0]): int(row[1]) for row in cur.fetchall()}
     finally:
         conn.close()
 
@@ -92,9 +120,34 @@ def fetch_open_times_postgres(
             return {int(row[0]) for row in cur.fetchall()}
 
 
+def fetch_duplicate_open_times_postgres(
+    dsn: str, symbol: str, timeframe: str, start_ms: int, end_ms: int
+) -> Dict[int, int]:
+    if psycopg is None:
+        raise RuntimeError(
+            "psycopg is not installed. Install requirements first: pip install -r requirements.txt"
+        )
+    with psycopg.connect(dsn) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT open_time, COUNT(*) AS duplicate_count
+                FROM candles
+                WHERE symbol = %s AND interval = %s AND open_time >= %s AND open_time < %s
+                GROUP BY open_time
+                HAVING COUNT(*) > 1
+                ORDER BY open_time ASC
+                """,
+                (symbol, timeframe, start_ms, end_ms),
+            )
+            return {int(row[0]): int(row[1]) for row in cur.fetchall()}
+
+
 def fetch_candles_sqlite(
     path: str, symbol: str, timeframe: str, start_ms: int, end_ms: int
 ) -> Dict[int, Candle]:
+    if not Path(path).exists():
+        raise FileNotFoundError(f"SQLite database not found: {path}")
     conn = sqlite3.connect(path)
     try:
         cur = conn.execute(
@@ -236,6 +289,17 @@ def print_missing(missing: Sequence[int], preview: int) -> None:
         print(f"... and {len(missing) - preview} more")
 
 
+def print_duplicates(duplicates: Dict[int, int], preview: int) -> None:
+    if not duplicates:
+        print("No duplicate candle open_time rows found.")
+        return
+    print(f"Duplicate candle timestamps: {len(duplicates)}")
+    for ts, count in list(duplicates.items())[:preview]:
+        print(f"- {ms_to_iso(ts)} count={count}")
+    if len(duplicates) > preview:
+        print(f"... and {len(duplicates) - preview} more")
+
+
 def candles_equal(a: Candle, b: Candle, epsilon: float) -> bool:
     return (
         a.symbol == b.symbol
@@ -314,17 +378,27 @@ def main(argv: list[str] | None = None) -> int:
         print("Error: end_date must be after start_date (after alignment).", file=sys.stderr)
         return 2
 
-    if args.db_kind == "sqlite":
-        actual = fetch_open_times_sqlite(
-            args.sqlite_path, symbol, timeframe, start_ms, end_ms
-        )
-        db_candles = fetch_candles_sqlite(
-            args.sqlite_path, symbol, timeframe, start_ms, end_ms
-        )
-    else:
-        dsn = build_postgres_dsn(args)
-        actual = fetch_open_times_postgres(dsn, symbol, timeframe, start_ms, end_ms)
-        db_candles = fetch_candles_postgres(dsn, symbol, timeframe, start_ms, end_ms)
+    try:
+        if args.db_kind == "sqlite":
+            actual = fetch_open_times_sqlite(
+                args.sqlite_path, symbol, timeframe, start_ms, end_ms
+            )
+            duplicates = fetch_duplicate_open_times_sqlite(
+                args.sqlite_path, symbol, timeframe, start_ms, end_ms
+            )
+            db_candles = fetch_candles_sqlite(
+                args.sqlite_path, symbol, timeframe, start_ms, end_ms
+            )
+        else:
+            dsn = build_postgres_dsn(args)
+            actual = fetch_open_times_postgres(dsn, symbol, timeframe, start_ms, end_ms)
+            duplicates = fetch_duplicate_open_times_postgres(
+                dsn, symbol, timeframe, start_ms, end_ms
+            )
+            db_candles = fetch_candles_postgres(dsn, symbol, timeframe, start_ms, end_ms)
+    except (FileNotFoundError, sqlite3.Error, RuntimeError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 2
 
     expected = set(expected_times(start_ms, end_ms, interval_ms))
     missing = sorted(expected - actual)
@@ -336,8 +410,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"Expected candles: {len(expected)}")
     print(f"Existing candles: {len(actual)}")
     print_missing(missing, preview=max(args.preview, 0))
+    print_duplicates(duplicates, preview=max(args.preview, 0))
 
     mismatches = 0
+    binance_timestamp_differences = 0
     if args.redownload_from_binance:
         proxies = build_proxies(args)
         binance_candles = fetch_binance_candles(
@@ -352,12 +428,14 @@ def main(argv: list[str] | None = None) -> int:
         missing_in_db_vs_binance = sorted(set(binance_candles) - set(db_candles))
         missing_in_binance_vs_db = sorted(set(db_candles) - set(binance_candles))
         if missing_in_db_vs_binance:
+            binance_timestamp_differences += len(missing_in_db_vs_binance)
             print(
                 f"Missing in DB compared to Binance: {len(missing_in_db_vs_binance)}"
             )
             for ts in missing_in_db_vs_binance[: max(args.preview, 0)]:
                 print(f"- {ms_to_iso(ts)}")
         if missing_in_binance_vs_db:
+            binance_timestamp_differences += len(missing_in_binance_vs_db)
             print(
                 f"Missing in Binance compared to DB: {len(missing_in_binance_vs_db)}"
             )
@@ -385,7 +463,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print("One-by-one check: all shared candles match.")
 
-    return 1 if (missing or mismatches) else 0
+    return 1 if (missing or duplicates or mismatches or binance_timestamp_differences) else 0
 
 
 if __name__ == "__main__":
