@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, Literal
+from typing import Any, Dict, List, Literal
 
 from backtest.engulfing_strategy import StopLossMode
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator  # type: ignore[import-not-found]
-from typing import List
 
 
 def _normalize_optional_text(value: str | None) -> str | None:
@@ -42,6 +41,20 @@ class PinbarStrategyParams(BaseModel):
     http_proxy: str | None = None
     https_proxy: str | None = None
     risk_free_rate: float = 0.0
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def _normalize_symbol(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return _require_non_empty_text(value, "symbol").upper()
+        return value
+
+    @field_validator("timeframe", mode="before")
+    @classmethod
+    def _normalize_timeframe(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return _require_non_empty_text(value, "timeframe")
+        return value
 
 
 class StochasticFsmParams(BaseModel):
@@ -128,6 +141,12 @@ class StochasticFsmParams(BaseModel):
             raise ValueError(f"{info.field_name} must not be empty")
         return value
 
+    @model_validator(mode="after")
+    def _validate_stochastic_thresholds(self) -> "StochasticFsmParams":
+        if self.overbought <= self.oversold:
+            raise ValueError("overbought must be greater than oversold")
+        return self
+
 
 class PinbarMagicStrategyParamsV3(BaseModel):
     """Parameters for Pin Bar Magic v3 strategy."""
@@ -141,7 +160,7 @@ class PinbarMagicStrategyParamsV3(BaseModel):
     equity_risk_pct: float = Field(default=3.0, gt=0)
     atr_multiple: float = Field(default=0.5, gt=0)
     trail_points: float = Field(default=100.0, gt=0)
-    trail_offset: float = Field(default=50.0, ge=0)
+    trail_offset: float = Field(default=50.0, gt=0)
     symbol_mintick: float = Field(default=0.01, gt=0)
 
     slow_sma_period: int = Field(default=50, ge=1)
@@ -177,6 +196,82 @@ class PinbarMagicStrategyParamsV3(BaseModel):
             return value.strip().lower()
         return value
 
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def _normalize_pinbar_magic_symbol(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return _require_non_empty_text(value, "symbol").upper()
+        return value
+
+    @field_validator("timeframe", "trailing_tick_timeframe", mode="before")
+    @classmethod
+    def _normalize_pinbar_magic_timeframes(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return _require_non_empty_text(value, "timeframe")
+        return value
+
+
+class EmaAvwapPullbackParams(BaseModel):
+    """Parameters for the EMA + AVWAP pullback strategy."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    symbol: str = Field(default="ETHUSDT")
+    timeframe: str = Field(default="1h")
+    leverage: float = Field(default=1.0, gt=0.0)
+    equity_risk_pct: float = Field(default=1.0, gt=0.0)
+    ema_length: int = Field(default=55, ge=1)
+    consecutive_count: int = Field(default=4, ge=1)
+    ema_validation_mode: Literal["body", "wick"] = "body"
+    setup_waiting_replacement_mode: Literal["keep_waiting", "replace_waiting"] = (
+        "keep_waiting"
+    )
+    position_sizing_mode: Literal["risk_distance", "risk_amount_per_price"] = (
+        "risk_distance"
+    )
+    avwap_multiplier_1: float = Field(default=1.0, gt=0.0)
+    avwap_multiplier_2: float = Field(default=2.0, gt=0.0)
+    avwap_multiplier_3: float = Field(default=3.0, gt=0.0)
+    rigid_stop_loss_pct: float = Field(default=0.0, ge=0.0)
+    trailing_activation_threshold_pct: float = Field(default=0.0, ge=0.0)
+    trailing_gap_pct: float = Field(default=1.0, ge=0.0)
+    maker_fee_pct: float = Field(default=0.0002, ge=0.0)
+    taker_fee_pct: float = Field(default=0.0006, ge=0.0)
+    entry_slippage_pct: float = Field(default=0.0, ge=0.0)
+    exit_slippage_pct: float = Field(default=0.0, ge=0.0)
+    use_gap_cross_detection: bool = True
+    max_decision_log_entries: int = Field(default=20000, ge=1)
+
+    http_proxy: str | None = None
+    https_proxy: str | None = None
+    risk_free_rate: float = 0.0
+
+    @field_validator(
+        "ema_validation_mode",
+        "setup_waiting_replacement_mode",
+        "position_sizing_mode",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_ema_strategy_modes(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def _normalize_ema_symbol(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return _require_non_empty_text(value, "symbol").upper()
+        return value
+
+    @field_validator("timeframe", mode="before")
+    @classmethod
+    def _normalize_ema_timeframe(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return _require_non_empty_text(value, "timeframe")
+        return value
+
 
 class StrongTrendStairParams(BaseModel):
     """Parameters for strong trend stair strategy."""
@@ -205,6 +300,20 @@ class StrongTrendStairParams(BaseModel):
     http_proxy: str | None = None
     https_proxy: str | None = None
     risk_free_rate: float = 0.0
+
+    @field_validator("symbol", mode="before")
+    @classmethod
+    def _normalize_strong_trend_symbol(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return _require_non_empty_text(value, "symbol").upper()
+        return value
+
+    @field_validator("timeframe", mode="before")
+    @classmethod
+    def _normalize_strong_trend_timeframe(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return _require_non_empty_text(value, "timeframe")
+        return value
 
 
 class EngulfingStrategyParams(BaseModel):
@@ -246,21 +355,98 @@ class EngulfingStrategyParams(BaseModel):
     risk_free_rate: float = 0.0
     exchange_fee_pct: float = Field(default=0.0004, ge=0.0)
 
-    @field_validator("stochastic_first_line", "stochastic_second_line")
+    @field_validator("symbol", mode="before")
     @classmethod
-    def _validate_line(cls, value: str) -> str:
-        normalized = value.lower()
+    def _normalize_engulfing_symbol(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return _require_non_empty_text(value, "symbol").upper()
+        return value
+
+    @field_validator("timeframe", mode="before")
+    @classmethod
+    def _normalize_engulfing_timeframe(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return _require_non_empty_text(value, "timeframe")
+        return value
+
+    @field_validator("stochastic_first_line", "stochastic_second_line", mode="before")
+    @classmethod
+    def _validate_line(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip().lower()
         if normalized not in {"k", "d"}:
             raise ValueError("stochastic line must be 'k' or 'd'")
         return normalized
 
-    @field_validator("stochastic_comparison")
+    @field_validator("stochastic_comparison", mode="before")
     @classmethod
-    def _validate_comparison(cls, value: str) -> str:
-        normalized = value.lower()
+    def _validate_comparison(cls, value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        normalized = value.strip().lower()
         if normalized not in {"gt", "lt"}:
             raise ValueError("stochastic comparison must be 'gt' or 'lt'")
         return normalized
+
+
+class PivotV2Request(BaseModel):
+    """Parameters for pivot detection v2 experiment."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    symbol: str = Field(default="ETHUSDT")
+    timeframe: str = Field(default="1h")
+    start: datetime
+    end: datetime
+    scan_length: int = Field(default=500, ge=1)
+    min_swing_pct: float = Field(default=0.0, ge=0.0)
+    source: Literal["binance", "csv"] = Field(default="binance")
+    csv_path: str | None = None
+    http_proxy: str | None = None
+    https_proxy: str | None = None
+
+    @field_validator("symbol", "timeframe", mode="before")
+    @classmethod
+    def _normalize_v2_text_fields(cls, value: Any, info: Any) -> Any:
+        return _require_non_empty_text(str(value), info.field_name) if value is not None else value
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _normalize_v2_source(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+    @field_validator("csv_path", "http_proxy", "https_proxy", mode="before")
+    @classmethod
+    def _normalize_v2_optional_text(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return _normalize_optional_text(value)
+        return value
+
+    @model_validator(mode="after")
+    def _validate_v2_range(self) -> "PivotV2Request":
+        if self.start >= self.end:
+            raise ValueError("start must be before end")
+        if self.source == "csv" and not self.csv_path:
+            raise ValueError("csv_path is required when source='csv'")
+        return self
+
+
+class PivotV2EntryPayload(BaseModel):
+    candle_index: int
+    pivot_index: int | None
+    pivot_type: Literal["bearish", "bullish"] | None
+    hunt_index: int | None
+    candle_time: datetime
+    pivot_time: datetime | None
+    hunt_time: datetime | None
+
+
+class PivotV2Response(BaseModel):
+    candles: List[CandleForPivot]
+    pivot_entries: List[PivotV2EntryPayload]
 
 
 class PivotRequest(BaseModel):
@@ -361,7 +547,6 @@ class BOSCHoCHRequest(BaseModel):
     direction_window: int = Field(default=3, ge=1)
     scan_length: int = Field(default=500, ge=1)
     hunt_mode: Literal["wick", "close"] = Field(default="wick")
-    include_bos_in_choch_range: bool = False
     include_hunt_candle_in_choch_range: bool = True
     min_swing_pct: float = Field(default=0.0, ge=0.0)
     include_pullback_in_bos_level: bool = True
@@ -371,6 +556,7 @@ class BOSCHoCHRequest(BaseModel):
     use_structural_left_bound: bool = False
     include_reference_candle: bool = True
     choch_display_mode: Literal["all", "first", "last"] = Field(default="all")
+    pivot_version: Literal["v1", "v2"] = Field(default="v1")
     source: Literal["binance", "csv"] = Field(default="binance")
     csv_path: str | None = None
     http_proxy: str | None = None
@@ -384,7 +570,7 @@ class BOSCHoCHRequest(BaseModel):
         text = _require_non_empty_text(str(value), info.field_name)
         return text.upper() if info.field_name == "symbol" else text
 
-    @field_validator("hunt_mode", "source", "choch_display_mode", mode="before")
+    @field_validator("hunt_mode", "source", "choch_display_mode", "pivot_version", mode="before")
     @classmethod
     def _normalize_bos_choch_enums(cls, value: Any) -> Any:
         if isinstance(value, str):
@@ -408,7 +594,7 @@ class BOSCHoCHRequest(BaseModel):
 
 
 class BOSCHoCHMarker(BaseModel):
-    type: Literal["BOS", "CHoCH"]
+    type: Literal["BOS", "CHoCH", "ICHOCH"]
     index: int
     direction: Literal["UPWARD", "DOWNWARD"]
     candle_index: int
@@ -456,6 +642,7 @@ class BOSCHoCHResponse(BaseModel):
     markers: List[BOSCHoCHMarker]
     direction_state: BOSCHoCHDirectionState
     pivots: List[PivotPoint] = Field(default_factory=list)
+    pivot_v2_entries: List[PivotV2EntryPayload] = Field(default_factory=list)
     direction_reversals: List[DirectionReversalEvent] = Field(default_factory=list)
     choch_updates: List[CHoCHUpdatePayload] = Field(default_factory=list)
     detection_events: List[DetectionEventPayload] = Field(default_factory=list)
@@ -473,15 +660,11 @@ class LiquidityZoneRequest(BaseModel):
     scan_length: int = Field(default=500, ge=1)
     direction_window: int = Field(default=3, ge=1)
     hunt_mode: Literal["wick", "close"] = Field(default="wick")
-    include_bos_in_choch_range: bool = False
     include_hunt_candle_in_choch_range: bool = True
     min_swing_pct: float = Field(default=0.0, ge=0.0)
     include_pullback_in_bos_level: bool = True
-    # Pivot-specific params forwarded to detect_pivots
-    restart_on_invalidation: bool = False
+    # Pivot-specific params forwarded to detect_pivots_v2
     pivot_min_swing_pct: float = Field(default=0.0, ge=0.0)
-    use_structural_left_bound: bool = False
-    include_reference_candle: bool = True
     up_pivot_filter: Literal["BULLISH", "BEARISH", "ALL"] = Field(default="BULLISH")
     down_pivot_filter: Literal["BULLISH", "BEARISH", "ALL"] = Field(default="BEARISH")
     include_hunted_pivots: bool = False
@@ -498,6 +681,8 @@ class LiquidityZoneRequest(BaseModel):
     slope_epsilon: float = Field(default=0.0, ge=0.0)
     epsilon: float = Field(default=1e-9, gt=0.0)
     zone_hunt_mode: Literal["wick", "close"] = Field(default="wick")
+    intersection_method: Literal["body", "wick"] = Field(default="body")
+    slope_attribute: Literal["close", "open", "high", "low"] = Field(default="close")
     source: Literal["binance", "csv"] = Field(default="binance")
     csv_path: str | None = None
     http_proxy: str | None = None
@@ -511,6 +696,8 @@ class LiquidityZoneRequest(BaseModel):
         text = _require_non_empty_text(str(value), info.field_name)
         return text.upper() if info.field_name == "symbol" else text
 
+    choch_display_mode: Literal["all", "first", "last"] = Field(default="all")
+
     @field_validator(
         "hunt_mode",
         "source",
@@ -518,6 +705,9 @@ class LiquidityZoneRequest(BaseModel):
         "pair_scan_order",
         "representative_mode",
         "zone_hunt_mode",
+        "intersection_method",
+        "slope_attribute",
+        "choch_display_mode",
         mode="before",
     )
     @classmethod
@@ -597,6 +787,18 @@ class LiquidityZoneResponse(BaseModel):
     pivots: List[LiquidityZonePivot]
     segments: List[LiquidityDirectionSegment]
     zones: List[LiquidityZonePayload]
+    markers: List[BOSCHoCHMarker] = Field(default_factory=list)
+    direction_reversals: List[DirectionReversalEvent] = Field(default_factory=list)
+
+
+BACKTEST_PARAM_MODELS = {
+    "engulfing": EngulfingStrategyParams,
+    "pinbar": PinbarStrategyParams,
+    "pinbar_magic_v3": PinbarMagicStrategyParamsV3,
+    "ema_avwap_pullback": EmaAvwapPullbackParams,
+    "stochastic_fsm": StochasticFsmParams,
+    "strong_trend_stair": StrongTrendStairParams,
+}
 
 
 class BacktestSubmission(BaseModel):
@@ -608,6 +810,7 @@ class BacktestSubmission(BaseModel):
         "engulfing",
         "pinbar",
         "pinbar_magic_v3",
+        "ema_avwap_pullback",
         "stochastic_fsm",
         "strong_trend_stair",
     ] = Field(default="engulfing")
@@ -620,6 +823,7 @@ class BacktestSubmission(BaseModel):
         EngulfingStrategyParams
         | PinbarStrategyParams
         | PinbarMagicStrategyParamsV3
+        | EmaAvwapPullbackParams
         | StochasticFsmParams
         | StrongTrendStairParams
     )
@@ -629,33 +833,22 @@ class BacktestSubmission(BaseModel):
     def _coerce_params(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
+        data = dict(data)
         params = data.get("params")
         strategy = data.get("strategy")
+        if isinstance(strategy, str):
+            strategy = strategy.strip().lower()
+            data["strategy"] = strategy
         if params is None or strategy is None:
             return data
-        if isinstance(
-            params,
-            (
-                EngulfingStrategyParams,
-                PinbarStrategyParams,
-                PinbarMagicStrategyParamsV3,
-                StochasticFsmParams,
-                StrongTrendStairParams,
-            ),
-        ):
+        model = BACKTEST_PARAM_MODELS.get(strategy)
+        if model is None:
+            return data
+        if isinstance(params, model):
+            return data
+        if isinstance(params, BaseModel):
             return data
         if not isinstance(params, dict):
-            return data
-
-        strategy_map = {
-            "engulfing": EngulfingStrategyParams,
-            "pinbar": PinbarStrategyParams,
-            "pinbar_magic_v3": PinbarMagicStrategyParamsV3,
-            "stochastic_fsm": StochasticFsmParams,
-            "strong_trend_stair": StrongTrendStairParams,
-        }
-        model = strategy_map.get(strategy)
-        if model is None:
             return data
         data["params"] = model.model_validate(params)
         return data
@@ -664,6 +857,9 @@ class BacktestSubmission(BaseModel):
     def _validate_time_range(self) -> "BacktestSubmission":
         if self.start >= self.end:
             raise ValueError("start must be before end")
+        expected_model = BACKTEST_PARAM_MODELS[self.strategy]
+        if not isinstance(self.params, expected_model):
+            raise ValueError(f"params must match strategy '{self.strategy}'")
         return self
 
 
