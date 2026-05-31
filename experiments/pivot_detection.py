@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable, List, Sequence
+from typing import Callable, List, Literal, Sequence
 
 from candle_downloader.binance import (
     BinanceClient,
@@ -57,6 +57,29 @@ class PivotConfig:
     # When True the structural extreme at j is not missed if j holds the highest high
     # (bearish) or lowest low (bullish).  Default True (corrects the off-by-one).
     include_reference_candle: bool = True
+
+
+@dataclass
+class PivotDetectionConfig:
+    """Unified pivot-detection settings used by callers that run pivot detection
+    internally (e.g. DetectionConfig, LiquidityZoneConfig)."""
+
+    version: Literal["v1", "v2"] = "v1"
+    # scan_length=0 means pivot detection is disabled at the caller level.
+    scan_length: int = 500
+    min_swing_pct: float = 0.0
+    # v1-only options (ignored when version=="v2")
+    restart_on_invalidation: bool = False
+    use_structural_left_bound: bool = False
+    include_reference_candle: bool = True
+
+    def as_v1_config(self) -> PivotConfig:
+        return PivotConfig(
+            min_swing_pct=self.min_swing_pct,
+            restart_on_invalidation=self.restart_on_invalidation,
+            use_structural_left_bound=self.use_structural_left_bound,
+            include_reference_candle=self.include_reference_candle,
+        )
 
 
 def _prev_match(
@@ -144,7 +167,7 @@ def detect_pivots(
                 break
 
             target_low = min(candles[t].low for t in range(j, k + 1))
-            pb = _prev_match(candles, j, Candle.is_bearish, scan_start)
+            pb = _prev_match(candles, j, Candle.is_bullish, scan_start)
             if cfg.use_structural_left_bound:
                 prev_same = next((pv for pv in reversed(pivots) if pv.type == "bearish"), None)
                 left_bound = j if prev_same is None else prev_same.index
@@ -170,8 +193,8 @@ def detect_pivots(
                 else:
                     break
             else:
-                pivot_start = j if cfg.include_reference_candle else j + 1
-                pivot_index = _argmax_high(candles, pivot_start, p - 1)
+                # pivot_start = j if cfg.include_reference_candle else j + 1
+                pivot_index = _argmax_high(candles, left_bound, k + 1)
                 candidate = Pivot(
                     index=pivot_index,
                     type="bearish",
@@ -195,7 +218,7 @@ def detect_pivots(
                 break
 
             candidate_high = max(candles[t].high for t in range(j, k + 1))
-            pb = _prev_match(candles, j, Candle.is_bullish, scan_start)
+            pb = _prev_match(candles, j, Candle.is_bearish, scan_start)
             if cfg.use_structural_left_bound:
                 prev_same = next((pv for pv in reversed(pivots) if pv.type == "bullish"), None)
                 left_bound = j if prev_same is None else prev_same.index
@@ -221,8 +244,9 @@ def detect_pivots(
                 else:
                     break
             else:
-                pivot_start = j if cfg.include_reference_candle else j + 1
-                pivot_index = _argmin_low(candles, pivot_start, p - 1)
+                # pivot_start = j if cfg.include_reference_candle else j + 1
+                pivot_start = left_bound
+                pivot_index = _argmin_low(candles, pivot_start, k + 1)
                 candidate = Pivot(
                     index=pivot_index,
                     type="bullish",
