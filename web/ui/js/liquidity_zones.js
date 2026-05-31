@@ -1,19 +1,29 @@
 (() => {
   const form = document.getElementById("liquidity-zone-form");
   const statusEl = document.getElementById("status");
-  const zoneList = document.getElementById("zone-list");
-  const segmentList = document.getElementById("segment-list");
+  const zoneTbody = document.getElementById("zone-tbody");
+  const segmentTbody = document.getElementById("segment-tbody");
   const chartContainer = document.getElementById("chart");
   const segmentCountEl = document.getElementById("segment-count");
   const zoneCountEl = document.getElementById("zone-count");
   const pivotCountEl = document.getElementById("pivot-count");
-  const showZoneLabelsInput = document.getElementById("show-zone-labels");
-  const showStructureLabelsInput = document.getElementById(
-    "show-structure-labels",
+  const zoneCountBadgeEl = document.getElementById("zone-count-badge");
+  const segmentCountBadgeEl = document.getElementById("segment-count-badge");
+  const showStructureLinesInput = document.getElementById(
+    "show-structure-lines",
   );
+  const showL1ZonesInput = document.getElementById("show-l1-zones");
+  const showL2ZonesInput = document.getElementById("show-l2-zones");
   const showPivotMarkersInput = document.getElementById("show-pivot-markers");
+  const pivotTypeFilterInput = document.getElementById("pivot-type-filter");
   const showRepresentativesInput = document.getElementById(
     "show-representatives",
+  );
+  const showZoneLabelsInput = document.getElementById("show-zone-labels");
+  const showSegmentBandsInput = document.getElementById("show-segment-bands");
+  const showCandleLabelsInput = document.getElementById("show-candle-labels");
+  const candleLabelThresholdInput = document.getElementById(
+    "candle-label-threshold",
   );
 
   const css = getComputedStyle(document.documentElement);
@@ -31,6 +41,8 @@
     panel: css.getPropertyValue("--panel-2").trim() || "rgba(8, 18, 25, 0.96)",
     borderSoft: "rgba(231, 246, 239, 0.08)",
     borderHard: "rgba(231, 246, 239, 0.18)",
+    reversal: css.getPropertyValue("--reversal").trim() || "#e879f9",
+    reversalBand: "rgba(232, 121, 249, 0.07)",
   };
 
   let chart;
@@ -43,12 +55,21 @@
   let lastSegments = [];
   let lastZones = [];
   let lastMarkers = [];
+  let lastReversals = [];
   let pivotByIndex = new Map();
+  let pivotByCandleIndex = new Map();
+
+  // ── Utilities ──────────────────────────────────────────────────────────────
 
   function optionalText(value) {
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
     return trimmed ? trimmed : null;
+  }
+
+  function parseDateInput(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
   }
 
   function isoInput(dt) {
@@ -59,6 +80,18 @@
   function unixTime(value) {
     if (typeof value === "number") return value;
     return Math.floor(new Date(value).getTime() / 1000);
+  }
+
+  /** Format an ISO/datetime string → "YYYY-MM-DD HH:MM" (UTC) */
+  function fmtTime(value) {
+    const d = new Date(typeof value === "number" ? value * 1000 : value);
+    if (isNaN(d)) return "—";
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}`;
+  }
+
+  function pivotTypeBadge(type) {
+    return type === "bullish" ? "▲" : "▼";
   }
 
   function timeToX(time) {
@@ -73,9 +106,11 @@
     return Math.max(min, Math.min(max, value));
   }
 
+  // ── Init ───────────────────────────────────────────────────────────────────
+
   function setDefaultDates() {
     const end = new Date();
-    const start = new Date(end.getTime() - 14 * 24 * 3600 * 1000);
+    const start = new Date(Date.UTC(2026, 0, 1, 0, 0, 0));
     document.getElementById("start").value = isoInput(start);
     document.getElementById("end").value = isoInput(end);
   }
@@ -89,6 +124,8 @@
     csvField.hidden = !usingCsv;
     csvInput.required = usingCsv;
   }
+
+  // ── Chart / overlay ────────────────────────────────────────────────────────
 
   function ensureOverlay() {
     if (overlay) return;
@@ -152,6 +189,8 @@
     });
     resizeObserver.observe(chartContainer);
   }
+
+  // ── Style helpers ──────────────────────────────────────────────────────────
 
   function zoneStyle(zone) {
     if (zone.level === 1 && zone.direction === "UPWARD") {
@@ -220,9 +259,7 @@
     return candle ? candle.close : null;
   }
 
-  function markerLabel(marker) {
-    return `${marker.type} ${marker.index} ${marker.direction === "UPWARD" ? "UP" : "DOWN"}`;
-  }
+  // ── Canvas drawing helpers ─────────────────────────────────────────────────
 
   function drawTag(
     text,
@@ -251,6 +288,7 @@
   }
 
   function drawSegmentBands(width) {
+    if (showSegmentBandsInput?.checked === false) return;
     const bandTop = 0;
     const bandHeight = 18;
     lastSegments.forEach((segment) => {
@@ -292,7 +330,11 @@
   }
 
   function drawZones() {
+    const showL1 = showL1ZonesInput?.checked !== false;
+    const showL2 = showL2ZonesInput?.checked !== false;
     lastZones.forEach((zone) => {
+      if (zone.level === 1 && !showL1) return;
+      if (zone.level === 2 && !showL2) return;
       const x0 = timeToX(zone.start_time);
       const x1 = timeToX(zone.end_time);
       const yTop = priceToY(zone.price_high);
@@ -401,7 +443,9 @@
 
   function drawPivots() {
     if (!showPivotMarkersInput?.checked) return;
+    const pivotFilter = pivotTypeFilterInput?.value || "all";
     lastPivots.forEach((pivot) => {
+      if (pivotFilter !== "all" && pivot.type !== pivotFilter) return;
       const x = timeToX(pivot.time);
       const y = priceToY(pivotPrice(pivot));
       if (x == null || y == null) return;
@@ -492,6 +536,7 @@
   }
 
   function drawStructureMarkers() {
+    if (showStructureLinesInput?.checked === false) return;
     const width = chartContainer.clientWidth;
     lastMarkers.forEach((marker) => {
       const priceY = priceToY(marker.price);
@@ -511,9 +556,6 @@
       const x1 = Math.round(rawX1 != null ? rawX1 : width);
       const iconX = marker.type === "BOS" ? x1 : x0;
       const lineColor = structureLineColor(marker);
-      const label = showStructureLabelsInput?.checked
-        ? markerLabel(marker)
-        : "";
 
       overlayCtx.save();
       overlayCtx.strokeStyle = lineColor;
@@ -543,21 +585,112 @@
         overlayCtx.lineWidth = 1.6;
         overlayCtx.stroke();
       }
+      overlayCtx.restore();
+    });
+  }
 
-      if (label) {
-        const offsetX = marker.type === "BOS" ? -12 : 12;
-        const align = marker.type === "BOS" ? "right" : "left";
-        const labelX = clamp(iconX + offsetX, 8, width - 8);
-        const labelY = marker.direction === "UPWARD" ? priceY - 22 : priceY + 6;
-        drawTag(
-          label,
-          labelX,
-          labelY,
-          lineColor,
-          "rgba(8, 18, 25, 0.96)",
-          align,
-        );
+  function drawCandleLabels() {
+    if (!showCandleLabelsInput?.checked) return;
+    if (!lastCandles.length) return;
+    const range = chart.timeScale().getVisibleLogicalRange();
+    if (!range) return;
+    const visibleCount = Math.abs(range.to - range.from);
+    const threshold = parseInt(candleLabelThresholdInput?.value || "150", 10);
+    if (visibleCount > (isNaN(threshold) ? 150 : Math.max(10, threshold)))
+      return;
+
+    const LABEL_BG = "rgba(8, 18, 25, 0.92)";
+    const LABEL_NONE = "rgba(156,163,175,0.6)";
+    const W = chartContainer.clientWidth;
+    const H = chartContainer.clientHeight;
+
+    overlayCtx.save();
+    overlayCtx.beginPath();
+    overlayCtx.rect(0, 0, W, H);
+    overlayCtx.clip();
+
+    lastCandles.forEach((c, idx) => {
+      const x = chart.timeScale().timeToCoordinate(unixTime(c.open_time));
+      if (x == null) return;
+      const cx = Math.round(x);
+
+      const pivot = pivotByCandleIndex.get(idx);
+      const hasPivot = !!pivot;
+      const topLine = String(idx);
+      const bottomLine = hasPivot ? String(pivot.index) : "N/A";
+      const color = hasPivot
+        ? pivot.type === "bearish"
+          ? "#fbbf24"
+          : COLORS.up
+        : LABEL_NONE;
+
+      const highY = candleSeries.priceToCoordinate(c.high);
+      if (highY == null) return;
+
+      overlayCtx.save();
+      overlayCtx.font = "600 9px 'IBM Plex Mono', monospace";
+      const tw1 = overlayCtx.measureText(topLine).width;
+      const tw2 = overlayCtx.measureText(bottomLine).width;
+      const maxW = Math.max(tw1, tw2);
+      const padX = 4;
+      const lineH = 11;
+      const boxW = maxW + padX * 2;
+      const boxH = lineH * 2 + 4;
+      const boxX = Math.round(cx - boxW / 2);
+      const boxY = Math.round(highY) - boxH - 6;
+
+      overlayCtx.fillStyle = LABEL_BG;
+      overlayCtx.strokeStyle = color;
+      overlayCtx.lineWidth = 0.8;
+      overlayCtx.beginPath();
+      if (overlayCtx.roundRect) {
+        overlayCtx.roundRect(boxX, boxY, boxW, boxH, 3);
+      } else {
+        overlayCtx.rect(boxX, boxY, boxW, boxH);
       }
+      overlayCtx.fill();
+      overlayCtx.stroke();
+
+      overlayCtx.fillStyle = color;
+      overlayCtx.textAlign = "center";
+      overlayCtx.textBaseline = "top";
+      overlayCtx.fillText(topLine, cx, boxY + 2);
+      overlayCtx.fillText(bottomLine, cx, boxY + lineH + 2);
+      overlayCtx.restore();
+    });
+
+    overlayCtx.restore();
+  }
+
+  function drawReversalLines() {
+    if (!lastReversals.length) return;
+    const W = chartContainer.clientWidth;
+    const H = chartContainer.clientHeight;
+
+    lastReversals.forEach((rev) => {
+      const rawX = chart.timeScale().timeToCoordinate(rev.time);
+      if (rawX == null) return;
+      const x = Math.round(clamp(rawX, 0, W));
+
+      overlayCtx.save();
+      overlayCtx.fillStyle = COLORS.reversalBand;
+      overlayCtx.fillRect(x - 3, 0, 6, H);
+      overlayCtx.strokeStyle = COLORS.reversal;
+      overlayCtx.lineWidth = 1.5;
+      overlayCtx.setLineDash([4, 6]);
+      overlayCtx.globalAlpha = 0.6;
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(x, 0);
+      overlayCtx.lineTo(x, H);
+      overlayCtx.stroke();
+      overlayCtx.setLineDash([]);
+      overlayCtx.globalAlpha = 0.9;
+      overlayCtx.fillStyle = COLORS.reversal;
+      overlayCtx.font = "700 11px 'IBM Plex Mono', monospace";
+      overlayCtx.textAlign = "center";
+      overlayCtx.textBaseline = "top";
+      // Place arrow below the 18px segment band at the top
+      overlayCtx.fillText(rev.direction === "UPWARD" ? "▲" : "▼", x, 22);
       overlayCtx.restore();
     });
   }
@@ -568,19 +701,153 @@
     const height = chartContainer.clientHeight;
     overlayCtx.clearRect(0, 0, width, height);
     drawSegmentBands(width);
+    drawReversalLines();
     drawZones();
     drawStructureMarkers();
     drawPivots();
     drawRepresentatives();
+    drawCandleLabels();
   }
 
-  function render(candles, pivots, segments, zones, markers) {
+  // ── Table rendering ────────────────────────────────────────────────────────
+
+  /**
+   * Render the zones into <tbody id="zone-tbody">.
+   * Clicking a row scrolls the chart to that zone's time window.
+   */
+  function renderZoneTable(zones) {
+    if (!zoneTbody) return;
+    zoneTbody.innerHTML = "";
+    zones.forEach((zone, idx) => {
+      const style = zoneStyle(zone);
+      const dirClass =
+        zone.level === 1
+          ? zone.direction === "UPWARD"
+            ? "td-up"
+            : "td-down"
+          : zone.direction === "UPWARD"
+            ? "td-l2up"
+            : "td-l2down";
+
+      const thickPct =
+        zone.metadata?.thickness_pct != null
+          ? zone.metadata.thickness_pct.toFixed(3) + "%"
+          : "—";
+
+      const row = document.createElement("tr");
+      row.dataset.idx = String(idx);
+      if (zone.is_hunted) row.classList.add("td-hunted");
+
+      appendCell(row, zone.id, { color: style.stroke });
+      appendCell(row, zone.direction === "UPWARD" ? "UP" : "DN", {
+        className: dirClass,
+      });
+      appendCell(row, `L${zone.level}`, { className: "td-muted" });
+      appendCell(
+        row,
+        `${pivotTypeBadge(zone.left_pivot_type)}/${pivotTypeBadge(zone.right_pivot_type)}`,
+        { className: "td-muted" },
+      );
+      appendCell(row, zone.price_low.toFixed(4));
+      appendCell(row, zone.price_high.toFixed(4));
+      appendCell(row, thickPct, { className: "td-muted" });
+      appendCell(row, zone.is_hunted ? "hunted" : "active", {
+        color: zone.is_hunted ? "var(--down)" : "var(--up)",
+      });
+
+      row.addEventListener("click", () => {
+        zoneTbody
+          .querySelectorAll("tr.selected")
+          .forEach((r) => r.classList.remove("selected"));
+        row.classList.add("selected");
+        const center = Math.floor(
+          (unixTime(zone.start_time) + unixTime(zone.end_time)) / 2,
+        );
+        const span = Math.max(
+          unixTime(zone.end_time) - unixTime(zone.start_time),
+          6 * 3600,
+        );
+        focusTimeWindow(center, Math.ceil(span * 0.8));
+      });
+
+      zoneTbody.appendChild(row);
+    });
+  }
+
+  /**
+   * Render the direction segments into <tbody id="segment-tbody">.
+   * Clicking a row scrolls the chart to that segment's time window.
+   * Must be called after lastZones is populated (uses it for L1 zone count).
+   */
+  function renderSegmentTable(segments) {
+    if (!segmentTbody) return;
+    segmentTbody.innerHTML = "";
+    segments.forEach((segment, idx) => {
+      const dirClass = segment.direction === "UPWARD" ? "td-up" : "td-down";
+
+      // Count L1 zones whose both pivots fall within this segment's index range
+      const l1ZoneCount = lastZones.filter(
+        (z) =>
+          z.level === 1 &&
+          z.left_pivot_index >= segment.start_index &&
+          z.right_pivot_index <= segment.end_index,
+      ).length;
+
+      const row = document.createElement("tr");
+      row.dataset.idx = String(idx);
+
+      appendCell(row, segment.index, { className: "td-muted" });
+      appendCell(row, segment.direction === "UPWARD" ? "UP" : "DN", {
+        className: dirClass,
+      });
+      appendCell(row, fmtTime(segment.start_time), { className: "td-muted" });
+      appendCell(row, fmtTime(segment.end_time), { className: "td-muted" });
+      appendCell(row, segment.pivot_count);
+      appendCell(row, l1ZoneCount);
+      appendCell(row, segment.representative_pivot_index ?? "-", {
+        className: "td-muted",
+      });
+
+      row.addEventListener("click", () => {
+        segmentTbody
+          .querySelectorAll("tr.selected")
+          .forEach((r) => r.classList.remove("selected"));
+        row.classList.add("selected");
+        const center = Math.floor(
+          (unixTime(segment.start_time) + unixTime(segment.end_time)) / 2,
+        );
+        const span = Math.max(
+          unixTime(segment.end_time) - unixTime(segment.start_time),
+          8 * 3600,
+        );
+        focusTimeWindow(center, Math.ceil(span * 0.65));
+      });
+
+      segmentTbody.appendChild(row);
+    });
+  }
+
+  function appendCell(row, value, options = {}) {
+    const cell = document.createElement("td");
+    if (options.className) cell.className = options.className;
+    if (options.color) cell.style.color = options.color;
+    cell.textContent = String(value);
+    row.appendChild(cell);
+  }
+
+  // ── Chart render ───────────────────────────────────────────────────────────
+
+  function render(candles, pivots, segments, zones, markers, reversals = []) {
     ensureChart();
 
     lastCandles = candles;
     lastPivots = pivots;
     lastSegments = segments;
-    lastZones = zones;
+    lastZones = zones; // must be set before renderSegmentTable
+    lastReversals = reversals.map((rev) => ({
+      ...rev,
+      time: unixTime(rev.time),
+    }));
     lastMarkers = markers.map((marker) => ({
       ...marker,
       time: unixTime(marker.time),
@@ -593,6 +860,15 @@
     }));
     pivotByIndex = new Map(pivots.map((pivot) => [pivot.index, pivot]));
 
+    const candleIndexByTime = new Map(
+      candles.map((c, idx) => [unixTime(c.open_time), idx]),
+    );
+    pivotByCandleIndex = new Map();
+    pivots.forEach((pivot) => {
+      const ci = candleIndexByTime.get(unixTime(pivot.time));
+      if (ci != null) pivotByCandleIndex.set(ci, pivot);
+    });
+
     candleSeries.setData(
       candles.map((c) => ({
         time: unixTime(c.open_time),
@@ -603,29 +879,18 @@
       })),
     );
 
-    zoneList.innerHTML = "";
-    zones.forEach((zone, idx) => {
-      const pair = `${zone.left_pivot_type[0].toUpperCase()}${zone.right_pivot_type[0].toUpperCase()}`;
-      const option = document.createElement("option");
-      option.value = idx;
-      option.textContent = `${zone.id} · L${zone.level} · ${zone.direction} · ${pair} · ${zone.is_hunted ? "hunted" : "active"} · ${zone.price_low.toFixed(4)}-${zone.price_high.toFixed(4)}`;
-      option.style.color = zoneStyle(zone).stroke;
-      zoneList.appendChild(option);
-    });
+    // Render info tables (renderSegmentTable uses lastZones for L1 counts)
+    renderZoneTable(zones);
+    renderSegmentTable(segments);
 
-    segmentList.innerHTML = "";
-    segments.forEach((segment, idx) => {
-      const option = document.createElement("option");
-      option.value = idx;
-      option.textContent = `SEG_${segment.index} · ${segment.direction} · pivots ${segment.pivot_count} · rep ${segment.representative_pivot_index ?? "-"}`;
-      option.style.color =
-        segment.direction === "UPWARD" ? COLORS.up : COLORS.down;
-      segmentList.appendChild(option);
-    });
-
-    segmentCountEl.textContent = String(segments.length);
-    zoneCountEl.textContent = String(zones.length);
-    pivotCountEl.textContent = String(pivots.length);
+    // Update all stat counters + badges
+    const segCount = String(segments.length);
+    const zCount = String(zones.length);
+    if (segmentCountEl) segmentCountEl.textContent = segCount;
+    if (zoneCountEl) zoneCountEl.textContent = zCount;
+    if (pivotCountEl) pivotCountEl.textContent = String(pivots.length);
+    if (segmentCountBadgeEl) segmentCountBadgeEl.textContent = segCount;
+    if (zoneCountBadgeEl) zoneCountBadgeEl.textContent = zCount;
 
     chart.timeScale().fitContent();
     drawOverlay();
@@ -640,147 +905,126 @@
     drawOverlay();
   }
 
+  // ── Form submission ────────────────────────────────────────────────────────
+
   async function handleSubmit(event) {
     event.preventDefault();
+    const formData = new FormData(form);
+    const start = parseDateInput(formData.get("start"));
+    const end = parseDateInput(formData.get("end"));
+    if (!start || !end) {
+      statusEl.textContent = "Valid start and end dates are required.";
+      return;
+    }
     statusEl.textContent = "Requesting candles, pivots, segments, and zones...";
 
-    const formData = new FormData(form);
     const maxPivotDistanceRaw = formData.get("maximum_pivot_distance");
+
     const payload = {
+      // ── Data source ──────────────────────────────────────────────
       symbol: formData.get("symbol"),
       timeframe: formData.get("timeframe"),
-      start: new Date(formData.get("start")).toISOString(),
-      end: new Date(formData.get("end")).toISOString(),
-      scan_length: Number(formData.get("scan_length") || 500),
+      start,
+      end,
+      source: formData.get("source"),
+      csv_path: optionalText(formData.get("csv_path")),
+      http_proxy: optionalText(formData.get("http_proxy")),
+      https_proxy: optionalText(formData.get("https_proxy")),
+
+      // ── BOS / CHoCH detection ────────────────────────────────────
       direction_window: Number(formData.get("direction_window") || 3),
       hunt_mode: formData.get("hunt_mode"),
+      min_swing_pct: Number(formData.get("min_swing_pct") ?? 0),
+      choch_display_mode: formData.get("choch_display_mode") || "all",
+      include_pullback_in_bos_level: formData.has(
+        "include_pullback_in_bos_level",
+      ),
+      include_hunt_candle_in_choch_range: formData.has(
+        "include_hunt_candle_in_choch_range",
+      ),
+
+      // ── Pivot detection ──────────────────────────────────────────
+      scan_length: Number(formData.get("scan_length") || 500),
+      pivot_min_swing_pct: Number(formData.get("pivot_min_swing_pct") ?? 0),
+
+      // ── Zone matching ────────────────────────────────────────────
+      intersection_method: formData.get("intersection_method"),
+      slope_attribute: formData.get("slope_attribute"),
       up_pivot_filter: formData.get("up_pivot_filter"),
       down_pivot_filter: formData.get("down_pivot_filter"),
-      include_hunted_pivots: formData.has("include_hunted_pivots"),
-      representative_include_hunted: formData.has(
-        "representative_include_hunted",
-      ),
+      pivot_grouping: formData.get("pivot_grouping"),
+      pair_scan_order: formData.get("pair_scan_order"),
+      zone_hunt_mode: formData.get("zone_hunt_mode"),
       maximum_pivot_distance: maxPivotDistanceRaw
         ? Number(maxPivotDistanceRaw)
         : null,
       minimum_overlap: Number(formData.get("minimum_overlap") || 0),
       minimum_overlap_ratio: Number(formData.get("minimum_overlap_ratio") || 0),
+      slope_epsilon: Number(formData.get("slope_epsilon") || 0),
+      epsilon: Number(formData.get("epsilon") || 0.0000000001),
+      include_hunted_pivots: formData.has("include_hunted_pivots"),
       allow_reuse: formData.has("allow_reuse"),
       relaxed_slope: formData.has("relaxed_slope"),
-      slope_epsilon: Number(formData.get("slope_epsilon") || 0),
-      epsilon: Number(formData.get("epsilon") || 0.000000001),
-      min_swing_pct: Number(formData.get("min_swing_pct") ?? 0),
-      include_pullback_in_bos_level: formData.has(
-        "include_pullback_in_bos_level",
+
+      // ── Representative pivots ────────────────────────────────────
+      representative_mode: formData.get("representative_mode"),
+      representative_include_hunted: formData.has(
+        "representative_include_hunted",
       ),
-      include_bos_in_choch_range: formData.has("include_bos_in_choch_range"),
-      include_hunt_candle_in_choch_range: formData.has(
-        "include_hunt_candle_in_choch_range",
+      allow_representative_fallback: formData.has(
+        "allow_representative_fallback",
       ),
-      source: formData.get("source"),
-      csv_path: optionalText(formData.get("csv_path")),
-      http_proxy: optionalText(formData.get("http_proxy")),
-      https_proxy: optionalText(formData.get("https_proxy")),
     };
 
     try {
-      const structurePayload = {
-        symbol: payload.symbol,
-        timeframe: payload.timeframe,
-        start: payload.start,
-        end: payload.end,
-        scan_length: payload.scan_length,
-        direction_window: payload.direction_window,
-        hunt_mode: payload.hunt_mode,
-        min_swing_pct: payload.min_swing_pct,
-        include_pullback_in_bos_level: payload.include_pullback_in_bos_level,
-        include_bos_in_choch_range: payload.include_bos_in_choch_range,
-        include_hunt_candle_in_choch_range:
-          payload.include_hunt_candle_in_choch_range,
-        source: payload.source,
-        csv_path: payload.csv_path,
-        http_proxy: payload.http_proxy,
-        https_proxy: payload.https_proxy,
-      };
+      const res = await fetch("/api/liquidity-zones", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
 
-      const [liquidityRes, structureRes] = await Promise.all([
-        fetch("/api/liquidity-zones", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        }),
-        fetch("/api/bos-choch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(structurePayload),
-        }),
-      ]);
-
-      if (!liquidityRes.ok) {
-        const error = await liquidityRes.json();
-        statusEl.textContent = error.detail || "Liquidity request failed";
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}));
+        statusEl.textContent = error.detail || "Request failed";
         return;
       }
 
-      const liquidityJson = await liquidityRes.json();
-      let structureJson = { markers: [] };
-      let structureWarning = "";
-      if (structureRes.ok) {
-        structureJson = await structureRes.json();
-      } else {
-        const error = await structureRes.json().catch(() => ({}));
-        structureWarning = error.detail
-          ? ` Structure overlay unavailable: ${error.detail}.`
-          : " Structure overlay unavailable.";
-      }
-
+      const json = await res.json();
       render(
-        liquidityJson.candles,
-        liquidityJson.pivots,
-        liquidityJson.segments,
-        liquidityJson.zones,
-        structureJson.markers || [],
+        json.candles,
+        json.pivots,
+        json.segments,
+        json.zones,
+        json.markers || [],
+        json.direction_reversals || [],
       );
-      statusEl.textContent = `Loaded ${liquidityJson.candles.length} candles, ${liquidityJson.pivots.length} pivots, ${liquidityJson.segments.length} segments, ${liquidityJson.zones.length} liquidity zones, and ${(structureJson.markers || []).length} BOS/CHoCH markers.${structureWarning}`;
+      statusEl.textContent =
+        `Loaded ${json.candles.length} candles, ` +
+        `${json.pivots.length} pivots, ` +
+        `${json.segments.length} segments, ` +
+        `${json.zones.length} liquidity zones, ` +
+        `and ${(json.markers || []).length} BOS/CHoCH markers.`;
     } catch (err) {
       console.error(err);
       statusEl.textContent = "Unexpected error; check console.";
     }
   }
 
+  // ── Bootstrap ──────────────────────────────────────────────────────────────
+
   setDefaultDates();
   syncSourceFields();
 
-  zoneList?.addEventListener("change", () => {
-    const zone = lastZones[Number(zoneList.value)];
-    if (!zone) return;
-    const center = Math.floor(
-      (unixTime(zone.start_time) + unixTime(zone.end_time)) / 2,
-    );
-    const width = Math.max(
-      unixTime(zone.end_time) - unixTime(zone.start_time),
-      6 * 3600,
-    );
-    focusTimeWindow(center, Math.ceil(width * 0.8));
-  });
-
-  segmentList?.addEventListener("change", () => {
-    const segment = lastSegments[Number(segmentList.value)];
-    if (!segment) return;
-    const center = Math.floor(
-      (unixTime(segment.start_time) + unixTime(segment.end_time)) / 2,
-    );
-    const width = Math.max(
-      unixTime(segment.end_time) - unixTime(segment.start_time),
-      8 * 3600,
-    );
-    focusTimeWindow(center, Math.ceil(width * 0.65));
-  });
-
   form?.elements?.source?.addEventListener("change", syncSourceFields);
-  showZoneLabelsInput?.addEventListener("change", drawOverlay);
-  showStructureLabelsInput?.addEventListener("change", drawOverlay);
+  showStructureLinesInput?.addEventListener("change", drawOverlay);
+  showL1ZonesInput?.addEventListener("change", drawOverlay);
+  showL2ZonesInput?.addEventListener("change", drawOverlay);
   showPivotMarkersInput?.addEventListener("change", drawOverlay);
+  pivotTypeFilterInput?.addEventListener("change", drawOverlay);
   showRepresentativesInput?.addEventListener("change", drawOverlay);
+  showZoneLabelsInput?.addEventListener("change", drawOverlay);
+  showSegmentBandsInput?.addEventListener("change", drawOverlay);
+  showCandleLabelsInput?.addEventListener("change", drawOverlay);
+  candleLabelThresholdInput?.addEventListener("change", drawOverlay);
   form?.addEventListener("submit", handleSubmit);
 })();
