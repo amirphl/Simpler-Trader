@@ -1,0 +1,1011 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>EMA + AVWAP Pullback Lab</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      :root {
+        --bg: #f4efe6;
+        --ink: #1f2937;
+        --muted: #5b6471;
+        --panel: rgba(255, 255, 255, 0.88);
+        --panel-border: rgba(138, 122, 97, 0.18);
+        --accent: #c05621;
+        --accent-deep: #9c4221;
+        --accent-soft: #fbd38d;
+        --success: #15803d;
+        --danger: #b91c1c;
+        --shadow: 0 18px 40px rgba(57, 43, 20, 0.12);
+        --radius: 18px;
+        --mono:
+          "SFMono-Regular", "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+        font-family:
+          "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino,
+          Georgia, serif;
+        color: var(--ink);
+        background:
+          radial-gradient(
+            circle at top left,
+            rgba(255, 226, 178, 0.75),
+            transparent 36%
+          ),
+          radial-gradient(
+            circle at bottom right,
+            rgba(191, 219, 254, 0.45),
+            transparent 34%
+          ),
+          linear-gradient(180deg, #fcfaf5 0%, #f4efe6 100%);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: transparent;
+      }
+      header {
+        padding: 2rem 1.25rem 1rem;
+      }
+      .shell {
+        max-width: 1420px;
+        margin: 0 auto;
+      }
+      .hero {
+        background:
+          linear-gradient(
+            135deg,
+            rgba(31, 41, 55, 0.98),
+            rgba(68, 64, 60, 0.92)
+          ),
+          linear-gradient(
+            120deg,
+            rgba(192, 86, 33, 0.35),
+            rgba(251, 211, 141, 0.08)
+          );
+        color: #fff7ed;
+        border-radius: 28px;
+        padding: 1.75rem;
+        box-shadow: var(--shadow);
+        overflow: hidden;
+        position: relative;
+      }
+      .hero::after {
+        content: "";
+        position: absolute;
+        inset: auto -8% -28% auto;
+        width: 320px;
+        height: 320px;
+        border-radius: 999px;
+        background: radial-gradient(
+          circle,
+          rgba(251, 211, 141, 0.24),
+          transparent 72%
+        );
+        pointer-events: none;
+      }
+      .hero-top {
+        display: flex;
+        justify-content: space-between;
+        gap: 1rem;
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+      .eyebrow {
+        margin: 0 0 0.5rem;
+        color: #fdba74;
+        text-transform: uppercase;
+        letter-spacing: 0.16em;
+        font-size: 0.75rem;
+        font-family: var(--mono);
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(2rem, 4vw, 3.5rem);
+        line-height: 0.95;
+        letter-spacing: -0.04em;
+      }
+      .hero p {
+        margin: 0.8rem 0 0;
+        max-width: 64ch;
+        color: rgba(255, 247, 237, 0.9);
+        font-size: 1rem;
+        line-height: 1.6;
+      }
+      .home-link {
+        color: #fff7ed;
+        text-decoration: none;
+        border: 1px solid rgba(255, 247, 237, 0.18);
+        padding: 0.7rem 1rem;
+        border-radius: 999px;
+        font-size: 0.95rem;
+        background: rgba(255, 247, 237, 0.08);
+        backdrop-filter: blur(8px);
+      }
+      .hero-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 0.9rem;
+        margin-top: 1.5rem;
+      }
+      .hero-card {
+        border-radius: 18px;
+        padding: 1rem 1.05rem;
+        background: rgba(255, 247, 237, 0.08);
+        border: 1px solid rgba(255, 247, 237, 0.08);
+        backdrop-filter: blur(8px);
+      }
+      .hero-card strong {
+        display: block;
+        margin-bottom: 0.35rem;
+        font-size: 0.95rem;
+      }
+      .hero-card span {
+        display: block;
+        color: rgba(255, 247, 237, 0.8);
+        line-height: 1.5;
+        font-size: 0.92rem;
+      }
+      main {
+        max-width: 1420px;
+        margin: 0 auto;
+        padding: 1rem 1.25rem 2rem;
+      }
+      .workspace {
+        display: grid;
+        grid-template-columns: minmax(340px, 440px) minmax(0, 1fr);
+        gap: 1.25rem;
+        align-items: start;
+      }
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--panel-border);
+        box-shadow: var(--shadow);
+        border-radius: var(--radius);
+        backdrop-filter: blur(10px);
+      }
+      .left-column,
+      .right-column {
+        display: grid;
+        gap: 1.25rem;
+      }
+      .panel-header {
+        padding: 1.15rem 1.2rem 0.2rem;
+      }
+      .panel-header h2,
+      .panel-header h3 {
+        margin: 0;
+        font-size: 1.2rem;
+      }
+      .panel-header p {
+        margin: 0.45rem 0 0;
+        color: var(--muted);
+        line-height: 1.5;
+        font-size: 0.95rem;
+      }
+      .panel-body {
+        padding: 1rem 1.2rem 1.2rem;
+      }
+      .preset-strip {
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        align-items: end;
+      }
+      .preset-strip label {
+        flex: 1 1 230px;
+      }
+      .preset-strip .actions {
+        display: flex;
+        gap: 0.6rem;
+        flex-wrap: wrap;
+      }
+      label {
+        display: flex;
+        flex-direction: column;
+        gap: 0.4rem;
+        font-size: 0.76rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: #735f45;
+        font-family: var(--mono);
+      }
+      .hint {
+        margin-top: -0.1rem;
+        font-size: 0.82rem;
+        line-height: 1.45;
+        color: var(--muted);
+        text-transform: none;
+        letter-spacing: 0;
+        font-family: inherit;
+      }
+      input,
+      select,
+      button,
+      textarea {
+        font: inherit;
+      }
+      input,
+      select,
+      textarea {
+        width: 100%;
+        border-radius: 14px;
+        border: 1px solid rgba(138, 122, 97, 0.22);
+        background: rgba(255, 255, 255, 0.9);
+        color: var(--ink);
+        padding: 0.8rem 0.9rem;
+        font-size: 0.98rem;
+        transition:
+          border-color 0.18s ease,
+          box-shadow 0.18s ease,
+          transform 0.18s ease;
+      }
+      input:focus,
+      select:focus,
+      textarea:focus {
+        outline: none;
+        border-color: rgba(192, 86, 33, 0.5);
+        box-shadow: 0 0 0 3px rgba(246, 173, 85, 0.24);
+        transform: translateY(-1px);
+      }
+      button {
+        border: none;
+        border-radius: 999px;
+        padding: 0.85rem 1.15rem;
+        cursor: pointer;
+        transition:
+          transform 0.16s ease,
+          box-shadow 0.16s ease,
+          background 0.16s ease;
+      }
+      button:hover {
+        transform: translateY(-1px);
+      }
+      .button-primary {
+        background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+        color: #fff7ed;
+        box-shadow: 0 10px 20px rgba(156, 66, 33, 0.2);
+      }
+      .button-secondary {
+        background: rgba(255, 247, 237, 0.9);
+        color: var(--ink);
+        border: 1px solid rgba(138, 122, 97, 0.2);
+      }
+      .button-ghost {
+        background: transparent;
+        color: var(--muted);
+        border: 1px dashed rgba(138, 122, 97, 0.32);
+      }
+      .form-stack {
+        display: grid;
+        gap: 1rem;
+      }
+      .field-group {
+        padding: 1rem;
+        border-radius: 16px;
+        background: rgba(255, 251, 245, 0.82);
+        border: 1px solid rgba(138, 122, 97, 0.12);
+      }
+      .field-group h3 {
+        margin: 0 0 0.25rem;
+        font-size: 1rem;
+      }
+      .field-group p {
+        margin: 0 0 0.9rem;
+        color: var(--muted);
+        font-size: 0.93rem;
+        line-height: 1.5;
+      }
+      .field-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 0.9rem;
+      }
+      .field-grid.full {
+        grid-template-columns: 1fr;
+      }
+      .submit-row {
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+      .status {
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        font-family: var(--mono);
+        font-size: 0.75rem;
+      }
+      .status[data-state="completed"] {
+        color: var(--success);
+      }
+      .status[data-state="running"],
+      .status[data-state="queued"] {
+        color: var(--accent);
+      }
+      .status[data-state="failed"] {
+        color: var(--danger);
+      }
+      .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 0.85rem;
+      }
+      .metric-tile {
+        background: linear-gradient(
+          180deg,
+          rgba(255, 255, 255, 0.94),
+          rgba(252, 245, 234, 0.94)
+        );
+        border: 1px solid rgba(138, 122, 97, 0.12);
+        border-radius: 16px;
+        padding: 0.95rem 1rem;
+      }
+      .metric-tile .label {
+        display: block;
+        color: var(--muted);
+        font-size: 0.82rem;
+        font-family: var(--mono);
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .metric-tile .value {
+        display: block;
+        margin-top: 0.45rem;
+        font-size: 1.3rem;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+      }
+      .insight-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 1rem;
+      }
+      pre,
+      .scroll-pane {
+        background: #18181b;
+        color: #f8fafc;
+        border-radius: 16px;
+        padding: 1rem;
+        overflow: auto;
+        max-height: 360px;
+        font-family: var(--mono);
+        font-size: 0.85rem;
+        line-height: 1.55;
+      }
+      .filter-row {
+        display: flex;
+        gap: 0.75rem;
+        flex-wrap: wrap;
+        margin-bottom: 0.9rem;
+      }
+      .filter-row label {
+        flex: 1 1 220px;
+      }
+      .utility-note {
+        margin: 0;
+        color: var(--muted);
+        font-size: 0.92rem;
+        line-height: 1.5;
+      }
+      @media (max-width: 1080px) {
+        .workspace {
+          grid-template-columns: 1fr;
+        }
+      }
+      @media (max-width: 720px) {
+        header {
+          padding: 1rem 0.9rem 0.5rem;
+        }
+        main {
+          padding: 0.75rem 0.9rem 1.5rem;
+        }
+        .hero,
+        .panel {
+          border-radius: 20px;
+        }
+        .field-grid,
+        .insight-grid {
+          grid-template-columns: 1fr;
+        }
+        .submit-row,
+        .preset-strip .actions {
+          width: 100%;
+        }
+        .submit-row button,
+        .preset-strip .actions button {
+          flex: 1 1 auto;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <div class="shell">
+        <section class="hero">
+          <div class="hero-top">
+            <div>
+              <p class="eyebrow">Backtest Experiment Lab</p>
+              <h1>EMA + AVWAP Pullback</h1>
+              <p>
+                Tune the EMA gate, consecutive-candle trigger, AVWAP deviation
+                bands, and trailing rules, then inspect the exact decision log
+                behind every fill and exit.
+              </p>
+            </div>
+            <a class="home-link" href="/">All Strategies</a>
+          </div>
+          <div class="hero-grid">
+            <div class="hero-card">
+              <strong>Setup Logic</strong>
+              <span
+                >Detect consecutive bullish or bearish candles, then require the
+                latest bar to validate against the EMA.</span
+              >
+            </div>
+            <div class="hero-card">
+              <strong>Entry Logic</strong>
+              <span
+                >Anchor VWAP at the first candle in the sequence and trigger on
+                the first pullback through the middle line.</span
+              >
+            </div>
+            <div class="hero-card">
+              <strong>Risk Logic</strong>
+              <span
+                >Stop lives on AVWAP band 2. Trailing can activate once price
+                penetrates band 1 by your chosen threshold.</span
+              >
+            </div>
+            <div class="hero-card">
+              <strong>Debugging</strong>
+              <span
+                >Review run stats, config snapshot, and filtered decision events
+                without leaving the panel.</span
+              >
+            </div>
+          </div>
+        </section>
+      </div>
+    </header>
+
+    <main>
+      <div class="workspace">
+        <div class="left-column">
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Presets</h2>
+              <p>
+                Start from a baseline, save your working draft locally, or reset
+                the lab to defaults.
+              </p>
+            </div>
+            <div class="panel-body">
+              <div class="preset-strip">
+                <label>
+                  Preset
+                  <select id="preset-select">
+                    <option value="baseline">Baseline</option>
+                    <option value="trend_hunter">Trend Hunter</option>
+                    <option value="faster_retests">Faster Retests</option>
+                    <option value="defensive_costs">Defensive Costs</option>
+                  </select>
+                </label>
+                <div class="actions">
+                  <button
+                    class="button-secondary"
+                    id="apply-preset"
+                    type="button"
+                  >
+                    Apply Preset
+                  </button>
+                  <button
+                    class="button-secondary"
+                    id="save-draft"
+                    type="button"
+                  >
+                    Save Draft
+                  </button>
+                  <button class="button-ghost" id="reset-form" type="button">
+                    Reset Form
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Backtest Controls</h2>
+              <p>
+                Adjust market, setup, AVWAP, and execution assumptions from one
+                place.
+              </p>
+            </div>
+            <div class="panel-body">
+              <form id="backtest-form" class="form-stack">
+                <div class="field-group">
+                  <h3>Market & Range</h3>
+                  <p>Choose the instrument, timeframe, and run window.</p>
+                  <div class="field-grid">
+                    <label>
+                      Symbol
+                      <input name="symbol" value="ETHUSDT" required />
+                    </label>
+                    <label>
+                      Timeframe
+                      <input name="timeframe" value="1h" required />
+                    </label>
+                    <label>
+                      Start (UTC)
+                      <input name="start" type="datetime-local" required />
+                    </label>
+                    <label>
+                      End (UTC)
+                      <input name="end" type="datetime-local" required />
+                    </label>
+                    <label>
+                      Initial Capital
+                      <input
+                        name="initial_capital"
+                        type="text"
+                        inputmode="numeric"
+                        value="10000"
+                        placeholder="10000 or 10,000"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Warmup Days
+                      <input
+                        name="warmup_days"
+                        type="number"
+                        value="30"
+                        step="1"
+                        min="0"
+                        required
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                <div class="field-group">
+                  <h3>Setup Filter</h3>
+                  <p>
+                    Control how strict the EMA gate and candle sequence must be.
+                  </p>
+                  <div class="field-grid">
+                    <label>
+                      EMA Length
+                      <input
+                        name="ema_length"
+                        type="number"
+                        value="55"
+                        step="1"
+                        min="1"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Consecutive Count
+                      <input
+                        name="consecutive_count"
+                        type="number"
+                        value="4"
+                        step="1"
+                        min="1"
+                        required
+                      />
+                    </label>
+                    <label>
+                      EMA Validation Mode
+                      <select name="ema_validation_mode">
+                        <option value="body" selected>Body Above/Below</option>
+                        <option value="wick">Full Candle Above/Below</option>
+                      </select>
+                      <span class="hint"
+                        >`body` is more permissive. `wick` demands the full
+                        candle clear the EMA.</span
+                      >
+                    </label>
+                    <label>
+                      Waiting Setup Refresh
+                      <select name="setup_waiting_replacement_mode">
+                        <option value="keep_waiting" selected>
+                          Keep Waiting Setup
+                        </option>
+                        <option value="replace_waiting">
+                          Replace with New Setup
+                        </option>
+                      </select>
+                      <span class="hint"
+                        >When a setup is already waiting for a pullback cross
+                        and a new same-direction setup appears, either keep the
+                        old waiting setup or replace it.</span
+                      >
+                    </label>
+                    <label>
+                      Leverage
+                      <input
+                        name="leverage"
+                        type="number"
+                        value="1"
+                        step="0.1"
+                        min="0.1"
+                        required
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                <div class="field-group">
+                  <h3>AVWAP Bands</h3>
+                  <p>
+                    These control the standard-deviation structure used for
+                    trailing activation and stop placement.
+                  </p>
+                  <div class="field-grid">
+                    <label>
+                      AVWAP Multiplier 1
+                      <input
+                        name="avwap_multiplier_1"
+                        type="number"
+                        value="1"
+                        step="0.1"
+                        min="0.1"
+                        required
+                      />
+                    </label>
+                    <label>
+                      AVWAP Multiplier 2
+                      <input
+                        name="avwap_multiplier_2"
+                        type="number"
+                        value="2"
+                        step="0.1"
+                        min="0.1"
+                        required
+                      />
+                    </label>
+                    <label>
+                      AVWAP Multiplier 3
+                      <input
+                        name="avwap_multiplier_3"
+                        type="number"
+                        value="3"
+                        step="0.1"
+                        min="0.1"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Max Decision Log Entries
+                      <input
+                        name="max_decision_log_entries"
+                        type="text"
+                        inputmode="numeric"
+                        value="20000"
+                        placeholder="20000 or 20,000"
+                        required
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                <div class="field-group">
+                  <h3>Execution & Risk</h3>
+                  <p>
+                    Model sizing, slippage, fees, and how aggressively trailing
+                    kicks in.
+                  </p>
+                  <div class="field-grid">
+                    <label>
+                      Equity Risk %
+                      <input
+                        name="equity_risk_pct"
+                        type="text"
+                        inputmode="decimal"
+                        value="1"
+                        placeholder="1 or 1.5"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Position Sizing Mode
+                      <select name="position_sizing_mode">
+                        <option value="risk_distance" selected>
+                          Risk by Stop Distance
+                        </option>
+                        <option value="risk_amount_per_price">
+                          Risk Amount / Current Price
+                        </option>
+                      </select>
+                      <span class="hint"
+                        >`risk_distance` matches the original stop-distance
+                        sizing. `risk_amount_per_price` ignores stop distance
+                        for quantity, does not multiply by leverage, and
+                        reserves a small buffer for slippage and fees.</span
+                      >
+                    </label>
+                    <label>
+                      Trailing Activation Threshold %
+                      <input
+                        name="trailing_activation_threshold_pct"
+                        type="number"
+                        value="0"
+                        step="0.1"
+                        min="0"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Rigid Stop Loss %
+                      <input
+                        name="rigid_stop_loss_pct"
+                        type="number"
+                        value="0"
+                        step="0.1"
+                        min="0"
+                        required
+                      />
+                      <span class="hint"
+                        >A fixed stop from executed entry price. `0` disables
+                        it. Once set on entry, it never updates.</span
+                      >
+                    </label>
+                    <label>
+                      Trailing Gap %
+                      <input
+                        name="trailing_gap_pct"
+                        type="number"
+                        value="1"
+                        step="0.1"
+                        min="0"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Risk Free Rate
+                      <input
+                        name="risk_free_rate"
+                        type="number"
+                        value="0"
+                        step="0.001"
+                      />
+                    </label>
+                    <label>
+                      Maker Fee %
+                      <input
+                        name="maker_fee_pct"
+                        type="number"
+                        value="0.0002"
+                        step="0.0001"
+                        min="0"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Taker Fee %
+                      <input
+                        name="taker_fee_pct"
+                        type="number"
+                        value="0.0006"
+                        step="0.0001"
+                        min="0"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Entry Slippage %
+                      <input
+                        name="entry_slippage_pct"
+                        type="number"
+                        value="0"
+                        step="0.0001"
+                        min="0"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Exit Slippage %
+                      <input
+                        name="exit_slippage_pct"
+                        type="number"
+                        value="0"
+                        step="0.0001"
+                        min="0"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Gap Cross Detection
+                      <select name="use_gap_cross_detection">
+                        <option value="true" selected>Enabled</option>
+                        <option value="false">Disabled</option>
+                      </select>
+                    </label>
+                    <label>
+                      Override Download
+                      <select name="override_download">
+                        <option value="false" selected>
+                          Use Cached Candles
+                        </option>
+                        <option value="true">Force Refresh</option>
+                      </select>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="submit-row">
+                  <button class="button-primary" type="submit">
+                    Run Backtest
+                  </button>
+                  <button
+                    class="button-secondary"
+                    type="button"
+                    id="fill-last-month"
+                  >
+                    Last 30 Days
+                  </button>
+                  <span id="current-job" class="utility-note"></span>
+                </div>
+              </form>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Result Fetch</h2>
+              <p>
+                Load an older job if you want to compare a previous experiment.
+              </p>
+            </div>
+            <div class="panel-body">
+              <form id="history-form" class="form-stack">
+                <label>
+                  Job ID
+                  <input
+                    name="job_id"
+                    placeholder="Paste a backtest job id"
+                    required
+                  />
+                </label>
+                <div class="submit-row">
+                  <button class="button-secondary" type="submit">
+                    Load Result
+                  </button>
+                </div>
+              </form>
+            </div>
+          </section>
+        </div>
+
+        <div class="right-column">
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Run Status</h2>
+              <p>
+                Track the active job and inspect the latest top-line metrics.
+              </p>
+            </div>
+            <div class="panel-body">
+              <div id="status-stream" class="status" data-state="idle">
+                Awaiting submission...
+              </div>
+              <div
+                id="quick-metrics"
+                class="summary-grid"
+                style="margin-top: 1rem"
+              ></div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Charts</h2>
+              <p>
+                Shared backtest charts still render here for equity, drawdown,
+                and trade returns.
+              </p>
+            </div>
+            <div class="panel-body">
+              <form
+                id="trade-jump-form"
+                style="
+                  margin-bottom: 0.75rem;
+                  display: flex;
+                  gap: 0.6rem;
+                  flex-wrap: wrap;
+                "
+              >
+                <label style="flex: 1 1 200px">
+                  Jump to Trade #
+                  <input id="trade-jump-index" type="number" min="0" step="1" />
+                </label>
+                <button class="button-secondary" type="submit">Go</button>
+              </form>
+              <div id="charts-output" class="chart-grid"></div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Run Breakdown</h2>
+              <p>
+                View the exact config that ran, raw stats, and the recorded
+                trades.
+              </p>
+            </div>
+            <div class="panel-body">
+              <div class="insight-grid">
+                <div>
+                  <h3 style="margin-top: 0">Config Snapshot</h3>
+                  <pre id="config-snapshot-output">No result loaded yet.</pre>
+                </div>
+                <div>
+                  <h3 style="margin-top: 0">Statistics</h3>
+                  <pre id="stats-output">No result loaded yet.</pre>
+                </div>
+              </div>
+              <div style="margin-top: 1rem">
+                <h3 style="margin: 0 0 0.75rem">Trades</h3>
+                <div id="trades-output" class="scroll-pane">No data yet.</div>
+              </div>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Decision Log</h2>
+              <p>
+                Filter the per-decision metadata emitted by the strategy to
+                validate setups, entries, trailing changes, and exits.
+              </p>
+            </div>
+            <div class="panel-body">
+              <div class="filter-row">
+                <label>
+                  Event Filter
+                  <select id="decision-log-filter">
+                    <option value="all">All Events</option>
+                    <option value="setup_detected">Setup Detected</option>
+                    <option value="setup_detected_ignored">
+                      Setup Detected Ignored
+                    </option>
+                    <option value="setup_invalidated">Setup Invalidated</option>
+                    <option value="entry_triggered">Entry Triggered</option>
+                    <option value="entry_skipped">Entry Skipped</option>
+                    <option value="setup_waiting">Setup Waiting</option>
+                    <option value="trailing_activated">
+                      Trailing Activated
+                    </option>
+                    <option value="trailing_updated">Trailing Updated</option>
+                    <option value="position_closed">Position Closed</option>
+                  </select>
+                </label>
+                <label>
+                  Max Visible Rows
+                  <input
+                    id="decision-log-limit"
+                    type="number"
+                    min="10"
+                    step="10"
+                    value="250"
+                  />
+                </label>
+              </div>
+              <pre id="decision-log-output">No decision log yet.</pre>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
+    <script src="/static/js/app.js"></script>
+    <script src="/static/js/ema_avwap_pullback.js"></script>
+  </body>
+</html>
