@@ -23,9 +23,14 @@ BosState = Literal["forming", "complete", "confirmed"]
 class BOSRecord:
     index: int
     direction: Direction
-    anchor_index: int  # start of the formation scan range (previous BOS hunt or initial)
+    anchor_index: (
+        int  # start of the formation scan range (previous BOS hunt or initial)
+    )
     start_index: int  # first opposite (pullback) candle that triggered BOS formation
     level: float
+    level_last_updated_index: int = (
+        -1
+    )  # last candle that extended the forming BOS level
     complete_index: int = -1  # first resume candle that completed the BOS
     hunt_index: int = -1  # candle whose extreme crossed the BOS level (confirmed hunt)
     state: BosState = "forming"
@@ -39,6 +44,14 @@ class CHoCHUpdate:
     candle_index: int  # the candle that established (or updated) this CHoCH level
     level: float
     reason: str  # "initial-range" | "continuous"
+
+
+@dataclass(slots=True)
+class IndependentCHoCH:
+    candle_index: int  # candle holding the structural extreme
+    level: float
+    direction: Direction  # new direction after the reversal
+    reason: str  # "initial" | "cascade"
 
 
 @dataclass(slots=True)
@@ -59,7 +72,6 @@ class DetectionEvent:
 class DetectionConfig:
     direction_window: int = 3
     hunt_mode: HuntMode = "wick"
-    include_bos_in_choch_range: bool = False
     include_hunt_candle_in_choch_range: bool = True
     # Minimum (bos_level − choch_level)/mid*100 threshold; BOSes below this are
     # not recorded.  0 = disabled (mirrors pivot_detection.PivotConfig).
@@ -70,6 +82,7 @@ class DetectionConfig:
     include_pullback_in_bos_level: bool = True
 
 
+
 @dataclass(slots=True)
 class BOSCHoCHResult:
     direction_state: DirectionState
@@ -77,7 +90,10 @@ class BOSCHoCHResult:
     choch_levels_by_bos: Dict[int, List[float]] = field(default_factory=dict)
     choch_updates: List[CHoCHUpdate] = field(default_factory=list)
     events: List[DetectionEvent] = field(default_factory=list)
-    in_progress_bos: "BOSRecord | None" = None  # currently forming or complete, not yet confirmed
+    in_progress_bos: "BOSRecord | None" = (
+        None  # currently forming or complete, not yet confirmed
+    )
+    independent_chochs: List[IndependentCHoCH] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -219,22 +235,20 @@ def _initial_choch(
     *,
     candles: Sequence[Candle],
     direction: Direction,
-    complete_index: int,
+    start_index: int,
     hunt_index: int,
-    include_bos_in_choch_range: bool,
     include_hunt_candle_in_choch_range: bool,
 ) -> Tuple[float, int]:
     """Return (choch_level, choch_candle_index) for the initial CHoCH of a confirmed BOS.
 
     The CHoCH is the structural counter-trend extreme of the candles between the
-    BOS-complete candle and the BOS-hunt candle (both boundaries configurable).
+    first BOS pullback candle (start_index) and the BOS-hunt candle.
     """
-    start = complete_index if include_bos_in_choch_range else complete_index + 1
     end = hunt_index if include_hunt_candle_in_choch_range else hunt_index - 1
-    if start > end:
-        start = hunt_index
+    if start_index > end:
+        start_index = hunt_index
         end = hunt_index
-    return _range_extreme_with_index(direction, candles, start, end)
+    return _range_extreme_with_index(direction, candles, start_index, end)
 
 
 # ---------------------------------------------------------------------------
@@ -267,9 +281,16 @@ def detect_bos_choch(
     bos_counter = 0
     active_bos_ids: List[int] = []
     forming_bos: BOSRecord | None = None
+    last_indep_choch: IndependentCHoCH | None = None
 
     def reset_formation(new_anchor: int) -> None:
-        nonlocal phase, forming_start_index, forming_level, complete_index, anchor_index, forming_bos
+        nonlocal \
+            phase, \
+            forming_start_index, \
+            forming_level, \
+            complete_index, \
+            anchor_index, \
+            forming_bos
         phase = "WAIT_PULLBACK"
         forming_start_index = None
         forming_level = None
@@ -279,19 +300,17 @@ def detect_bos_choch(
         result.in_progress_bos = None
 
     def confirm_bos(hunt_index: int) -> None:
-        nonlocal bos_counter
+        nonlocal bos_counter, last_indep_choch
         assert forming_bos is not None and forming_bos.complete_index != -1
 
         # Compute CHoCH before any mutations so the filter can use it.
         choch_level, choch_candle_idx = _initial_choch(
             candles=candles,
             direction=direction,
-            complete_index=forming_bos.complete_index,
+            start_index=forming_bos.level_last_updated_index,
             hunt_index=hunt_index,
-            include_bos_in_choch_range=cfg.include_bos_in_choch_range,
             include_hunt_candle_in_choch_range=cfg.include_hunt_candle_in_choch_range,
         )
-
         if cfg.min_swing_pct > 0.0:
             bos_level = forming_bos.level
             swing = abs(bos_level - choch_level)
@@ -326,6 +345,7 @@ def detect_bos_choch(
                 details=f"{forming_bos.label}@{forming_bos.level}",
             )
         )
+        last_indep_choch = None  # new confirmed BOS ends the independent CHoCH sequence
 
     i = direction_state.since_index
     while i < len(candles):
@@ -368,8 +388,28 @@ def detect_bos_choch(
                         newest_hunted = True
 
             if newest_hunted:
+                new_direction: Direction = "DOWNWARD" if direction == "UPWARD" else "UPWARD"
+
+                # Compute independent CHoCH: structural extreme in the new direction
+                # over the range [newest confirmed BOS start, current reversal candle].
+                newest_bos = next(
+                    (b for b in result.bos_records if b.index == newest_bos_id), None
+                )
+                indep_start = newest_bos.start_index if newest_bos else anchor_index
+                indep_level, indep_candle_idx = _range_extreme_with_index(
+                    new_direction, candles, indep_start, i
+                )
+                indep = IndependentCHoCH(
+                    candle_index=indep_candle_idx,
+                    level=indep_level,
+                    direction=new_direction,
+                    reason="initial",
+                )
+                result.independent_chochs.append(indep)
+                last_indep_choch = indep
+
                 previous_direction = direction
-                direction = "DOWNWARD" if direction == "UPWARD" else "UPWARD"
+                direction = new_direction
                 result.events.append(
                     DetectionEvent(
                         candle_index=i,
@@ -389,6 +429,39 @@ def detect_bos_choch(
             i += 1
             continue
 
+        # Independent CHoCH cascade: if the current independent CHoCH is hunted,
+        # reverse direction again and create the next independent CHoCH.
+        if last_indep_choch is not None and _is_opposite(direction, candle):
+            if _is_choch_hunted(direction, last_indep_choch.level, candle, cfg.hunt_mode):
+                new_direction = "DOWNWARD" if direction == "UPWARD" else "UPWARD"
+                indep_level, indep_candle_idx = _range_extreme_with_index(
+                    new_direction, candles, last_indep_choch.candle_index, i
+                )
+                indep = IndependentCHoCH(
+                    candle_index=indep_candle_idx,
+                    level=indep_level,
+                    direction=new_direction,
+                    reason="cascade",
+                )
+                result.independent_chochs.append(indep)
+                last_indep_choch = indep
+
+                previous_direction = direction
+                direction = new_direction
+                anchor_index = i
+                result.events.append(
+                    DetectionEvent(
+                        candle_index=i,
+                        event="DIRECTION_REVERSED",
+                        direction=direction,
+                        details=f"{previous_direction}->{direction}",
+                    )
+                )
+                result.direction_state = DirectionState(direction=direction, since_index=i)
+                reset_formation(i)
+                i += 1
+                continue
+
         # ------------------------------------------------------------------
         # Step B: phase state machine (skipped if direction reversed above).
         # ------------------------------------------------------------------
@@ -399,13 +472,18 @@ def detect_bos_choch(
                 # Step 1: scan anchor → i for the structural extreme.
                 start = anchor_index  # anchor_index <= i always
                 level = _extreme(direction, candles[start])
+                level_idx = start
                 scan_end_excl = (i + 1) if cfg.include_pullback_in_bos_level else i
                 for j in range(start + 1, scan_end_excl):
                     candidate = _extreme(direction, candles[j])
                     if direction == "UPWARD":
-                        level = max(level, candidate)
+                        if candidate > level:
+                            level = candidate
+                            level_idx = j
                     else:
-                        level = min(level, candidate)
+                        if candidate < level:
+                            level = candidate
+                            level_idx = j
                 forming_start_index = i  # record the pullback trigger candle
                 forming_level = level
                 complete_index = None
@@ -416,6 +494,7 @@ def detect_bos_choch(
                     anchor_index=anchor_index,
                     start_index=i,
                     level=level,
+                    level_last_updated_index=level_idx,
                     state="forming",
                     label=_bos_label(direction, bos_counter),
                 )
@@ -444,12 +523,17 @@ def detect_bos_choch(
             if _is_opposite(direction, candle):
                 # Step 2-2: another pullback candle → extend the BOS level.
                 candidate = _extreme(direction, candle)
-                if direction == "UPWARD":
-                    forming_level = max(forming_level, candidate)
-                else:
-                    forming_level = min(forming_level, candidate)
                 assert forming_bos is not None
-                forming_bos.level = forming_level
+                if direction == "UPWARD":
+                    if candidate > forming_level:
+                        forming_level = candidate
+                        forming_bos.level = forming_level
+                        forming_bos.level_last_updated_index = i
+                else:
+                    if candidate < forming_level:
+                        forming_level = candidate
+                        forming_bos.level = forming_level
+                        forming_bos.level_last_updated_index = i
 
             i += 1
             continue
@@ -684,11 +768,6 @@ def main() -> int:
     parser.add_argument("--direction-window", type=int, default=3)
     parser.add_argument("--hunt-mode", choices=["wick", "close"], default="wick")
     parser.add_argument(
-        "--include-bos-in-choch-range",
-        action="store_true",
-        help="Include BOS completion candle in initial CHoCH range",
-    )
-    parser.add_argument(
         "--exclude-hunt-candle-in-choch-range",
         action="store_true",
         help="Exclude BOS hunt candle from initial CHoCH range",
@@ -750,7 +829,6 @@ def main() -> int:
         DetectionConfig(
             direction_window=args.direction_window,
             hunt_mode=args.hunt_mode,
-            include_bos_in_choch_range=args.include_bos_in_choch_range,
             include_hunt_candle_in_choch_range=not args.exclude_hunt_candle_in_choch_range,
             min_swing_pct=args.min_swing_pct,
             include_pullback_in_bos_level=not args.no_include_pullback_in_bos_level,
@@ -771,7 +849,6 @@ def main() -> int:
             f"complete={bos.complete_index} hunt={bos.hunt_index} "
             f"last_choch={last_choch}"
         )
-
     if args.plot:
         fig = build_plotly_figure(candles, result)
         if args.plot_output:
