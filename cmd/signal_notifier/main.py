@@ -17,7 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Monitor Binance symbols and push live engulfing signals to Telegram.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--timeframe", required=True, help="Binance interval, e.g. 1m, 5m, 1h.")
+    parser.add_argument("--timeframe", help="Binance interval, e.g. 1m, 5m, 1h.")
     parser.add_argument(
         "--symbols",
         help="Comma-separated list of symbols to monitor (overrides top-n lookup).",
@@ -78,13 +78,24 @@ def load_env_config() -> Dict[str, str]:
         "lookback": env("LOOKBACK", ""),
         "epsilon_minutes": env("EPSILON_MINUTES", ""),
         "state_file": env("SIGNAL_STATE_FILE", ""),
+        "no_state": env("NO_STATE", ""),
+        "dry_run": env("DRY_RUN", ""),
+        "http_proxy": env("HTTP_PROXY", ""),
+        "https_proxy": env("HTTPS_PROXY", ""),
+        "proxy": env("PROXY", ""),
         "telegram_token": env("TELEGRAM_BOT_TOKEN", ""),
         "telegram_chat_id": env("TELEGRAM_CHAT_ID", ""),
         "telegram_proxy": env("TELEGRAM_PROXY", ""),
+        "telegram_timeout": env("TELEGRAM_TIMEOUT", ""),
         "window_size": env("STRATEGY_WINDOW_SIZE", ""),
         "volume_window": env("VOLUME_WINDOW", ""),
         "max_volume_score": env("MAX_VOLUME_SCORE", ""),
+        "log_level": env("LOG_LEVEL", ""),
     }
+
+
+def parse_bool(value: str) -> bool:
+    return value.strip().lower() in ("true", "1", "yes", "on")
 
 
 def apply_env_defaults(args: argparse.Namespace, config: Dict[str, str]) -> argparse.Namespace:
@@ -106,16 +117,35 @@ def apply_env_defaults(args: argparse.Namespace, config: Dict[str, str]) -> argp
         args.telegram_proxy = config["telegram_proxy"]
     if config["state_file"]:
         args.state_file = Path(config["state_file"])
+    if config["no_state"]:
+        args.no_state = parse_bool(config["no_state"])
+    if config["dry_run"]:
+        args.dry_run = parse_bool(config["dry_run"])
+    if config["http_proxy"]:
+        args.http_proxy = config["http_proxy"]
+    if config["https_proxy"]:
+        args.https_proxy = config["https_proxy"]
+    if config["proxy"]:
+        args.proxy = config["proxy"]
     if config["window_size"]:
         args.window_size = int(config["window_size"])
     if config["volume_window"]:
         args.volume_window = int(config["volume_window"])
     if config["max_volume_score"]:
         args.max_volume_score = float(config["max_volume_score"])
+    if config["telegram_timeout"]:
+        args.telegram_timeout = float(config["telegram_timeout"])
+    if config["log_level"]:
+        args.log_level = config["log_level"].strip().upper()
     return args
 
 
-def build_telegram_client(args: argparse.Namespace, logger: logging.Logger) -> TelegramClient:
+def build_telegram_client(
+    args: argparse.Namespace, logger: logging.Logger
+) -> Optional[TelegramClient]:
+    if args.dry_run:
+        return None
+
     token = args.telegram_token or ""
     chat_id = args.telegram_chat_id or ""
     if not token:
@@ -140,16 +170,21 @@ def resolve_symbols_argument(value: Optional[str]) -> Optional[List[str]]:
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = build_parser()
-    args = parser.parse_args(argv)
+    effective_argv = list(sys.argv[1:] if argv is None else argv)
+    if any(token in {"-h", "--help"} for token in effective_argv):
+        parser.parse_args(effective_argv)
+        return 0
+
+    env_config = load_env_config()
+    env_defaults = apply_env_defaults(parser.parse_args([]), env_config)
+    parser.set_defaults(**vars(env_defaults))
+    args = parser.parse_args(effective_argv)
 
     logging.basicConfig(
         level=getattr(logging, args.log_level.upper(), logging.INFO),
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
     logger = logging.getLogger("signal_notifier")
-
-    env_config = load_env_config()
-    args = apply_env_defaults(args, env_config)
 
     if not args.timeframe:
         parser.error("--timeframe is required.")
@@ -195,11 +230,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         logger=logger,
     )
 
-    notifier.run()
-    binance_client.close()
+    try:
+        notifier.run()
+    finally:
+        binance_client.close()
     return 0
 
 
 if __name__ == "__main__":
     sys.exit(main())
-
