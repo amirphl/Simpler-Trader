@@ -29,7 +29,7 @@ Examples:
   python -m cmd.plot.main --stats-file ./results/eth_15m_stats.json --symbol ETHUSDT --timeframe 15m
 
   # Save plot without showing
-  python -m cmd.plot.main --symbol BTCUSDT --timeframe 1h --plot-output ./plot.html
+  python -m cmd.plot.main --symbol BTCUSDT --timeframe 1h --plot-output ./plot.html --no-show-plot
 
   # Hide subplots
   python -m cmd.plot.main --symbol ETHUSDT --timeframe 15m --no-stochastic --no-equity
@@ -59,14 +59,14 @@ Examples:
     )
     parser.add_argument(
         "--store-kind",
-        choices=("sqlite", "csv"),
-        default="sqlite",
-        help="Storage type (default: sqlite)",
+        choices=("postgres",),
+        default="postgres",
+        help="Storage type (default: postgres)",
     )
     parser.add_argument(
         "--store-path",
         type=Path,
-        help="Path to storage file (default: ./data/candles.db or inferred from stats filename)",
+        help="Optional .env file path for postgres settings",
     )
     parser.add_argument(
         "--plot-output",
@@ -139,20 +139,24 @@ def load_report_from_json(filepath: Path) -> BacktestReport:
         data = json.load(f)
 
     # Reconstruct config
-    config_data = data.get("config", {})
+    config_data = data.get("config") or data.get("run_config") or {}
     start_raw = config_data.get("start")
     end_raw = config_data.get("end")
     if not start_raw or not end_raw:
-        raise ValueError("Invalid report JSON: config.start and config.end are required")
-    config = BacktestRunConfig(
-        start=datetime.fromisoformat(str(start_raw)),
-        end=datetime.fromisoformat(str(end_raw)),
-        initial_capital=float(config_data.get("initial_capital", 10_000.0)),
-        override_download=bool(config_data.get("override_download", False)),
-        max_batch=int(config_data.get("max_batch", 1000)),
-        risk_free_rate=float(config_data.get("risk_free_rate", 0.0)),
-        warmup_days=int(config_data.get("warmup_days", 30)),
-    )
+        raise ValueError(
+            "Invalid report JSON: config.start and config.end are required"
+        )
+    config_kwargs = {
+        "start": datetime.fromisoformat(str(start_raw)),
+        "end": datetime.fromisoformat(str(end_raw)),
+        "initial_capital": float(config_data.get("initial_capital", 10_000.0)),
+        "override_download": bool(config_data.get("override_download", False)),
+        "risk_free_rate": float(config_data.get("risk_free_rate", 0.0)),
+        "warmup_days": int(config_data.get("warmup_days", 30)),
+    }
+    if "max_batch" in config_data:
+        config_kwargs["max_batch"] = int(config_data["max_batch"])
+    config = BacktestRunConfig(**config_kwargs)
 
     # Reconstruct statistics
     stats_data = data.get("statistics", {})
@@ -171,7 +175,9 @@ def load_report_from_json(filepath: Path) -> BacktestReport:
         max_drawdown_pct=float(stats_data.get("max_drawdown_pct", 0.0)),
         sharpe_ratio=float(stats_data.get("sharpe_ratio", 0.0)),
         cagr_pct=float(stats_data.get("cagr_pct", 0.0)),
-        average_trade_duration_sec=float(stats_data.get("average_trade_duration_sec", 0.0)),
+        average_trade_duration_sec=float(
+            stats_data.get("average_trade_duration_sec", 0.0)
+        ),
         equity_curve=list(stats_data.get("equity_curve", [])),
         extra={
             k: v
@@ -205,7 +211,9 @@ def load_report_from_json(filepath: Path) -> BacktestReport:
         entry_time_raw = trade_data.get("entry_time")
         exit_time_raw = trade_data.get("exit_time")
         if not entry_time_raw or not exit_time_raw:
-            raise ValueError("Invalid report JSON: trade entry_time and exit_time are required")
+            raise ValueError(
+                "Invalid report JSON: trade entry_time and exit_time are required"
+            )
         trade = TradePerformance(
             entry_time=datetime.fromisoformat(str(entry_time_raw)),
             exit_time=datetime.fromisoformat(str(exit_time_raw)),
@@ -237,31 +245,14 @@ def find_latest_stats_file(directory: Path = Path("./results")) -> Path | None:
     if not directory.exists():
         return None
 
-    stats_files = list(directory.glob("*_stats.json")) + list(directory.glob("stats.json"))
+    stats_files = list(directory.glob("*_stats.json")) + list(
+        directory.glob("stats.json")
+    )
     if not stats_files:
         return None
 
     # Return the most recently modified file
     return max(stats_files, key=lambda p: p.stat().st_mtime)
-
-
-def infer_store_path(stats_file: Path, store_kind: str) -> Path:
-    """Infer store path from stats filename.
-
-    Args:
-        stats_file: Path to stats JSON file
-        store_kind: Storage type (sqlite or csv)
-
-    Returns:
-        Inferred store path
-    """
-    # Try to extract symbol/timeframe from filename
-    # e.g., eth_15m_stats.json -> ./data/eth_15m_candles.db
-    stem = stats_file.stem.replace("_stats", "")
-    if store_kind == "sqlite":
-        return Path(f"./data/{stem}_candles.db")
-    else:
-        return Path(f"./data/{stem}_candles.csv")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -297,25 +288,20 @@ def main(argv: list[str] | None = None) -> int:
         logging.error("Failed to load report: %s", exc, exc_info=True)
         return 1
 
-    # Determine store path
-    if args.store_path:
-        store_path = args.store_path
-    else:
-        store_path = infer_store_path(stats_file, args.store_kind)
-        logging.info("Inferred store path: %s", store_path)
-
     # Build store
     try:
-        store = build_store(args.store_kind, store_path)
+        store = build_store(args.store_kind, args.store_path)
     except Exception as exc:
-        logging.error("Failed to open store at %s: %s", store_path, exc)
-        logging.error("Make sure the store file exists and matches the stats file")
+        logging.error("Failed to open %s candle store: %s", args.store_kind, exc)
+        logging.error("Check postgres env vars or pass --store-path with a .env file")
         return 1
 
     # Generate plot
     try:
         logging.info("Generating plot...")
-        initial_candles: int | None = args.initial_candles if args.initial_candles > 0 else None
+        initial_candles: int | None = (
+            args.initial_candles if args.initial_candles > 0 else None
+        )
         fig = plot_backtest_from_store(
             report=report,
             store=store,
@@ -351,7 +337,9 @@ def main(argv: list[str] | None = None) -> int:
         logging.info("Plot generation completed successfully")
 
     except ImportError:
-        logging.error("Plotly is required for plotting. Install with: pip install plotly")
+        logging.error(
+            "Plotly is required for plotting. Install with: pip install plotly"
+        )
         return 1
     except Exception as exc:
         logging.error("Failed to generate plot: %s", exc, exc_info=True)
