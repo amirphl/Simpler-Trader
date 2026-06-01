@@ -1,132 +1,333 @@
-# Scalp Test
+# Simpler Trader
 
-`scalp-test` is a crypto strategy research and execution workspace covering:
+Crypto strategy research, backtesting, signal monitoring, and live-trading tooling.
 
-- **Backtesting** (CLI + web control panel)
-- **Candle ingestion** (Binance → PostgreSQL)
-- **Live trading** coordinators (Binance / Bitunix)
-- **Utilities** (position tools, candle validation, plotting)
+This repository is a Python workspace for testing trading ideas against Binance candle data, running a local FastAPI backtest panel, and operating strategy-specific live coordinators against supported exchange adapters. It is intended for research and controlled live testing, not unattended production trading.
 
-## Scope
+## What Is Included
 
-Covered:
-- Backtests for `engulfing`, `pinbar_magic_v2`, and `stochastic_fsm`
-- Web UI to launch/monitor backtests
-- Live trading: `heiken_ashi`, `pinbar_magic_v2`, `strong_trend_stair` (Bitunix/Binance)
-- Bitunix helper CLIs for stop/TP/SL management
+- Backtesting for `engulfing`, `pinbar_magic_v3`, `stochastic_fsm`, and `strong_trend_stair`.
+- Binance candle ingestion with PostgreSQL-backed storage.
+- A local web control panel for submitting and monitoring backtests.
+- Live trading coordinators for `heiken_ashi`, `pinbar_magic_v3`, and `strong_trend_stair`.
+- Bitunix futures adapter code plus helper scripts for positions, orders, and TP/SL management.
+- Telegram signal notification for live engulfing-pattern scans.
+- Experimental market-structure tools for pivots, BOS/CHOCH, and liquidity zones.
 
-Not covered:
-- Spot trading
-- Multi-exchange order routing/hedging
-- Production-grade deployment (k8s, systemd) — local/VM expected
-- Automatic credential/key management
+## Safety First
+
+Live trading code can place real orders when configured with live credentials and live mode. Treat every config file under `configs/` as sensitive once copied from an example template.
+
+- Do not commit real API keys, Telegram tokens, or account identifiers.
+- Prefer exchange testnet or dry-run flows before any live run.
+- Review strategy settings, leverage, position sizing, and margin mode before starting a coordinator.
+- Local `.env` files can be read by CLI defaults and may appear in `--help` output, so avoid sharing terminal logs from credentialed machines.
+- This repo does not provide high-availability monitoring, automatic key rotation, alert escalation, or operational guardrails expected in production systems.
 
 ## Requirements
 
-- Python 3.10+
-- PostgreSQL (for candle storage/backtests)
-- Node/npm only if you rebuild the web UI assets (prebuilt bundle is checked in)
-- mkcert or OpenSSL (optional) if you need local HTTPS
+- Python 3.10 or newer.
+- PostgreSQL for candle storage.
+- `pip` and a virtual environment.
+- Node/npm only for JavaScript linting or future web asset work; the current web UI is plain checked-in static assets.
 
-Install deps:
+Install Python dependencies:
+
 ```bash
-python -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
-## Quickstart (local)
+If your shell does not expose `python` after activating the virtual environment, use `python3` in the commands below.
 
-1) **Candle DB** (PostgreSQL)
+## Project Layout
+
+```text
+.
+|-- backtest/              # Backtest engine, reports, plotting, and strategies
+|-- candle_downloader/     # Binance candle client, downloader, and PostgreSQL store
+|-- cmd/                   # Python module entrypoints
+|-- configs/               # Live-trading .env templates and config notes
+|-- experiments/           # Pivot, liquidity-zone, BOS/CHOCH, and CSV helpers
+|-- live_trading/          # Coordinators, exchange adapters, position management
+|-- scripts/               # Launchers, candle utilities, and Bitunix helper CLIs
+|-- signal_notifier/       # Telegram signal scanner and notifier
+|-- tests/                 # Unit tests
+|-- web/ui/                # Static browser UI
+`-- webserver/             # FastAPI app and backtest job manager
+```
+
+## Database Setup
+
+Candle storage is PostgreSQL-only.
+
 ```bash
 createdb scalp_test
-export CANDLE_DB_HOST=localhost CANDLE_DB_USER=postgres CANDLE_DB_PASSWORD=postgres
-```
-Env keys (either prefix): `CANDLE_DB_*` / `POSTGRES_*` (`HOST,PORT,USER,PASSWORD,DB,SSLMODE,MIN_POOL_SIZE,MAX_POOL_SIZE`, or `CANDLE_DATABASE_URL`).
 
-2) **Download candles (example)**
-```bash
-python -m cmd.candle_downloader.main \
-  --symbol BTCUSDT --interval 15m \
-  --start 2025-01-01T00:00:00Z --end 2025-02-01T00:00:00Z \
-  --store-kind postgres
+export CANDLE_DB_HOST=localhost
+export CANDLE_DB_PORT=5432
+export CANDLE_DB_USER=postgres
+export CANDLE_DB_PASSWORD=postgres
+export CANDLE_DB_NAME=scalp_test
 ```
 
-3) **Backtest (CLI)**
+Supported database environment variables:
+
+- `CANDLE_DATABASE_URL` or `DATABASE_URL`
+- `CANDLE_DB_HOST`, `CANDLE_DB_PORT`, `CANDLE_DB_USER`, `CANDLE_DB_PASSWORD`, `CANDLE_DB_NAME`
+- `CANDLE_DB_SSLMODE`, `CANDLE_DB_MIN_POOL_SIZE`, `CANDLE_DB_MAX_POOL_SIZE`
+- Matching `POSTGRES_*` aliases
+- `CANDLE_DB_ENV_FILE` or `POSTGRES_ENV_FILE` pointing to an env file
+
+The `candles` table and index are created automatically by the storage layer.
+
+## Backtesting
+
+Backtests download missing Binance candles into PostgreSQL, load the requested range, run the selected strategy, write statistics JSON, and optionally save an interactive Plotly chart.
+
+Basic example:
+
 ```bash
 python -m cmd.backtest.main \
-  --strategy pinbar_magic_v2 \
-  --symbol BTCUSDT --timeframe 1h \
-  --start 2025-01-01T00:00:00Z --end 2025-02-01T00:00:00Z \
-  --initial-capital 10000 --store-kind postgres
+  --strategy pinbar_magic_v3 \
+  --symbol BTCUSDT \
+  --timeframe 1h \
+  --start 2025-01-01T00:00:00Z \
+  --end 2025-02-01T00:00:00Z \
+  --initial-capital 10000 \
+  --store-kind postgres \
+  --stats-output results/pinbar_magic_v3_stats.json \
+  --plot-output results/pinbar_magic_v3.html
 ```
 
-4) **Web backtest panel**
+Supported strategy names:
+
+- `engulfing`
+- `pinbar_magic_v3`
+- `stochastic_fsm`
+- `strong_trend_stair`
+
+Useful flags:
+
+- `--override-download` redownloads candles even when local rows exist.
+- `--store-path path/to/db.env` loads PostgreSQL settings from an env file.
+- `--http-proxy`, `--https-proxy`, or `--proxy` route Binance requests through a proxy.
+- `--show-plot` opens the generated Plotly chart in a browser.
+- `--no-stochastic` and `--no-equity` hide chart subplots.
+
+Strategy settings can be supplied with CLI flags or environment variables. Run a strategy-specific help command for the exact options:
+
 ```bash
-python -m cmd.web.main --local   # disables HTTPS redirect, binds 127.0.0.1:9092
-# or
+python -m cmd.backtest.main --strategy engulfing --help
+python -m cmd.backtest.main --strategy pinbar_magic_v3 --help
+python -m cmd.backtest.main --strategy stochastic_fsm --help
+python -m cmd.backtest.main --strategy strong_trend_stair --help
+```
+
+## Web Control Panel
+
+Start the local FastAPI panel:
+
+```bash
 ./scripts/run_web.sh --local
-open http://127.0.0.1:9092
-```
-If your browser forces HTTPS and you want to serve HTTPS locally, start uvicorn with a self-signed cert:
-```bash
-WEB_FORCE_HTTPS=true uvicorn webserver.app:app \
-  --host 0.0.0.0 --port 9092 \
-  --ssl-keyfile 127.0.0.1-key.pem --ssl-certfile 127.0.0.1.pem
 ```
 
-5) **Live trading**
-- Copy a config and edit secrets:
-  ```bash
-  cp configs/live_trading.pinbar_magic_v2.env.example configs/live_trading.pinbar_magic_v2.env
-  cp configs/live_trading.strong_trend_stair.env.example configs/live_trading.strong_trend_stair.env
-  ```
-- Run a coordinator (Bitunix/Binance, depends on config):
-  ```bash
-  CONFIG_FILE=configs/live_trading.strong_trend_stair.env \
-  ./scripts/run_strong_trend_stair_live.sh
-  ```
-  Logs: `tail -f logs/strong_trend_stair.log`
+Then open:
 
-## Bitunix helper CLIs (scripts/)
-
-- `bitunix_update_stop_loss.py` – update TP/SL order by order id.
-- `bitunix_place_position_tpsl.py` – place TP/SL by position id.
-- `bitunix_modify_position_tpsl.py` – modify TP/SL by position id.
-- `bitunix_list_positions.py` – list open/pending positions.
-
-Run from repo root (fish example):
-```bash
-env BITUNIX_API_KEY=... BITUNIX_API_SECRET=... \
-python3 scripts/bitunix_place_position_tpsl.py --symbol BTCUSDT --position-id 123456 --sl-price 27000 --sl-stop-type MARK_PRICE
+```text
+http://127.0.0.1:9092
 ```
 
-## Web API surfaces
+`--local` binds to `127.0.0.1:9092`, disables HTTPS enforcement, and trusts localhost. Without `--local`, configure these environment variables as needed:
+
+- `WEB_HOST`
+- `WEB_PORT`
+- `WEB_LOG_LEVEL`
+- `WEB_FORCE_HTTPS`
+- `WEB_TRUSTED_HOSTS`
+- `WEB_ALLOWED_ORIGINS`
+
+Main API surfaces:
 
 - `POST /api/backtests`
 - `GET /api/backtests/{job_id}`
 - `GET /api/backtests/{job_id}/result`
 - `WS /ws/backtests/{job_id}`
 
-Trusted hosts & CORS: see `WEB_TRUSTED_HOSTS`, `WEB_ALLOWED_ORIGINS` in `webserver/app.py`. Set `WEB_FORCE_HTTPS=false` (or `--local`) to avoid HTTPS redirects in local dev.
+Additional experiment servers have dedicated launch scripts:
 
-## Project Layout
-
-```text
-scalp-test/
-├── backtest/             # backtest engines & strategies
-├── candle_downloader/    # ingest candles to DB
-├── cmd/                  # entrypoints (backtest, live_trading, web, etc.)
-├── configs/              # *.env templates for live trading
-├── live_trading/         # exchange adapters, coordinators, strategies
-├── scripts/              # helper launchers & Bitunix tools
-├── web/                  # compiled web UI assets
-└── webserver/            # FastAPI app for web panel
+```bash
+./scripts/run_pivot_server.sh
+./scripts/run_bos_choch_server.sh
+./scripts/run_liquidity_zone_server.sh
 ```
 
-## Notes & Safety
+## Candle Utilities
 
-- Keep API keys/secrets out of git.
-- Live trading configs (`configs/live_trading.*.env`) are sensitive.
-- Candle store is PostgreSQL-only; no SQLite fallback.
-- This repo is aimed at research/live testing; hardening (monitoring, HA, alerting) is out of scope.
+Download candles directly to CSV:
+
+```bash
+python scripts/download_candles_to_csv.py \
+  --symbol BTCUSDT \
+  --timeframe 15m \
+  --start 2025-01-01T00:00:00Z \
+  --end 2025-01-07T00:00:00Z \
+  --output data/BTCUSDT-15m.csv
+```
+
+Check PostgreSQL candle completeness and optionally redownload missing data:
+
+```bash
+python scripts/check_missing_candles.py \
+  --db-kind postgres \
+  --pg-host localhost \
+  --pg-port 5432 \
+  --pg-user postgres \
+  --pg-password postgres \
+  --pg-db scalp_test \
+  --symbol BTCUSDT \
+  --timeframe 15m \
+  --start-date 2025-01-01T00:00:00Z \
+  --end-date 2025-02-01T00:00:00Z \
+  --redownload-from-binance
+```
+
+## Live Trading
+
+Create a strategy config from a template:
+
+```bash
+cp configs/live_trading.heiken_ashi.env.example configs/live_trading.heiken_ashi.env
+cp configs/live_trading.pinbar_magic_v3.env.example configs/live_trading.pinbar_magic_v3.env
+cp configs/live_trading.strong_trend_stair.env.example configs/live_trading.strong_trend_stair.env
+```
+
+Edit only the strategy file you plan to run. See [configs/README.md](configs/README.md) for the full variable list and resolution order.
+
+Run through the generic launcher:
+
+```bash
+CONFIG_FILE=configs/live_trading.pinbar_magic_v3.env ./scripts/run_live_trading.sh
+```
+
+Or run a strategy module directly:
+
+```bash
+python -m cmd.live_trading.heiken_ashi_main --config-file configs/live_trading.heiken_ashi.env
+python -m cmd.live_trading.pinbar_magic_v3_main --config-file configs/live_trading.pinbar_magic_v3.env
+python -m cmd.live_trading.strong_trend_stair_main --config-file configs/live_trading.strong_trend_stair.env
+```
+
+Config precedence for live trading is:
+
+1. CLI arguments
+2. OS environment variables
+3. Strategy config file
+4. Built-in defaults
+
+Common live-trading settings include:
+
+- `STRATEGY_NAME`
+- `EXCHANGE`
+- `TRADING_MODE`
+- `API_KEY`, `API_SECRET`, `API_PASSPHRASE`
+- `TESTNET`
+- `LEVERAGE`
+- `POSITION_SIZE_USDT`
+- `MAX_CONCURRENT_POSITIONS`
+- `MARGIN_MODE`
+- `STATE_FILE`, `POSITIONS_DB`, `KLINES_DB`, `LOG_FILE`
+- `TELEGRAM_ENABLED`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+
+Use `--help` on a specific module before changing live settings:
+
+```bash
+python -m cmd.live_trading.pinbar_magic_v3_main --help
+```
+
+## Signal Notifier
+
+Monitor Binance symbols for engulfing signals and send Telegram notifications:
+
+```bash
+python -m cmd.signal_notifier.main \
+  --timeframe 15m \
+  --top-n 100 \
+  --telegram-token "$TELEGRAM_BOT_TOKEN" \
+  --telegram-chat-id "$TELEGRAM_CHAT_ID"
+```
+
+Use `--dry-run` to log signals without sending Telegram messages:
+
+```bash
+python -m cmd.signal_notifier.main --timeframe 15m --symbols BTCUSDT,ETHUSDT --dry-run
+```
+
+## Bitunix Helper Scripts
+
+These scripts use `BITUNIX_API_KEY` and `BITUNIX_API_SECRET` unless `--key` and `--secret` are provided.
+
+```bash
+export BITUNIX_API_KEY=...
+export BITUNIX_API_SECRET=...
+```
+
+Common helpers:
+
+- `scripts/bitunix_list_positions.py`
+- `scripts/bitunix_place_position_tpsl.py`
+- `scripts/bitunix_modify_position_tpsl.py`
+- `scripts/bitunix_update_stop_loss.py`
+- `scripts/bitunix_order_smoke_test.py`
+
+Example:
+
+```bash
+python scripts/bitunix_list_positions.py --symbol BTCUSDT
+```
+
+Place position-level TP/SL:
+
+```bash
+python scripts/bitunix_place_position_tpsl.py \
+  --symbol BTCUSDT \
+  --position-id 123456 \
+  --sl-price 27000 \
+  --sl-stop-type MARK_PRICE
+```
+
+## Testing And Checks
+
+Run the unit test suite:
+
+```bash
+python -m pytest
+```
+
+Run the existing type checker configuration if Pyright is installed:
+
+```bash
+pyright
+```
+
+Run npm tooling:
+
+```bash
+npm install
+npm exec eslint .
+```
+
+## Deployment Notes
+
+The `deploy/` directory contains example service configuration:
+
+- `deploy/systemd/backtest-web.service`
+- `deploy/nginx/balut.jaazebeh.ir.conf`
+
+Treat these as starting points. Before exposing the web panel, review trusted hosts, CORS, HTTPS settings, firewall rules, process supervision, logs, and credential storage.
+
+## License
+
+This project is licensed under the terms in [LICENSE](LICENSE).
