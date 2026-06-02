@@ -1,6 +1,14 @@
 """Live trading module for automated strategy execution."""
 
-from .exchange import Exchange, ExchangeConfig, Position, PositionSide, PositionStatus, OrderType, MarginMode
+from .exchange import (
+    Exchange,
+    ExchangeConfig,
+    Position,
+    PositionSide,
+    PositionStatus,
+    OrderType,
+    MarginMode,
+)
 from .heiken_ashi_strategy import HeikenAshiLiveStrategy, LiveTradingStrategy
 from .models import (
     LiveTradingConfig,
@@ -11,7 +19,7 @@ from .models import (
     TradingState,
     PositionRecord,
 )
-from .pinbar_magic_strategy import PinBarMagicLiveStrategy
+from .pinbar_magic_strategy_v3 import PinBarMagicLiveStrategyV3
 from .strategy_shared import BaseLiveTradingStrategy
 
 __all__ = [
@@ -25,7 +33,7 @@ __all__ = [
     "BaseLiveTradingStrategy",
     "HeikenAshiLiveStrategy",
     "LiveTradingStrategy",
-    "PinBarMagicLiveStrategy",
+    "PinBarMagicLiveStrategyV3",
     "LiveTradingConfig",
     "SymbolInfo",
     "TradingSignal",
