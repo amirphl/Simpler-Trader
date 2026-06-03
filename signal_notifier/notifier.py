@@ -40,7 +40,7 @@ class SignalNotifier:
         self,
         *,
         binance_client: BinanceClient,
-        telegram_client: TelegramClient,
+        telegram_client: Optional[TelegramClient],
         detector: EngulfingSignalDetector,
         settings: SignalNotifierSettings,
         logger: Optional[logging.Logger] = None,
@@ -194,6 +194,8 @@ class SignalNotifier:
         if self._settings.dry_run:
             self._log.info("DRY RUN - Would send signal:\n%s", message)
             return
+        if self._telegram is None:
+            raise RuntimeError("Telegram client is required when dry_run is disabled.")
         self._telegram.send_message(message)
 
     def _format_signal(self, signal: EngulfingSignal) -> str:
