@@ -5,6 +5,14 @@ import argparse
 from datetime import datetime, timezone
 from typing import Dict
 
+if __package__:
+    from ._bootstrap import ensure_project_root_on_path
+else:  # pragma: no cover - direct script execution
+    from _bootstrap import ensure_project_root_on_path
+
+ensure_project_root_on_path()
+
+from candle_downloader.binance import interval_to_milliseconds
 from candle_downloader.models import to_milliseconds
 from experiments.candle_csv import write_candles_to_csv
 from experiments.pivot_detection import download_candles
@@ -57,10 +65,12 @@ def main() -> int:
     end = parse_datetime(args.end)
     if start >= end:
         raise ValueError("start must be before end")
+    timeframe = args.timeframe.strip()
+    interval_to_milliseconds(timeframe)
 
     candles = download_candles(
         symbol=args.symbol.strip().upper(),
-        interval=args.timeframe.strip(),
+        interval=timeframe,
         start_ms=to_milliseconds(start),
         end_ms=to_milliseconds(end),
         proxies=build_proxies(args),
