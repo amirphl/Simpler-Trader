@@ -21,10 +21,10 @@
         --zone-down: rgba(255, 107, 87, 0.15);
         --zone-choch-up: rgba(79, 179, 255, 0.14);
         --zone-choch-down: rgba(245, 181, 31, 0.14);
-        --pivot-bull: #b6f3cf;
-        --pivot-bear: #ffcc66;
-        --pivot-zone-bull: rgba(182, 243, 207, 0.11);
-        --pivot-zone-bear: rgba(255, 204, 102, 0.11);
+        --ichoch-up: #06b6d4;
+        --ichoch-down: #d97706;
+        --zone-ichoch-up: rgba(6, 182, 212, 0.13);
+        --zone-ichoch-down: rgba(217, 119, 6, 0.13);
         --reversal: #e879f9;
         --label-bg: rgba(7, 11, 20, 0.94);
         --border: rgba(243, 246, 251, 0.1);
@@ -138,7 +138,7 @@
       }
       .stats {
         display: grid;
-        grid-template-columns: repeat(5, minmax(0, 1fr));
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 8px;
         margin-bottom: 12px;
       }
@@ -188,16 +188,16 @@
       .swatch.choch {
         background: linear-gradient(90deg, var(--choch-up), var(--choch-down));
       }
-      .swatch.pivot {
-        background: linear-gradient(
-          90deg,
-          var(--pivot-bull),
-          var(--pivot-bear)
-        );
-      }
       .swatch.reversal {
         background: var(--reversal);
         opacity: 0.8;
+      }
+      .swatch.ichoch {
+        background: linear-gradient(
+          90deg,
+          var(--ichoch-up),
+          var(--ichoch-down)
+        );
       }
       #chart {
         height: 560px;
@@ -349,16 +349,6 @@
           />
         </div>
         <div>
-          <label for="scan_length">Pivot scan candles</label>
-          <input
-            id="scan_length"
-            name="scan_length"
-            type="number"
-            min="1"
-            value="500"
-          />
-        </div>
-        <div>
           <label for="hunt_mode">Hunt mode</label>
           <select id="hunt_mode" name="hunt_mode">
             <option value="wick">Wick</option>
@@ -419,10 +409,6 @@
           />
         </div>
         <label class="check">
-          <input name="include_bos_in_choch_range" type="checkbox" />
-          Include BOS in CHoCH range
-        </label>
-        <label class="check">
           <input
             name="include_hunt_candle_in_choch_range"
             type="checkbox"
@@ -433,18 +419,6 @@
         <label class="check">
           <input name="include_pullback_in_bos_level" type="checkbox" checked />
           Include pullback in BOS level
-        </label>
-        <label class="check">
-          <input name="restart_on_invalidation" type="checkbox" />
-          Restart pivots on invalidation
-        </label>
-        <label class="check">
-          <input name="use_structural_left_bound" type="checkbox" />
-          Pivot structural left bound
-        </label>
-        <label class="check">
-          <input name="include_reference_candle" type="checkbox" checked />
-          Include ref candle in pivot
         </label>
         <div>
           <label>&nbsp;</label>
@@ -468,10 +442,6 @@
             <span>CHoCH</span>
           </div>
           <div class="metric">
-            <strong id="pivot-count">0</strong>
-            <span>Pivots</span>
-          </div>
-          <div class="metric">
             <strong id="reversal-count" style="color: var(--reversal)"
               >0</strong
             >
@@ -482,6 +452,10 @@
           <label class="chip">
             <input id="show-marker-labels" type="checkbox" checked />
             Labels
+          </label>
+          <label class="chip">
+            <input id="show-full-labels" type="checkbox" checked />
+            Full labels
           </label>
           <label class="chip">
             <input id="show-vertical-labels" type="checkbox" />
@@ -510,10 +484,10 @@
             ><i class="swatch choch"></i>CHoCH = dashed line + diamond</span
           >
           <span class="chip"
-            ><i class="swatch pivot"></i>Pivot = range + triangle</span
+            ><i class="swatch reversal"></i>Reversal = vertical band</span
           >
           <span class="chip"
-            ><i class="swatch reversal"></i>Reversal = vertical band</span
+            ><i class="swatch ichoch"></i>ICHOCH = independent CHoCH</span
           >
         </div>
         <div id="chart"></div>
