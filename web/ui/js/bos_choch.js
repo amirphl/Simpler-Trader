@@ -4,6 +4,7 @@
   const list = document.getElementById("event-list");
   const chartContainer = document.getElementById("chart");
   const showLabelsInput = document.getElementById("show-marker-labels");
+  const showFullLabelsInput = document.getElementById("show-full-labels");
   const showVerticalLabelsInput = document.getElementById(
     "show-vertical-labels",
   );
@@ -56,6 +57,14 @@
     text: css.getPropertyValue("--text").trim() || "#f3f6fb",
     reversal: css.getPropertyValue("--reversal").trim() || "#e879f9",
     reversalBand: "rgba(232, 121, 249, 0.07)",
+    ichochUp: css.getPropertyValue("--ichoch-up").trim() || "#06b6d4",
+    ichochDown: css.getPropertyValue("--ichoch-down").trim() || "#d97706",
+    zoneIchochUp:
+      css.getPropertyValue("--zone-ichoch-up").trim() ||
+      "rgba(6, 182, 212, 0.13)",
+    zoneIchochDown:
+      css.getPropertyValue("--zone-ichoch-down").trim() ||
+      "rgba(217, 119, 6, 0.13)",
   };
 
   let chart;
@@ -64,14 +73,21 @@
   let overlayCtx;
   let lastMarkers = [];
   let lastPivots = [];
+  let lastPivotV2Entries = [];
   let lastReversals = [];
   let lastChochUpdates = [];
   let lastDetectionEvents = [];
+  let lastCandleData = [];
 
   function optionalText(value) {
     if (typeof value !== "string") return null;
     const trimmed = value.trim();
     return trimmed ? trimmed : null;
+  }
+
+  function parseDateInput(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
   }
 
   function isoInput(dt) {
@@ -165,16 +181,21 @@
   }
 
   function markerLineColor(marker) {
-    if (marker.type === "BOS") {
-      return markerColor(marker);
-    }
+    if (marker.type === "BOS") return markerColor(marker);
+    if (marker.type === "ICHOCH")
+      return marker.direction === "UPWARD"
+        ? COLORS.ichochUp
+        : COLORS.ichochDown;
     return marker.direction === "UPWARD" ? COLORS.chochUp : COLORS.chochDown;
   }
 
   function markerZoneColor(marker) {
-    if (marker.type === "BOS") {
+    if (marker.type === "BOS")
       return marker.direction === "UPWARD" ? COLORS.zoneUp : COLORS.zoneDown;
-    }
+    if (marker.type === "ICHOCH")
+      return marker.direction === "UPWARD"
+        ? COLORS.zoneIchochUp
+        : COLORS.zoneIchochDown;
     return marker.direction === "UPWARD"
       ? COLORS.zoneChochUp
       : COLORS.zoneChochDown;
@@ -196,8 +217,10 @@
 
   function markerLabelText(marker) {
     if (!showLabelsInput?.checked) return "";
+    if (!showFullLabelsInput?.checked) return String(marker.index);
     const side = marker.direction === "UPWARD" ? "UP" : "DOWN";
-    return `${marker.type} ${marker.index} ${side} @ ${Number(marker.price).toPrecision(6)}`;
+    const typeLabel = marker.type === "ICHOCH" ? "iCHoCH" : marker.type;
+    return `${typeLabel} ${marker.index} ${side} @ ${Number(marker.price).toPrecision(6)}`;
   }
 
   function clamp(value, min, max) {
@@ -426,6 +449,56 @@
     });
   }
 
+  function drawPivotV2Markers() {
+    if (
+      !showPivotsInput?.checked ||
+      !lastPivotV2Entries.length ||
+      !lastCandleData.length
+    )
+      return;
+
+    const pivotV2Map = new Map();
+    lastPivotV2Entries.forEach((e) => {
+      if (e.pivot_index != null) pivotV2Map.set(e.candle_index, e);
+    });
+
+    pivotV2Map.forEach((e) => {
+      const pivotCandle = lastCandleData[e.pivot_index];
+      if (!pivotCandle) return;
+      const px = chart.timeScale().timeToCoordinate(pivotCandle.time);
+      if (px == null) return;
+      const isBear = e.pivot_type === "bearish";
+      const price = isBear ? pivotCandle.high : pivotCandle.low;
+      const py = candleSeries.priceToCoordinate(price);
+      if (py == null) return;
+
+      const color = isBear ? COLORS.pivotBear : COLORS.pivotBull;
+      const triX = Math.round(px);
+      const triY = Math.round(py);
+
+      overlayCtx.save();
+      overlayCtx.fillStyle = color;
+      overlayCtx.strokeStyle = "#ffffff";
+      overlayCtx.lineWidth = 1.2;
+      overlayCtx.shadowColor = "rgba(0,0,0,0.6)";
+      overlayCtx.shadowBlur = 4;
+      overlayCtx.beginPath();
+      if (isBear) {
+        overlayCtx.moveTo(triX, triY - 10);
+        overlayCtx.lineTo(triX + 7, triY - 2);
+        overlayCtx.lineTo(triX - 7, triY - 2);
+      } else {
+        overlayCtx.moveTo(triX, triY + 10);
+        overlayCtx.lineTo(triX + 7, triY + 2);
+        overlayCtx.lineTo(triX - 7, triY + 2);
+      }
+      overlayCtx.closePath();
+      overlayCtx.fill();
+      overlayCtx.stroke();
+      overlayCtx.restore();
+    });
+  }
+
   function drawPivotLinesAndPoints() {
     if (!showPivotsInput?.checked) return;
 
@@ -481,8 +554,11 @@
 
       if (showLabelsInput?.checked) {
         const side = isBullish ? "BULL" : "BEAR";
+        const pivotText = showFullLabelsInput?.checked
+          ? `P ${pivot.index} ${side} @ ${price.toPrecision(6)}${pivot.haunted ? " hunted" : ""}`
+          : String(pivot.index);
         drawLabel({
-          text: `P ${pivot.index} ${side} @ ${price.toPrecision(6)}${pivot.haunted ? " hunted" : ""}`,
+          text: pivotText,
           x: pivotX,
           y: py,
           color,
@@ -604,6 +680,7 @@
       overlayCtx.restore();
     });
 
+    drawPivotV2Markers();
     drawPivotLinesAndPoints();
     overlayCtx.restore();
   }
@@ -713,6 +790,7 @@
     reversals = [],
     chochUpdates = [],
     detectionEvents = [],
+    pivotV2Entries = [],
   ) {
     ensureChart();
     const data = candles.map((c) => ({
@@ -723,6 +801,7 @@
       close: c.close,
     }));
     candleSeries.setData(data);
+    lastCandleData = data;
 
     lastMarkers = markers.map((marker) => ({
       ...marker,
@@ -731,6 +810,7 @@
       line_end_time: unixTime(marker.line_end_time),
     }));
     lastPivots = pivots.map(normalizePivot);
+    lastPivotV2Entries = pivotV2Entries;
     lastReversals = reversals.map((rev) => ({
       ...rev,
       time: unixTime(rev.time),
@@ -760,7 +840,9 @@
       const typeLabel =
         marker.type === "BOS"
           ? `BOS #${marker.index}`
-          : `CHoCH #${marker.index} [B#${marker.bos_index ?? "?"}]`;
+          : marker.type === "ICHOCH"
+            ? `iCHoCH #${marker.index} [${marker.bos_index != null ? "B#" + marker.bos_index : "indep"}]`
+            : `CHoCH #${marker.index} [B#${marker.bos_index ?? "?"}]`;
       const candleRange = `${Number(marker.low).toPrecision(6)}-${Number(marker.high).toPrecision(6)}`;
       row.className = "event-row";
       row.dataset.idx = String(idx);
@@ -783,10 +865,9 @@
       list.appendChild(row);
     });
 
-    const bosCount = lastMarkers.filter(
-      (marker) => marker.type === "BOS",
-    ).length;
-    const chochCount = lastMarkers.length - bosCount;
+    const bosCount = lastMarkers.filter((m) => m.type === "BOS").length;
+    const ichochCount = lastMarkers.filter((m) => m.type === "ICHOCH").length;
+    const chochCount = lastMarkers.length - bosCount - ichochCount;
     if (eventCountEl) eventCountEl.textContent = String(lastMarkers.length);
     if (bosCountEl) bosCountEl.textContent = String(bosCount);
     if (chochCountEl) chochCountEl.textContent = String(chochCount);
@@ -849,18 +930,22 @@
 
   async function handleSubmit(event) {
     event.preventDefault();
-    statusEl.textContent = "Requesting candles & structure events...";
     const formData = new FormData(form);
+    const start = parseDateInput(formData.get("start"));
+    const end = parseDateInput(formData.get("end"));
+    if (!start || !end) {
+      statusEl.textContent = "Valid start and end dates are required.";
+      return;
+    }
+    statusEl.textContent = "Requesting candles & structure events...";
     const payload = {
       symbol: formData.get("symbol"),
       timeframe: formData.get("timeframe"),
-      start: new Date(formData.get("start")).toISOString(),
-      end: new Date(formData.get("end")).toISOString(),
+      start,
+      end,
       direction_window: Number(formData.get("direction_window") ?? 3) || 3,
-      scan_length: Number(formData.get("scan_length") ?? 500) || 500,
       hunt_mode: formData.get("hunt_mode"),
       choch_display_mode: formData.get("choch_display_mode") || "all",
-      include_bos_in_choch_range: formData.has("include_bos_in_choch_range"),
       include_hunt_candle_in_choch_range: formData.has(
         "include_hunt_candle_in_choch_range",
       ),
@@ -868,9 +953,6 @@
       include_pullback_in_bos_level: formData.has(
         "include_pullback_in_bos_level",
       ),
-      restart_on_invalidation: formData.has("restart_on_invalidation"),
-      use_structural_left_bound: formData.has("use_structural_left_bound"),
-      include_reference_candle: formData.has("include_reference_candle"),
       source: formData.get("source"),
       csv_path: optionalText(formData.get("csv_path")),
       http_proxy: optionalText(formData.get("http_proxy")),
@@ -897,6 +979,7 @@
         json.direction_reversals || [],
         json.choch_updates || [],
         json.detection_events || [],
+        json.pivot_v2_entries || [],
       );
     } catch (err) {
       console.error(err);
@@ -906,6 +989,7 @@
 
   form?.elements?.source?.addEventListener("change", syncSourceFields);
   showLabelsInput?.addEventListener("change", drawStructureMarkers);
+  showFullLabelsInput?.addEventListener("change", drawStructureMarkers);
   showVerticalLabelsInput?.addEventListener("change", drawStructureMarkers);
   showZonesInput?.addEventListener("change", drawStructureMarkers);
   showPointsInput?.addEventListener("change", drawStructureMarkers);
