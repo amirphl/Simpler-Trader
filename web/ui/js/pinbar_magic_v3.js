@@ -30,7 +30,8 @@ window.addEventListener("DOMContentLoaded", () => {
         start: start ? new Date(start).toISOString() : null,
         end: end ? new Date(end).toISOString() : null,
         initial_capital: num(data.get("initial_capital"), 10000),
-        override_download: false,
+        override_download: bool(data.get("override_download"), false),
+        warmup_days: int(data.get("warmup_days"), 30),
         params: {
           symbol: text(data.get("symbol"), "ETHUSDT"),
           timeframe: text(data.get("timeframe"), "1h"),
