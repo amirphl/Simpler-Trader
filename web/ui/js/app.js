@@ -44,7 +44,10 @@
     const pointWidthPx = Math.max(Number(layout.pointWidthPx) || 2, 1);
     const minWidthPx = Math.max(Number(layout.minWidthPx) || 960, 320);
     const maxWidthPx = Math.max(Number(layout.maxWidthPx) || 60000, minWidthPx);
-    const chartWidthPx = Math.min(maxWidthPx, Math.max(minWidthPx, Math.ceil(labelCount * pointWidthPx)));
+    const chartWidthPx = Math.min(
+      maxWidthPx,
+      Math.max(minWidthPx, Math.ceil(labelCount * pointWidthPx)),
+    );
     const chartHeightPx = Math.max(Number(layout.heightPx) || 220, 180);
 
     let canvasHost = container;
@@ -89,7 +92,10 @@
           plugins: {
             legend: { display: false },
             zoom: {
-              limits: { x: { min: "original", max: "original" }, y: { min: "original", max: "original" } },
+              limits: {
+                x: { min: "original", max: "original" },
+                y: { min: "original", max: "original" },
+              },
               pan: { enabled: true, mode: "x", modifierKey: "shift" },
               zoom: {
                 wheel: { enabled: true },
@@ -105,7 +111,7 @@
             y: { ticks: { color: "#475569" }, grid: { color: "#e2e8f0" } },
           },
         },
-        options || {}
+        options || {},
       ),
     });
     chartInstances.push(chart);
@@ -116,6 +122,8 @@
     const cfg = options || {};
     const formSelector = cfg.formSelector || "#backtest-form";
     const serializeForm = cfg.serializeForm;
+    const onResult = typeof cfg.onResult === "function" ? cfg.onResult : null;
+    const onReady = typeof cfg.onReady === "function" ? cfg.onReady : null;
 
     if (typeof serializeForm !== "function") {
       console.error("serializeForm must be provided for initBacktestPage.");
@@ -212,7 +220,9 @@
         activeSocket.close();
       }
       const protocol = location.protocol === "https:" ? "wss" : "ws";
-      const socket = new WebSocket(`${protocol}://${location.host}/ws/backtests/${jobId}`);
+      const socket = new WebSocket(
+        `${protocol}://${location.host}/ws/backtests/${jobId}`,
+      );
       socket.onmessage = (event) => {
         try {
           handleEvent(JSON.parse(event.data));
@@ -260,14 +270,15 @@
           : [],
       });
       statsOutput.textContent = JSON.stringify(statsWithIndex, null, 2);
-     const trades = result.report?.trades || [];
+      const trades = result.report?.trades || [];
       renderTradesList(trades);
 
       if (chartsOutput) {
         destroyCharts();
         chartsOutput.innerHTML = "";
         chartsOutput.style.display = "grid";
-        chartsOutput.style.gridTemplateColumns = "repeat(auto-fit, minmax(280px, 1fr))";
+        chartsOutput.style.gridTemplateColumns =
+          "repeat(auto-fit, minmax(280px, 1fr))";
         chartsOutput.style.gap = "1rem";
 
         if (!window.Chart) {
@@ -275,7 +286,9 @@
           return;
         }
 
-        const equity = Array.isArray(stats.equity_curve) ? stats.equity_curve : [];
+        const equity = Array.isArray(stats.equity_curve)
+          ? stats.equity_curve
+          : [];
         if (equity.length) {
           const dd = computeDrawdownCurve(equity);
           const equityContainer = document.createElement("div");
@@ -299,7 +312,12 @@
                 },
               ],
             },
-            { plugins: { legend: { display: false }, title: { display: true, text: "Equity Curve" } } }
+            {
+              plugins: {
+                legend: { display: false },
+                title: { display: true, text: "Equity Curve" },
+              },
+            },
           );
           createChart(
             ddContainer,
@@ -317,8 +335,18 @@
                 },
               ],
             },
-            { plugins: { legend: { display: false }, title: { display: true, text: "Drawdown (%)" } } },
-            { scrollableX: true, heightPx: 420, pointWidthPx: 2, minWidthPx: 1400 }
+            {
+              plugins: {
+                legend: { display: false },
+                title: { display: true, text: "Drawdown (%)" },
+              },
+            },
+            {
+              scrollableX: true,
+              heightPx: 420,
+              pointWidthPx: 2,
+              minWidthPx: 1400,
+            },
           );
         }
 
@@ -339,16 +367,30 @@
                 {
                   label: "Return %",
                   data: returns.map((r) => r.value),
-                  backgroundColor: returns.map((r) => (r.value >= 0 ? "rgba(34,197,94,0.6)" : "rgba(239,68,68,0.6)")),
-                  borderColor: returns.map((r) => (r.value >= 0 ? "#22c55e" : "#ef4444")),
+                  backgroundColor: returns.map((r) =>
+                    r.value >= 0
+                      ? "rgba(34,197,94,0.6)"
+                      : "rgba(239,68,68,0.6)",
+                  ),
+                  borderColor: returns.map((r) =>
+                    r.value >= 0 ? "#22c55e" : "#ef4444",
+                  ),
                   borderWidth: 1,
                 },
               ],
             },
             {
-              plugins: { legend: { display: false }, title: { display: true, text: "Return per Trade (%)" } },
+              plugins: {
+                legend: { display: false },
+                title: { display: true, text: "Return per Trade (%)" },
+              },
             },
-            { scrollableX: true, heightPx: 420, pointWidthPx: 2.2, minWidthPx: 1400 }
+            {
+              scrollableX: true,
+              heightPx: 420,
+              pointWidthPx: 2.2,
+              minWidthPx: 1400,
+            },
           );
 
           const wins = trades.filter((t) => (t.return_pct || 0) >= 0).length;
@@ -369,13 +411,14 @@
                 },
               ],
             },
-            { plugins: { title: { display: true, text: "Win / Loss Count" } } }
+            { plugins: { title: { display: true, text: "Win / Loss Count" } } },
           );
 
           const addsSeries = trades
             .map((t, idx) => {
               const raw = t.metadata ? t.metadata.adds : null;
-              const value = raw === null || raw === undefined ? NaN : Number(raw);
+              const value =
+                raw === null || raw === undefined ? NaN : Number(raw);
               return { label: `#${idx + 1}`, value };
             })
             .filter((item) => Number.isFinite(item.value));
@@ -393,17 +436,24 @@
                     label: "Adds",
                     data: addsSeries.map((a) => a.value),
                     backgroundColor: addsSeries.map((a) =>
-                      a.value > 0 ? "rgba(249,115,22,0.6)" : "rgba(148,163,184,0.6)"
+                      a.value > 0
+                        ? "rgba(249,115,22,0.6)"
+                        : "rgba(148,163,184,0.6)",
                     ),
-                    borderColor: addsSeries.map((a) => (a.value > 0 ? "#f97316" : "#94a3b8")),
+                    borderColor: addsSeries.map((a) =>
+                      a.value > 0 ? "#f97316" : "#94a3b8",
+                    ),
                     borderWidth: 1,
                   },
                 ],
               },
               {
-                plugins: { legend: { display: false }, title: { display: true, text: "Martingale Adds" } },
+                plugins: {
+                  legend: { display: false },
+                  title: { display: true, text: "Martingale Adds" },
+                },
                 scales: { y: { beginAtZero: true, ticks: { precision: 0 } } },
-              }
+              },
             );
           }
         }
@@ -441,10 +491,24 @@
             },
             {
               indexAxis: "y",
-              plugins: { legend: { display: false }, title: { display: true, text: "Performance Metrics" } },
-            }
+              plugins: {
+                legend: { display: false },
+                title: { display: true, text: "Performance Metrics" },
+              },
+            },
           );
         }
+      }
+
+      if (onResult) {
+        onResult(result, {
+          form,
+          historyForm,
+          statusStream,
+          statsOutput,
+          tradesOutput,
+          chartsOutput,
+        });
       }
     }
 
@@ -468,7 +532,7 @@
       tradeJumpForm.addEventListener("submit", (e) => {
         e.preventDefault();
         const idx = parseInt(tradeJumpInput.value, 10);
-       const trades = (() => {
+        const trades = (() => {
           return Array.isArray(latestTrades) ? latestTrades : null;
         })();
         if (trades) {
@@ -493,14 +557,15 @@
         summary.style.marginBottom = "0.5rem";
         summary.style.cursor = "pointer";
         summary.style.background = "#fff";
-        const entryTime = trade.entry_time
-          ? new Date(trade.entry_time)
-          : null;
+        const entryTime = trade.entry_time ? new Date(trade.entry_time) : null;
         const labelTime = entryTime
           ? `${entryTime.getFullYear()}-${String(entryTime.getMonth() + 1).padStart(2, "0")}-${String(
-              entryTime.getDate()
-            ).padStart(2, "0")} ${String(entryTime.getHours()).padStart(2, "0")}:${String(
-              entryTime.getMinutes()
+              entryTime.getDate(),
+            ).padStart(
+              2,
+              "0",
+            )} ${String(entryTime.getHours()).padStart(2, "0")}:${String(
+              entryTime.getMinutes(),
             ).padStart(2, "0")}`
           : "n/a";
         summary.textContent = `#${i} | ${labelTime} | PnL: ${trade.pnl?.toFixed ? trade.pnl.toFixed(2) : trade.pnl}`;
@@ -529,6 +594,16 @@
     form.addEventListener("submit", handleSubmit);
     if (historyForm) {
       historyForm.addEventListener("submit", handleHistory);
+    }
+    if (onReady) {
+      onReady({
+        form,
+        historyForm,
+        statusStream,
+        statsOutput,
+        tradesOutput,
+        chartsOutput,
+      });
     }
   }
 
