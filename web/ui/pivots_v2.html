@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pivot Explorer v2</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #0b1220;
+        --panel: #111827;
+        --text: #e5e7eb;
+        --muted: #9ca3af;
+        --accent: #60a5fa;
+        --bear: #fbbf24;
+        --bull: #6ee7b7;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        font-family:
+          "Inter",
+          system-ui,
+          -apple-system,
+          sans-serif;
+        background:
+          radial-gradient(
+            circle at 20% 20%,
+            rgba(96, 165, 250, 0.08),
+            transparent 30%
+          ),
+          radial-gradient(
+            circle at 80% 0%,
+            rgba(52, 211, 153, 0.08),
+            transparent 28%
+          ),
+          var(--bg);
+        color: var(--text);
+      }
+      header {
+        padding: 18px 20px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        backdrop-filter: blur(8px);
+        background: rgba(17, 24, 39, 0.75);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      }
+      h1 {
+        margin: 0;
+        font-size: 20px;
+        letter-spacing: 0.2px;
+      }
+      main {
+        padding: 20px;
+        max-width: 100%;
+        margin: 0 auto;
+      }
+      form {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 12px;
+        background: var(--panel);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 16px;
+        padding: 16px;
+        box-shadow: 0 14px 50px rgba(0, 0, 0, 0.35);
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        color: var(--muted);
+        margin-bottom: 4px;
+      }
+      input,
+      select,
+      button {
+        width: 100%;
+        background: #0f172a;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        border-radius: 12px;
+        padding: 10px 12px;
+        color: var(--text);
+        font-size: 14px;
+      }
+      input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
+        padding: 0;
+        margin-top: 6px;
+        cursor: pointer;
+        accent-color: #2563eb;
+        border-radius: 4px;
+      }
+      button {
+        background: linear-gradient(120deg, #2563eb, #1e3a8a);
+        border: none;
+        font-weight: 600;
+        cursor: pointer;
+        transition:
+          transform 120ms ease,
+          box-shadow 120ms ease;
+      }
+      button:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 8px 30px rgba(37, 99, 235, 0.35);
+      }
+      #status {
+        margin-top: 12px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .panel {
+        margin-top: 16px;
+        background: var(--panel);
+        border: 1px solid rgba(255, 255, 255, 0.06);
+        border-radius: 16px;
+        padding: 16px;
+        box-shadow: 0 14px 50px rgba(0, 0, 0, 0.35);
+      }
+      #chart {
+        height: 560px;
+        position: relative;
+      }
+      select#entry-list {
+        width: 100%;
+        height: 200px;
+        background: #0f172a;
+        font-family: ui-monospace, SFMono-Regular, monospace;
+        font-size: 12px;
+      }
+      .tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 8px;
+        border-radius: 999px;
+        font-size: 12px;
+        background: rgba(255, 255, 255, 0.06);
+      }
+      .nav-link {
+        color: var(--accent);
+        text-decoration: none;
+        font-size: 13px;
+        padding: 4px 10px;
+        border-radius: 8px;
+        background: rgba(96, 165, 250, 0.08);
+        border: 1px solid rgba(96, 165, 250, 0.2);
+      }
+      .nav-link:hover {
+        background: rgba(96, 165, 250, 0.16);
+      }
+      .legend {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 10px;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      .legend-item {
+        color: var(--muted);
+      }
+      .legend-item strong {
+        color: var(--text);
+        font-weight: 600;
+      }
+    </style>
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <script defer src="/static/js/pivots_v2.js"></script>
+  </head>
+  <body>
+    <header>
+      <h1>
+        Pivot Structure Lab
+        <span style="color: var(--accent); font-size: 14px">v2</span>
+      </h1>
+      <div style="display: flex; align-items: center; gap: 12px">
+        <a class="nav-link" href="/static/pivots.html">v1</a>
+        <span class="tag">Lightweight Charts · Binance or CSV candles</span>
+      </div>
+    </header>
+    <main>
+      <form id="pivot-form">
+        <div>
+          <label for="symbol">Symbol</label>
+          <input id="symbol" name="symbol" value="ETHUSDT" />
+        </div>
+        <div>
+          <label for="timeframe">Timeframe</label>
+          <input id="timeframe" name="timeframe" value="1h" />
+        </div>
+        <div>
+          <label for="source">Source</label>
+          <select id="source" name="source">
+            <option value="binance">Binance</option>
+            <option value="csv">CSV</option>
+          </select>
+        </div>
+        <div id="csv-path-field" hidden>
+          <label for="csv_path">CSV Path</label>
+          <input
+            id="csv_path"
+            name="csv_path"
+            placeholder="/path/to/candles.csv"
+          />
+        </div>
+        <div>
+          <label for="http_proxy">HTTP Proxy</label>
+          <input id="http_proxy" name="http_proxy" placeholder="Optional" />
+        </div>
+        <div>
+          <label for="https_proxy">HTTPS Proxy</label>
+          <input id="https_proxy" name="https_proxy" placeholder="Optional" />
+        </div>
+        <div>
+          <label for="start">Start (UTC)</label>
+          <input id="start" name="start" type="datetime-local" />
+        </div>
+        <div>
+          <label for="end">End (UTC)</label>
+          <input id="end" name="end" type="datetime-local" />
+        </div>
+        <div>
+          <label for="scan_length">Scan last N candles</label>
+          <input
+            id="scan_length"
+            name="scan_length"
+            type="number"
+            min="1"
+            value="500"
+          />
+        </div>
+        <div>
+          <label for="min_swing_pct"
+            >Min swing %
+            <span style="color: var(--muted)">(0 = off)</span></label
+          >
+          <input
+            id="min_swing_pct"
+            name="min_swing_pct"
+            type="number"
+            min="0"
+            step="0.1"
+            value="0"
+          />
+        </div>
+        <div>
+          <label for="label_threshold">Label candles ≤ N visible</label>
+          <input
+            id="label_threshold"
+            name="label_threshold"
+            type="number"
+            min="10"
+            max="500"
+            value="100"
+          />
+        </div>
+        <div>
+          <label>&nbsp;</label>
+          <button type="submit">Run Pivot Scan v2</button>
+        </div>
+      </form>
+      <div id="status"></div>
+
+      <section class="panel legend" aria-label="Algorithm legend">
+        <div class="legend-item">
+          <strong>Bullish candle</strong>: finds previous valid bullish candle
+          (separated by &ge;1 bearish), scans forward — if range low taken out
+          first, bearish pivot is at argmax high.
+        </div>
+        <div class="legend-item">
+          <strong>Bearish candle</strong>: reverse — finds previous valid
+          bearish candle (separated by &ge;1 bullish), scans forward — if range
+          high taken out first, bullish pivot is at argmin low.
+        </div>
+        <div class="legend-item">
+          <strong>Candle labels</strong>: shown when &le; threshold candles are
+          visible. Top line = candle index, bottom line = pivot index (or N/A).
+        </div>
+        <div class="legend-item">
+          <strong>Bear pivot</strong>:
+          <span style="color: var(--bear)">yellow/amber</span> triangle above
+          the pivot candle's high.
+        </div>
+        <div class="legend-item">
+          <strong>Bull pivot</strong>:
+          <span style="color: var(--bull)">green</span> triangle below the pivot
+          candle's low.
+        </div>
+        <div class="legend-item">
+          <strong>Min swing %</strong>: discard pivots whose range
+          (high−low)/mid is below this threshold.
+        </div>
+      </section>
+
+      <div class="panel">
+        <div id="chart"></div>
+      </div>
+
+      <div class="panel">
+        <label for="entry-list"
+          >Detected pivot entries (candles with a pivot)</label
+        >
+        <select id="entry-list" size="20"></select>
+      </div>
+    </main>
+  </body>
+</html>
