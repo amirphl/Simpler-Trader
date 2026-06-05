@@ -14,6 +14,17 @@
     return `${yyyy}-${mm}-${dd}T${hh}:${mi}`;
   }
 
+  function optionalText(value) {
+    if (typeof value !== "string") return null;
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+
+  function parseDateInput(value) {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  }
+
   // Seed a fixed UTC start date while keeping the end at the current time.
   (() => {
     const end = new Date();
@@ -21,6 +32,16 @@
     document.getElementById("start").value = isoInput(start);
     document.getElementById("end").value = isoInput(end);
   })();
+
+  function syncSourceFields() {
+    const source = form?.elements?.source?.value || "binance";
+    const csvField = document.getElementById("csv-path-field");
+    const csvInput = document.getElementById("csv_path");
+    if (!csvField || !csvInput) return;
+    const usingCsv = source === "csv";
+    csvField.hidden = !usingCsv;
+    csvInput.required = usingCsv;
+  }
 
   let chart;
   let candleSeries;
@@ -203,13 +224,23 @@
 
   async function handleSubmit(event) {
     event.preventDefault();
-    statusEl.textContent = "Requesting candles & pivots...";
     const formData = new FormData(form);
+    const start = parseDateInput(formData.get("start"));
+    const end = parseDateInput(formData.get("end"));
+    if (!start || !end) {
+      statusEl.textContent = "Valid start and end dates are required.";
+      return;
+    }
+    statusEl.textContent = "Requesting candles & pivots...";
     const payload = {
       symbol: formData.get("symbol"),
       timeframe: formData.get("timeframe"),
-      start: new Date(formData.get("start")).toISOString(),
-      end: new Date(formData.get("end")).toISOString(),
+      start,
+      end,
+      source: formData.get("source"),
+      csv_path: optionalText(formData.get("csv_path")),
+      http_proxy: optionalText(formData.get("http_proxy")),
+      https_proxy: optionalText(formData.get("https_proxy")),
       scan_length: Number(formData.get("scan_length") || 500),
       restart_on_invalidation: formData.get("restart_on_invalidation") === "on",
       min_swing_pct: Number(formData.get("min_swing_pct") || 0),
@@ -238,5 +269,7 @@
     }
   }
 
+  syncSourceFields();
+  form?.elements?.source?.addEventListener("change", syncSourceFields);
   form?.addEventListener("submit", handleSubmit);
 })();
