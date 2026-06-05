@@ -1,45 +1,27 @@
 from __future__ import annotations
 
 import asyncio
-import os
-from pathlib import Path
 
 import logging
-from typing import Awaitable, Callable
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect  # type: ignore[import-not-found]
-from fastapi.middleware.cors import CORSMiddleware  # type: ignore[import-not-found]
-from fastapi.middleware.httpsredirect import HTTPSRedirectMiddleware  # type: ignore[import-not-found]
-from fastapi.middleware.trustedhost import TrustedHostMiddleware  # type: ignore[import-not-found]
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect  # type: ignore[import-not-found]
 from fastapi.responses import FileResponse  # type: ignore[import-not-found]
-from fastapi.staticfiles import StaticFiles  # type: ignore[import-not-found]
 
+from .common import (
+    UI_DIR,
+    bool_env,
+    build_trusted_hosts,
+    configure_standard_app,
+    list_env,
+    resolve_proxy_values,
+)
 from .manager import BacktestJobManager
 from .models import BacktestResultPayload, BacktestSubmission, JobResponse
 
 
-def _bool_env(name: str, default: bool) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _list_env(name: str, default: str) -> list[str]:
-    return [
-        item.strip() for item in os.getenv(name, default).split(",") if item.strip()
-    ]
-
-
 logger = logging.getLogger("webbacktest")
 app = FastAPI(title="Backtest Control Panel", version="1.0.0")
-# manager = BacktestJobManager(logger=logger.getChild("jobs"))
-manager = BacktestJobManager()
-
-ROOT_DIR = Path(__file__).resolve().parents[1]
-UI_DIR = ROOT_DIR / "web" / "ui"
-UI_DIR.mkdir(parents=True, exist_ok=True)
-app.mount("/static", StaticFiles(directory=UI_DIR), name="static")
+manager = BacktestJobManager(logger=logger.getChild("jobs"))
 
 DEFAULT_TRUSTED_HOSTS = [
     "balut.jaazebeh.ir",
@@ -50,28 +32,8 @@ DEFAULT_TRUSTED_HOSTS = [
     "127.0.0.1",
 ]
 
-
-def _build_trusted_hosts() -> list[str]:
-    configured = _list_env("WEB_TRUSTED_HOSTS", "")
-    if not configured:
-        return DEFAULT_TRUSTED_HOSTS.copy()
-
-    # Always keep defaults available to avoid accidentally blocking
-    # legitimate upstream hosts (e.g., when the env omits the port).
-    merged: list[str] = []
-    seen: set[str] = set()
-
-    for candidate in configured + DEFAULT_TRUSTED_HOSTS:
-        candidate = candidate.strip()
-        if not candidate or candidate in seen:
-            continue
-        merged.append(candidate)
-        seen.add(candidate)
-    return merged
-
-
-TRUSTED_HOSTS = _build_trusted_hosts()
-ALLOWED_ORIGINS = _list_env(
+TRUSTED_HOSTS = build_trusted_hosts(DEFAULT_TRUSTED_HOSTS)
+ALLOWED_ORIGINS = list_env(
     "WEB_ALLOWED_ORIGINS",
     (
         "https://balut.jaazebeh.ir:9091,"
@@ -80,28 +42,21 @@ ALLOWED_ORIGINS = _list_env(
         "http://127.0.0.1:9092"
     ),
 )
-FORCE_HTTPS = _bool_env("WEB_FORCE_HTTPS", True)
-PROXY_FALLBACK = os.getenv("WEB_CANDLE_PROXY")
-HTTP_PROXY_FALLBACK = os.getenv("WEB_CANDLE_HTTP_PROXY")
-HTTPS_PROXY_FALLBACK = os.getenv("WEB_CANDLE_HTTPS_PROXY")
-
-app.add_middleware(TrustedHostMiddleware, allowed_hosts=TRUSTED_HOSTS)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
+# Default to plain HTTP for local development. Production deployments can
+# explicitly enable redirects with WEB_FORCE_HTTPS=true.
+FORCE_HTTPS = bool_env("WEB_FORCE_HTTPS", False)
+configure_standard_app(
+    app,
+    trusted_hosts=TRUSTED_HOSTS,
+    allowed_origins=ALLOWED_ORIGINS,
+    force_https=FORCE_HTTPS,
 )
-
-if FORCE_HTTPS:
-    app.add_middleware(HTTPSRedirectMiddleware)
 
 
 def _inject_proxy_defaults(submission: BacktestSubmission) -> BacktestSubmission:
-    http_proxy = submission.params.http_proxy or HTTP_PROXY_FALLBACK or PROXY_FALLBACK
-    https_proxy = (
-        submission.params.https_proxy or HTTPS_PROXY_FALLBACK or PROXY_FALLBACK
+    http_proxy, https_proxy = resolve_proxy_values(
+        http_proxy=submission.params.http_proxy,
+        https_proxy=submission.params.https_proxy,
     )
     if (
         http_proxy == submission.params.http_proxy
@@ -112,17 +67,6 @@ def _inject_proxy_defaults(submission: BacktestSubmission) -> BacktestSubmission
         update={"http_proxy": http_proxy, "https_proxy": https_proxy}
     )
     return submission.model_copy(update={"params": params})
-
-
-@app.middleware("http")
-async def security_headers(request: Request, call_next: Callable[[Request], Awaitable]):
-    response = await call_next(request)
-    response.headers.setdefault("X-Content-Type-Options", "nosniff")
-    response.headers.setdefault("X-Frame-Options", "DENY")
-    response.headers.setdefault("X-XSS-Protection", "1; mode=block")
-    response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
-    response.headers.setdefault("Cache-Control", "no-store")
-    return response
 
 
 @app.get("/", response_class=FileResponse)
