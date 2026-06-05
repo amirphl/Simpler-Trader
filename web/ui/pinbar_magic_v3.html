@@ -366,6 +366,24 @@
                 required
               />
             </label>
+            <label>
+              Warmup Days
+              <input
+                name="warmup_days"
+                type="number"
+                value="30"
+                step="1"
+                min="0"
+                required
+              />
+            </label>
+            <label>
+              Override Download
+              <select name="override_download">
+                <option value="false" selected>false</option>
+                <option value="true">true</option>
+              </select>
+            </label>
           </fieldset>
           <div
             style="margin-top: 1rem; display: flex; gap: 1rem; flex-wrap: wrap"
