@@ -191,7 +191,7 @@
   <body>
     <header>
       <h1>Pivot Structure Lab</h1>
-      <span class="tag">Lightweight Charts · Binance candles</span>
+      <span class="tag">Lightweight Charts · Binance or CSV candles</span>
     </header>
     <main>
       <form id="pivot-form">
@@ -202,6 +202,29 @@
         <div>
           <label for="timeframe">Timeframe</label>
           <input id="timeframe" name="timeframe" value="1h" />
+        </div>
+        <div>
+          <label for="source">Source</label>
+          <select id="source" name="source">
+            <option value="binance">Binance</option>
+            <option value="csv">CSV</option>
+          </select>
+        </div>
+        <div id="csv-path-field" hidden>
+          <label for="csv_path">CSV Path</label>
+          <input
+            id="csv_path"
+            name="csv_path"
+            placeholder="/path/to/candles.csv"
+          />
+        </div>
+        <div>
+          <label for="http_proxy">HTTP Proxy</label>
+          <input id="http_proxy" name="http_proxy" placeholder="Optional" />
+        </div>
+        <div>
+          <label for="https_proxy">HTTPS Proxy</label>
+          <input id="https_proxy" name="https_proxy" placeholder="Optional" />
         </div>
         <div>
           <label for="start">Start (UTC)</label>
