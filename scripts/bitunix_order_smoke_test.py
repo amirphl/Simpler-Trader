@@ -8,9 +8,15 @@ import logging
 from pathlib import Path
 from typing import Dict, Optional
 
+try:
+    from ._bootstrap import ensure_project_root_on_path
+except ImportError:  # pragma: no cover - direct script execution
+    from _bootstrap import ensure_project_root_on_path
+
+ensure_project_root_on_path()
+
 from cmd.live_trading._shared import load_env_config
 from live_trading.exchange import ExchangeConfig, MarginMode, PositionSide
-from live_trading.exchanges import BitunixExchange
 
 
 def _parse_bool(value: str) -> bool:
@@ -90,6 +96,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     args = build_parser().parse_args()
+    from live_trading.exchanges import BitunixExchange
 
     logging.basicConfig(
         level=logging.INFO,
@@ -131,6 +138,8 @@ def main() -> int:
         raise ValueError("--price is required when --order-type=limit")
     if args.quantity <= 0:
         raise ValueError("--quantity must be > 0")
+    if args.leverage <= 0:
+        raise ValueError("--leverage must be > 0")
 
     exchange = BitunixExchange(exchange_config, log)
     try:
