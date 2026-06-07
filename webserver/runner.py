@@ -10,6 +10,8 @@ from backtest import (
     BaseBacktester,
     EngulfingStrategy,
     EngulfingStrategyConfig,
+    EmaAvwapPullbackStrategy,
+    EmaAvwapPullbackStrategyConfig,
     PinBarMagicStrategyConfigV3,
     PinBarMagicStrategyV3,
     PinbarStrategy,
@@ -29,6 +31,7 @@ from candle_downloader.storage import build_store
 from .models import (
     BacktestSubmission,
     EngulfingStrategyParams,
+    EmaAvwapPullbackParams,
     PinbarMagicStrategyParamsV3,
     PinbarStrategyParams,
     StrongTrendStairParams,
@@ -106,6 +109,7 @@ def run_backtest_job(
             PinBarMagicStrategyConfigV3(
                 symbol=magic_params_v3.symbol,
                 timeframe=magic_params_v3.timeframe,
+                initial_equity=submission.initial_capital,
                 leverage=magic_params_v3.leverage,
                 equity_risk_pct=magic_params_v3.equity_risk_pct,
                 atr_multiple=magic_params_v3.atr_multiple,
@@ -126,6 +130,34 @@ def run_backtest_job(
                 enable_ema_cross_close=magic_params_v3.enable_ema_cross_close,
                 risk_equity_include_unrealized=magic_params_v3.risk_equity_include_unrealized,
                 risk_equity_mark_source=magic_params_v3.risk_equity_mark_source.strip().lower(),
+            )
+        )
+    elif submission.strategy == "ema_avwap_pullback":
+        ema_avwap_params = cast(EmaAvwapPullbackParams, params)
+        strategy = EmaAvwapPullbackStrategy(
+            EmaAvwapPullbackStrategyConfig(
+                symbol=ema_avwap_params.symbol,
+                timeframe=ema_avwap_params.timeframe,
+                initial_equity=submission.initial_capital,
+                leverage=ema_avwap_params.leverage,
+                equity_risk_pct=ema_avwap_params.equity_risk_pct,
+                ema_length=ema_avwap_params.ema_length,
+                consecutive_count=ema_avwap_params.consecutive_count,
+                ema_validation_mode=ema_avwap_params.ema_validation_mode,
+                setup_waiting_replacement_mode=ema_avwap_params.setup_waiting_replacement_mode,
+                position_sizing_mode=ema_avwap_params.position_sizing_mode,
+                avwap_multiplier_1=ema_avwap_params.avwap_multiplier_1,
+                avwap_multiplier_2=ema_avwap_params.avwap_multiplier_2,
+                avwap_multiplier_3=ema_avwap_params.avwap_multiplier_3,
+                rigid_stop_loss_pct=ema_avwap_params.rigid_stop_loss_pct,
+                trailing_activation_threshold_pct=ema_avwap_params.trailing_activation_threshold_pct,
+                trailing_gap_pct=ema_avwap_params.trailing_gap_pct,
+                maker_fee_pct=ema_avwap_params.maker_fee_pct,
+                taker_fee_pct=ema_avwap_params.taker_fee_pct,
+                entry_slippage_pct=ema_avwap_params.entry_slippage_pct,
+                exit_slippage_pct=ema_avwap_params.exit_slippage_pct,
+                use_gap_cross_detection=ema_avwap_params.use_gap_cross_detection,
+                max_decision_log_entries=ema_avwap_params.max_decision_log_entries,
             )
         )
     elif submission.strategy == "pinbar":
