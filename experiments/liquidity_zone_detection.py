@@ -1,3 +1,58 @@
+"""
+experiments/liquidity_zone_detection.py
+────────────────────────────────────────
+Liquidity-zone detection via BOS/CHoCH direction analysis and pivot pairing.
+
+Algorithm overview
+------------------
+1.  Run BOS/CHoCH detection (:func:`detect_bos_choch`) to derive sequential
+    direction segments (UPWARD / DOWNWARD).
+2.  Run per-candle pivot detection (:func:`detect_pivots_v2`) over the same
+    candle array.
+3.  Assign each pivot to the direction segment it falls within.
+4.  Within each segment, filter pivots per :class:`LiquidityZoneConfig` and
+    greedily pair them (newest→oldest by default) into **Level-1** liquidity
+    zones.
+5.  Collect each segment's representative pivot (the structural extreme nearest
+    to the CHoCH that triggered the reversal) and pair *those* across
+    same-direction segments into **Level-2** liquidity zones.
+6.  Mark zones as ``is_hunted`` when later price sweeps their edge.
+
+Zone formation criteria (BOTH must hold)
+-----------------------------------------
+a)  **Overlap**: candle bodies (or wicks, configurable) of the two pivot
+    candles intersect::
+
+        max(lo_left, lo_right) <= min(hi_left, hi_right)  (+epsilon)
+
+b)  **Slope**: the chosen candle attribute obeys the direction::
+
+        UPWARD   → older_value <  newer_value  (ascending)
+        DOWNWARD → older_value >  newer_value  (descending)
+
+    Equality is rejected unless ``relaxed_slope=True``.
+
+Greedy sliding-window pairing (newest-first by default)
+---------------------------------------------------------
+Pivots sorted newest→oldest: [pN, p{N-1}, …, p0].
+
+    i = 0
+    while i < len - 1:
+        first, second = ordered[i], ordered[i+1]
+        older, newer = chronological order of the two
+        if forms_zone(older, newer):
+            record zone; i += 2  (or i += 1 if allow_reuse=True)
+        else:
+            i += 1
+
+Representative pivot
+--------------------
+For every direction segment, the pivot nearest (by candle distance AND price)
+to the *initial-range* CHoCH candle that triggered the preceding reversal is
+stored as ``DirectionSegment.representative_pivot``.  If no CHoCH source is
+available the latest eligible pivot is used as a fallback (configurable).
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -15,7 +70,8 @@ from experiments.bos_choch_detection import (
     get_candles,
     infer_initial_direction,
 )
-from experiments.pivot_detection import Pivot, PivotConfig, detect_pivots
+from experiments.pivot_detection import Pivot
+from experiments.pivot_detection_v2 import PivotConfigV2, PivotV2Entry, detect_pivots_v2
 
 Direction = Literal["UPWARD", "DOWNWARD"]
 PivotFilter = Literal["BULLISH", "BEARISH", "ALL"]
@@ -23,6 +79,8 @@ PairScanOrder = Literal["newest_to_oldest", "oldest_to_newest"]
 PivotGroupingMode = Literal["combined", "separate_by_type"]
 RepresentativeMode = Literal["choch", "latest_eligible"]
 HuntMode = Literal["wick", "close"]
+IntersectionMethod = Literal["body", "wick"]
+SlopeAttribute = Literal["close", "open", "high", "low"]
 
 
 @dataclass(slots=True)
@@ -62,22 +120,17 @@ class LiquidityZone:
 
 @dataclass(slots=True)
 class LiquidityZoneConfig:
-    # Upstream detection settings
     scan_length: int = 500
+    pivot_min_swing_pct: float = 0.0
+
+    # Upstream BOS/CHoCH detection settings
     direction_window: int = 3
     hunt_mode: HuntMode = "wick"
-    include_bos_in_choch_range: bool = False
     include_hunt_candle_in_choch_range: bool = True
     min_swing_pct: float = 0.0
     include_pullback_in_bos_level: bool = True
 
-    # Pivot detection settings forwarded to detect_pivots.
-    # pivot_min_swing_pct is independent from the BOS-level min_swing_pct above —
-    # BOS swing is (bos_level−choch_level)/mid, pivot swing is (high−low)/mid.
-    restart_on_invalidation: bool = False
-    pivot_min_swing_pct: float = 0.0
-    use_structural_left_bound: bool = False
-    include_reference_candle: bool = True
+    # Pivot detection settings forwarded to detect_pivots_v2.
 
     # Pivot selection for level-1 liquidity zones.
     # Defaults implement the requested behaviour:
@@ -104,6 +157,17 @@ class LiquidityZoneConfig:
     slope_epsilon: float = 0.0
     epsilon: float = 1e-9
 
+    # Intersection and slope configuration.
+    # intersection_method controls which candle price range is used when
+    # checking whether two pivots overlap:
+    #   "body" -> [min(open,close), max(open,close)]   (default, body-to-body)
+    #   "wick" -> [low, high]                          (full candle range)
+    # slope_attribute controls which price field decides the ascending/
+    # descending slope condition between the older and newer pivot candle:
+    #   "close" (default), "open", "high", or "low"
+    intersection_method: IntersectionMethod = "body"
+    slope_attribute: SlopeAttribute = "close"
+
     # Representative pivot policy for level-2 zones.
     # "choch" selects the pivot nearest to the CHoCH/reversal source.
     # If a segment has no CHoCH source, allow_representative_fallback controls
@@ -122,6 +186,7 @@ class LiquidityZoneResult:
     bos_choch_result: BOSCHoCHResult
     direction_segments: List[DirectionSegment]
     zones_by_level: Dict[int, Dict[Direction, List[LiquidityZone]]]
+    pivot_v2_entries: List[PivotV2Entry] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +210,7 @@ def _opposite_direction(direction: Direction) -> Direction:
 
 def _validate_config(config: LiquidityZoneConfig) -> None:
     if config.scan_length <= 0:
-        raise ValueError("scan_length must be > 0")
+        raise ValueError("pivot.scan_length must be > 0")
     if config.direction_window <= 0:
         raise ValueError("direction_window must be > 0")
     if config.maximum_pivot_distance is not None and config.maximum_pivot_distance <= 0:
@@ -224,6 +289,27 @@ def _body_range(candle: Candle) -> PriceRange:
     )
 
 
+def _wick_range(candle: Candle) -> PriceRange:
+    """Full candle range including wicks."""
+    return PriceRange(low=candle.low, high=candle.high)
+
+
+def _candle_range(candle: Candle, method: IntersectionMethod) -> PriceRange:
+    """Return the appropriate price range for the given intersection method."""
+    return _body_range(candle) if method == "body" else _wick_range(candle)
+
+
+def _slope_value(candle: Candle, attr: SlopeAttribute) -> float:
+    """Extract the price attribute used for slope comparison."""
+    if attr == "close":
+        return candle.close
+    if attr == "open":
+        return candle.open
+    if attr == "high":
+        return candle.high
+    return candle.low
+
+
 def _pivot_reference_price(pivot: Pivot, candle: Candle) -> float:
     pivot_type = _pivot_type(pivot)
     if pivot_type == "bullish":
@@ -243,15 +329,22 @@ def _overlap_range(
     newer_candle: Candle,
     *,
     epsilon: float,
+    method: IntersectionMethod = "body",
 ) -> PriceRange | None:
-    """Return the intersection of two candle bodies, or None if they do not intersect."""
-    older_body = _body_range(older_candle)
-    newer_body = _body_range(newer_candle)
-    low = max(older_body.low, newer_body.low)
-    high = min(older_body.high, newer_body.high)
+    """Return the intersection of two candle ranges, or None if they do not intersect.
 
-    # Touching bodies count as intersection.  Use minimum_overlap > 0 if this
-    # should require a non-zero area.
+    The intersection is computed on the price range selected by *method*:
+      "body" → [min(open,close), max(open,close)]
+      "wick" → [low, high]
+
+    Touching ranges count as intersection.  Pass minimum_overlap > 0 to the
+    caller if a non-zero area is required.
+    """
+    older_range = _candle_range(older_candle, method)
+    newer_range = _candle_range(newer_candle, method)
+    low = max(older_range.low, newer_range.low)
+    high = min(older_range.high, newer_range.high)
+
     if high + epsilon < low:
         return None
     return PriceRange(low=low, high=high)
@@ -289,11 +382,13 @@ def _passes_overlap_thresholds(
     if config.minimum_overlap_ratio <= 0:
         return True
 
-    older_body = _body_range(older_candle)
-    newer_body = _body_range(newer_candle)
+    # Use the same range type (body or wick) that was used to compute the overlap
+    # so that the ratio is consistent with the overlap measurement.
+    older_range = _candle_range(older_candle, config.intersection_method)
+    newer_range = _candle_range(newer_candle, config.intersection_method)
     reference = min(
-        max(older_body.size, config.epsilon),
-        max(newer_body.size, config.epsilon),
+        max(older_range.size, config.epsilon),
+        max(newer_range.size, config.epsilon),
     )
     return (overlap_size / reference) + config.epsilon >= config.minimum_overlap_ratio
 
@@ -321,15 +416,20 @@ def _is_valid_match(
 
     older_candle = candles[older.index]
     newer_candle = candles[newer.index]
-    overlap = _overlap_range(older_candle, newer_candle, epsilon=config.epsilon)
+    overlap = _overlap_range(
+        older_candle,
+        newer_candle,
+        epsilon=config.epsilon,
+        method=config.intersection_method,
+    )
     if overlap is None:
         return None
     if not _passes_overlap_thresholds(overlap, older_candle, newer_candle, config):
         return None
     if not _passes_slope(
         direction,
-        older_candle.close,
-        newer_candle.close,
+        _slope_value(older_candle, config.slope_attribute),
+        _slope_value(newer_candle, config.slope_attribute),
         relaxed=config.relaxed_slope,
         epsilon=max(config.epsilon, config.slope_epsilon),
     ):
@@ -390,7 +490,18 @@ def _build_zone(
         metadata=metadata or {},
     )
     zone.is_hunted = _zone_hunted(candles, zone, config)
-    zone.metadata.setdefault("overlap_size", overlap.size)
+    # Standard zone geometry fields (notes §5 "Zone output fields").
+    _midpoint = (overlap.low + overlap.high) / 2.0
+    _thickness = overlap.size  # overlap_high − overlap_low
+    zone.metadata.setdefault("overlap_low", overlap.low)
+    zone.metadata.setdefault("overlap_high", overlap.high)
+    zone.metadata.setdefault("thickness", _thickness)  # canonical name from notes
+    zone.metadata.setdefault("overlap_size", _thickness)  # kept for backward compat
+    zone.metadata.setdefault("midpoint", _midpoint)
+    zone.metadata.setdefault(
+        "thickness_pct",
+        _thickness / _midpoint * 100.0 if _midpoint != 0.0 else 0.0,
+    )
     zone.metadata.setdefault("pivot_distance", newer.index - older.index)
     zone.metadata.setdefault(
         "close_delta", candles[newer.index].close - candles[older.index].close
@@ -514,20 +625,7 @@ def _choch_update_for_reversal(
     ]
     if same_candle_candidates:
         return max(same_candle_candidates, key=lambda update: update.bos_index)
-
-    # Defensive fallback for older BOS/CHoCH implementations that may not have
-    # reason="continuous" or exact same-candle metadata.
-    fallback_candidates = [
-        update
-        for update in bos_choch_result.choch_updates
-        if update.candle_index <= reversal.candle_index
-        and bos_direction.get(update.bos_index) == previous_direction
-    ]
-    if not fallback_candidates:
-        return None
-    return max(
-        fallback_candidates, key=lambda update: (update.candle_index, update.bos_index)
-    )
+    return None
 
 
 def _latest_eligible_representative(
@@ -540,7 +638,7 @@ def _latest_eligible_representative(
         include_hunted=config.representative_include_hunted,
         config=config,
     )
-    if not eligible:
+    if not eligible and config.allow_representative_fallback:
         eligible = [
             pivot
             for pivot in segment.pivots
@@ -617,9 +715,7 @@ def _build_direction_segments(
     if not candles:
         return []
 
-    initial_direction = infer_initial_direction(
-        candles, config.direction_window
-    ).direction
+    initial_state = infer_initial_direction(candles, config.direction_window)
     reversals = sorted(
         (
             event
@@ -630,8 +726,10 @@ def _build_direction_segments(
     )
 
     segments: List[DirectionSegment] = []
-    current_direction = initial_direction
-    current_start = 0
+    current_direction = initial_state.direction
+    # Use since_index so the first segment aligns with the BOS/CHoCH detector's
+    # own initial-direction window (consistent with infer_initial_direction semantics).
+    current_start = initial_state.since_index
     current_metadata: Dict[str, object] = {
         "reversal_candle_index": None,
         "representative_source": None,
@@ -659,6 +757,26 @@ def _build_direction_segments(
             segments.append(segment)
 
         choch_update = _choch_update_for_reversal(reversal, bos_choch_result)
+
+        # Notes §4 step 5b: trace back from the continuous CHoCH update (at the
+        # reversal/hunt candle) to the initial-range CHoCH update for the SAME BOS.
+        # The initial-range candle holds the *structural* extreme that defined the
+        # CHoCH level, making it the correct anchor for the representative pivot
+        # search (we want the nearest structural pivot to THAT candle, not to the
+        # hunt candle itself).  Fall back to the continuous update gracefully when
+        # no initial-range entry is found (e.g. older BOS/CHoCH implementations).
+        source_update: "CHoCHUpdate | None" = None
+        if choch_update is not None:
+            source_update = next(
+                (
+                    u
+                    for u in bos_choch_result.choch_updates
+                    if u.bos_index == choch_update.bos_index
+                    and u.reason == "initial-range"
+                ),
+                choch_update,  # graceful fallback
+            )
+
         current_direction = reversal.direction
         current_start = reversal.candle_index
         current_metadata = {
@@ -667,10 +785,13 @@ def _build_direction_segments(
             "representative_source_bos_index": choch_update.bos_index
             if choch_update
             else None,
-            "representative_source_index": choch_update.candle_index
-            if choch_update
+            # Use the initial-range CHoCH candle as the anchor (not the hunt candle).
+            "representative_source_index": source_update.candle_index
+            if source_update
             else reversal.candle_index,
-            "representative_source_level": choch_update.level if choch_update else None,
+            "representative_source_level": source_update.level
+            if source_update
+            else None,
         }
 
     tail_pivots = [
@@ -690,6 +811,41 @@ def _build_direction_segments(
 
 
 # ---------------------------------------------------------------------------
+# Pivot v2 → Pivot adapter
+# ---------------------------------------------------------------------------
+
+
+def _v2_entries_to_pivots(
+    entries: List[PivotV2Entry], candles: Sequence[Candle]
+) -> List[Pivot]:
+    """Convert non-empty PivotV2Entry records into Pivot objects for zone building."""
+    pivots: List[Pivot] = []
+    for entry in entries:
+        if entry.pivot_index is None or entry.pivot_type is None:
+            continue
+        idx = entry.pivot_index
+        if idx < 0 or idx >= len(candles):
+            continue
+        c = candles[idx]
+        trigger = (
+            entry.hunt_index if entry.hunt_index is not None else entry.candle_index
+        )
+        pivots.append(
+            Pivot(
+                index=idx,
+                type=entry.pivot_type,
+                high=c.high,
+                low=c.low,
+                reference_index=entry.candle_index,
+                trigger_index=trigger,
+                invalidation_index=None,
+                invalidation_level=None,
+            )
+        )
+    return pivots
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -704,22 +860,17 @@ def detect_liquidity_zones(
     cfg = config or LiquidityZoneConfig()
     _validate_config(cfg)
 
-    pivots = detect_pivots(
+    v2_entries = detect_pivots_v2(
         candles,
         cfg.scan_length,
-        PivotConfig(
-            restart_on_invalidation=cfg.restart_on_invalidation,
-            min_swing_pct=cfg.pivot_min_swing_pct,
-            use_structural_left_bound=cfg.use_structural_left_bound,
-            include_reference_candle=cfg.include_reference_candle,
-        ),
+        PivotConfigV2(min_swing_pct=cfg.pivot_min_swing_pct),
     )
+    pivots = _v2_entries_to_pivots(v2_entries, candles)
     bos_choch_result = detect_bos_choch(
         candles,
         BOSCHoCHConfig(
             direction_window=cfg.direction_window,
             hunt_mode=cfg.hunt_mode,
-            include_bos_in_choch_range=cfg.include_bos_in_choch_range,
             include_hunt_candle_in_choch_range=cfg.include_hunt_candle_in_choch_range,
             min_swing_pct=cfg.min_swing_pct,
             include_pullback_in_bos_level=cfg.include_pullback_in_bos_level,
@@ -803,6 +954,7 @@ def detect_liquidity_zones(
         bos_choch_result=bos_choch_result,
         direction_segments=direction_segments,
         zones_by_level=zones_by_level,
+        pivot_v2_entries=v2_entries,
     )
 
 
@@ -1000,35 +1152,15 @@ def main() -> int:
     parser.add_argument("--direction-window", type=int, default=3)
     parser.add_argument("--hunt-mode", choices=["wick", "close"], default="wick")
     parser.add_argument(
-        "--include-bos-in-choch-range",
-        action="store_true",
-        help="Include BOS completion candle in initial CHoCH range",
-    )
-    parser.add_argument(
         "--exclude-hunt-candle-in-choch-range",
         action="store_true",
         help="Exclude BOS hunt candle from initial CHoCH range",
-    )
-    parser.add_argument(
-        "--restart-on-invalidation",
-        action="store_true",
-        help="On pivot invalidation advance cursor to j+1 instead of q, filling gaps",
     )
     parser.add_argument(
         "--pivot-min-swing-pct",
         type=float,
         default=0.0,
         help="Drop pivots whose (high-low)/mid*100 < this value (0 = disabled)",
-    )
-    parser.add_argument(
-        "--use-structural-left-bound",
-        action="store_true",
-        help="Use previous confirmed same-type pivot as left bound for invalidation zone",
-    )
-    parser.add_argument(
-        "--no-include-reference-candle",
-        action="store_true",
-        help="Exclude the reference candle j from the pivot search range (legacy behaviour)",
     )
     parser.add_argument(
         "--up-pivot-filter", choices=["BULLISH", "BEARISH", "ALL"], default="BULLISH"
@@ -1071,6 +1203,18 @@ def main() -> int:
     )
     parser.add_argument("--zone-hunt-mode", choices=["wick", "close"], default="wick")
     parser.add_argument(
+        "--intersection-method",
+        choices=["body", "wick"],
+        default="body",
+        help="Price range used for pivot-to-pivot overlap check: body (default) or wick",
+    )
+    parser.add_argument(
+        "--slope-attribute",
+        choices=["close", "open", "high", "low"],
+        default="close",
+        help="Candle price attribute used for ascending/descending slope check (default: close)",
+    )
+    parser.add_argument(
         "--source", choices=["binance", "csv"], default="binance", help="Candle source"
     )
     parser.add_argument(
@@ -1112,14 +1256,10 @@ def main() -> int:
         candles,
         LiquidityZoneConfig(
             scan_length=args.scan_length,
+            pivot_min_swing_pct=args.pivot_min_swing_pct,
             direction_window=args.direction_window,
             hunt_mode=args.hunt_mode,
-            include_bos_in_choch_range=args.include_bos_in_choch_range,
             include_hunt_candle_in_choch_range=not args.exclude_hunt_candle_in_choch_range,
-            restart_on_invalidation=args.restart_on_invalidation,
-            pivot_min_swing_pct=args.pivot_min_swing_pct,
-            use_structural_left_bound=args.use_structural_left_bound,
-            include_reference_candle=not args.no_include_reference_candle,
             up_pivot_filter=args.up_pivot_filter,
             down_pivot_filter=args.down_pivot_filter,
             include_hunted_pivots=args.include_hunted_pivots,
@@ -1136,6 +1276,8 @@ def main() -> int:
             representative_include_hunted=args.representative_include_hunted,
             allow_representative_fallback=not args.disable_representative_fallback,
             zone_hunt_mode=args.zone_hunt_mode,
+            intersection_method=args.intersection_method,
+            slope_attribute=args.slope_attribute,
         ),
     )
 
