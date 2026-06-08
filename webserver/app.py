@@ -26,6 +26,8 @@ manager = BacktestJobManager(logger=logger.getChild("jobs"))
 DEFAULT_TRUSTED_HOSTS = [
     "balut.jaazebeh.ir",
     "balut.jaazebeh.ir:9091",
+    "arvan.jazebeh.ir",
+    "arvan.jazebeh.ir:10443",
     ".jaazebeh.ir",
     "jaazebeh.ir",
     "localhost",
@@ -38,8 +40,8 @@ ALLOWED_ORIGINS = list_env(
     (
         "https://balut.jaazebeh.ir:9091,"
         "http://balut.jaazebeh.ir:9091,"
-        "https://arvan.jazebeh.ir:10443"
-        "http://arvan.jazebeh.ir:10443"
+        "https://arvan.jazebeh.ir:10443,"
+        "http://arvan.jazebeh.ir:10443,"
         "http://localhost:9092,"
         "http://127.0.0.1:9092"
     ),
