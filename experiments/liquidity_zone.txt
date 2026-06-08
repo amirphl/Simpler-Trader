@@ -1,0 +1,551 @@
+ALGORITHM: Detect Liquidity Zones
+============================================================
+
+This pseudocode describes experiments/liquidity_zone_detection.py.
+
+CORRECTIONS vs. the externally-submitted draft
+───────────────────────────────────────────────
+1. STEP 2 initial start: must use since_index from infer_initial_direction,
+   NOT 0.  infer_initial_direction returns the last candle of the initial
+   direction-inference window, so segments align with the BOS/CHoCH detector.
+
+2. CHECK_ZONE_HUNTED price boundaries were inverted in the draft:
+   • UPWARD  (support) zone is swept when price breaks BELOW the lower edge
+     → compare against zone.price_low   (draft incorrectly used price_high)
+   • DOWNWARD (resistance) zone is swept when price breaks ABOVE the upper
+     edge → compare against zone.price_high (draft incorrectly used price_low)
+
+3. intersection_method, slope_attribute, and zone_hunt_mode config params
+   were omitted in the draft (hardcoded body / close / wick).  They are all
+   real, configurable knobs documented in the CONFIG section below.
+
+4. STEP 2.3 CHoCH source assignment was in the wrong place in the draft:
+   TRACE_CHOCH_SOURCE(reversal) was called inside the segment-build block
+   and the result was assigned to the current segment's metadata.  This is
+   wrong: each segment's representative anchor must be the CHoCH that
+   STARTED that segment (the preceding reversal), not the one that ends it.
+   The corrected pseudocode calls TRACE_CHOCH_SOURCE unconditionally outside
+   the segment-build block and stores the result in current_metadata for
+   consumption by the NEXT segment.  current_metadata is initialised to
+   {source_index=None, source_level=None} before the loop so the very first
+   segment correctly has no CHoCH anchor.
+
+5. pivot_version config was listed as "v1 (default)" in the draft.
+   The implementation is v2-only; v1 support and its associated config knobs
+   (restart_on_invalidation, use_structural_left_bound, include_reference_candle)
+   have been removed.
+
+
+============================================================
+INPUT / OUTPUT
+============================================================
+
+INPUT:
+    candles                 Full candle array, oldest-first
+
+OUTPUT:
+    pivot_list              All detected pivots
+    direction_segments      List of DirectionSegment
+                              (each carrying .representative_pivot)
+    zones_by_level          {
+                              1: { UPWARD: [...], DOWNWARD: [...] },
+                              2: { UPWARD: [...], DOWNWARD: [...] }
+                            }
+    pivot_v2_entries        Populated when pivot_version = v2
+
+
+============================================================
+CONFIG
+============================================================
+
+# — BOS / CHoCH detection ———————————————————————————————————
+direction_window                    default = 3
+hunt_mode                           default = wick        (wick | close)
+include_hunt_candle_in_choch_range  default = true
+min_swing_pct                       default = 0.0
+include_pullback_in_bos_level       default = true
+
+# — Pivot detection ——————————————————————————————————————————
+scan_length                         default = 500
+pivot_version                       v2 only (v1 removed)
+pivot_min_swing_pct                 default = 0.0
+
+# — Pivot filtering ——————————————————————————————————————————
+include_hunted_pivots               default = false
+up_pivot_filter                     default = BULLISH     (BULLISH | BEARISH | ALL)
+down_pivot_filter                   default = BEARISH     (BULLISH | BEARISH | ALL)
+pivot_grouping                      default = COMBINED    (COMBINED | SEPARATE_BY_TYPE)
+
+# — Pairing ——————————————————————————————————————————————————
+scan_order                          default = NEWEST_TO_OLDEST
+                                             (NEWEST_TO_OLDEST | OLDEST_TO_NEWEST)
+allow_reuse                         default = false
+
+# — Match thresholds —————————————————————————————————————————
+intersection_method                 default = body        (body | wick)
+slope_attribute                     default = close       (close | open | high | low)
+relaxed_slope                       default = false
+slope_epsilon                       default = 0.0
+maximum_pivot_distance              default = unlimited
+minimum_overlap                     default = 0.0
+minimum_overlap_ratio               default = 0.0
+epsilon                             default = 1e-9
+
+# — Representative pivot (drives Level-2 zones) ——————————————
+representative_mode                 default = choch       (choch | latest_eligible)
+representative_include_hunted       default = false
+allow_representative_fallback       default = true
+
+# — Zone hunted ——————————————————————————————————————————————
+zone_hunt_mode                      default = wick        (wick | close)
+
+
+============================================================
+STEP 0: DETECT PIVOTS
+============================================================
+
+0.1  v2_entries = detect_pivots_v2(candles, scan_length, pivot_min_swing_pct)
+
+     For each v2_entry where pivot_index is not null:
+         pivot = Pivot(
+             index           = v2_entry.pivot_index,
+             type            = v2_entry.pivot_type,
+             high            = candles[v2_entry.pivot_index].high,
+             low             = candles[v2_entry.pivot_index].low,
+             reference_index = v2_entry.candle_index,
+             trigger_index   = v2_entry.hunt_index  (fallback: v2_entry.candle_index)
+         )
+         Add pivot to pivot_list.
+
+
+============================================================
+STEP 1: RUN BOS/CHoCH DETECTION
+============================================================
+
+1.1  bos_choch_result = detect_bos_choch(candles, {
+         direction_window,
+         hunt_mode,
+         include_hunt_candle_in_choch_range,
+         min_swing_pct,
+         include_pullback_in_bos_level
+     })
+
+
+============================================================
+STEP 2: BUILD DIRECTION SEGMENTS
+============================================================
+
+2.1  (initial_direction, since_index) = infer_initial_direction(
+         candles, direction_window
+     )
+
+     current_direction = initial_direction
+     current_start     = since_index
+     # NOTE: since_index ≠ 0.  It is the index of the last candle in the
+     # direction-inference window, matching how the BOS/CHoCH detector seeds
+     # its own anchor_index.
+
+2.2  reversals = all DIRECTION_REVERSED events from bos_choch_result.events,
+                 sorted ascending by candle_index.
+
+     # Initialise current_metadata with no CHoCH source for the very first
+     # segment (the one that starts at since_index before any reversal).
+     current_metadata = {
+         representative_source_index = None,
+         representative_source_level = None
+     }
+
+2.3  For each reversal event:
+
+         end_index = reversal.candle_index - 1
+
+         If end_index >= current_start:
+
+             segment_pivots = [p for p in pivot_list
+                                 if current_start <= p.index <= end_index]
+
+             # current_metadata carries the CHoCH source anchored to the
+             # reversal that STARTED the current segment (set at the end of
+             # the previous loop iteration, or the no-source initial value for
+             # the very first segment).  This is the correct anchor for
+             # SELECT_REPRESENTATIVE: the representative pivot is the one
+             # nearest to the structural extreme that caused the direction
+             # change INTO this segment, not the one that ends it.
+             segment = DirectionSegment(
+                 direction   = current_direction,
+                 start_index = current_start,
+                 end_index   = end_index,
+                 pivots      = segment_pivots,
+                 metadata    = current_metadata
+             )
+             segment.representative_pivot = SELECT_REPRESENTATIVE(
+                 segment, candles, config
+             )
+             Add segment to direction_segments.
+
+         # Trace the structural CHoCH source for the NEW segment that begins
+         # at reversal.candle_index.  This is done unconditionally (even when
+         # the segment above was skipped due to end_index < current_start) so
+         # that the next segment always gets the freshest CHoCH anchor.
+         #
+         # a) Find the continuous CHoCH update at reversal.candle_index that
+         #    belongs to the newest BOS of the previous direction.
+         # b) From that BOS, trace back to the initial-range CHoCHUpdate.
+         #    Its candle_index and level become the anchor for
+         #    representative pivot selection in the NEW segment.
+         choch_source_index, choch_source_level = TRACE_CHOCH_SOURCE(
+             reversal, bos_choch_result
+         )
+
+         current_direction = reversal.direction     # new direction after reversal
+         current_start     = reversal.candle_index
+         current_metadata  = {
+             representative_source_index = choch_source_index,
+             representative_source_level = choch_source_level
+         }
+
+2.4  Create the final (tail) segment using current_metadata from the last
+     reversal (or the no-source initial value if there were no reversals):
+
+         segment_pivots = [p for p in pivot_list
+                             if current_start <= p.index < len(candles)]
+
+         tail = DirectionSegment(
+             direction   = current_direction,
+             start_index = current_start,
+             end_index   = len(candles) - 1,
+             pivots      = segment_pivots,
+             metadata    = current_metadata
+         )
+         tail.representative_pivot = SELECT_REPRESENTATIVE(tail, candles, config)
+         Add tail to direction_segments.
+
+
+============================================================
+STEP 3: LEVEL-1 ZONES  (within each segment)
+============================================================
+
+3.1  For each segment in direction_segments:
+
+         filtered = FILTER_PIVOTS(segment.pivots, segment.direction, config)
+
+         groups = SPLIT_BY_GROUPING(filtered, pivot_grouping)
+
+         For each group in groups:
+
+             zones = PAIR_PIVOTS(group, segment.direction, candles, config, level=1)
+             Append zones to zones_by_level[1][segment.direction].
+
+
+============================================================
+STEP 4: LEVEL-2 ZONES  (across segment representatives)
+============================================================
+
+4.1  For each direction in {UPWARD, DOWNWARD}:
+
+         representatives = [segment.representative_pivot
+                             for segment in direction_segments
+                             where segment.direction == direction
+                             and  segment.representative_pivot is not null]
+
+         zones = PAIR_PIVOTS(representatives, direction, candles, config, level=2)
+         Append zones to zones_by_level[2][direction].
+
+
+============================================================
+FUNCTION: FILTER_PIVOTS(pivots, direction, config)
+============================================================
+
+INPUT:  pivots, direction, config
+OUTPUT: filtered list
+
+1.  required_type = up_pivot_filter   (if direction == UPWARD)
+                  = down_pivot_filter  (if direction == DOWNWARD)
+
+2.  For each pivot in pivots:
+
+        If not include_hunted_pivots and pivot is hunted:
+            skip
+
+        If required_type == BULLISH and pivot.type != bullish:
+            skip
+
+        If required_type == BEARISH and pivot.type != bearish:
+            skip
+
+        (keep unconditionally if required_type == ALL)
+
+3.  Return kept pivots.
+
+
+============================================================
+FUNCTION: SPLIT_BY_GROUPING(pivots, pivot_grouping)
+============================================================
+
+INPUT:  pivots, pivot_grouping
+OUTPUT: list of groups
+
+    If pivot_grouping == COMBINED:
+        return [ all pivots as one group ]
+
+    If pivot_grouping == SEPARATE_BY_TYPE:
+        return [
+            all bullish pivots (if any),
+            all bearish pivots (if any)
+        ]
+
+
+============================================================
+FUNCTION: PAIR_PIVOTS(pivots, direction, candles, config, level)
+============================================================
+
+INPUT:  pivots, direction, candles, config, level
+OUTPUT: zones
+
+1.  Sort pivots by candle index:
+        scan_order == NEWEST_TO_OLDEST  →  descending
+        scan_order == OLDEST_TO_NEWEST  →  ascending
+
+2.  i = 0
+    zones = []
+
+    While i < len(sorted_pivots) - 1:
+
+        p1 = sorted_pivots[i]
+        p2 = sorted_pivots[i + 1]
+
+        Normalize to chronological order:
+            older = whichever of p1, p2 has the smaller candle index
+            newer = the other
+
+        If newer.index - older.index > maximum_pivot_distance:
+            i += 1
+            continue
+
+        overlap = COMPUTE_OVERLAP(older, newer, candles, config)
+        If overlap is None:
+            i += 1
+            continue
+
+        If not PASSES_OVERLAP_THRESHOLDS(overlap, older, newer, candles, config):
+            i += 1
+            continue
+
+        If not PASSES_SLOPE(older, newer, candles, direction, config):
+            i += 1
+            continue
+
+        zone = LiquidityZone(
+            direction   = direction,
+            level       = level,
+            left_pivot  = older,
+            right_pivot = newer,
+            price_low   = overlap.low,
+            price_high  = overlap.high,
+            start_index = older.index,
+            end_index   = newer.index,
+            is_hunted   = CHECK_ZONE_HUNTED(zone, candles, config)
+        )
+        Add zone to zones.
+
+        If allow_reuse:  i += 1
+        Else:            i += 2
+
+3.  Return zones.
+
+
+============================================================
+FUNCTION: COMPUTE_OVERLAP(older_pivot, newer_pivot, candles, config)
+============================================================
+
+INPUT:  older_pivot, newer_pivot, candles, config
+OUTPUT: PriceRange or None
+
+1.  older_candle = candles[older_pivot.index]
+    newer_candle = candles[newer_pivot.index]
+
+2.  If intersection_method == body:
+        older_lo = min(older_candle.open, older_candle.close)
+        older_hi = max(older_candle.open, older_candle.close)
+        newer_lo = min(newer_candle.open, newer_candle.close)
+        newer_hi = max(newer_candle.open, newer_candle.close)
+
+    If intersection_method == wick:
+        older_lo = older_candle.low;   older_hi = older_candle.high
+        newer_lo = newer_candle.low;   newer_hi = newer_candle.high
+
+3.  overlap_low  = max(older_lo, newer_lo)
+    overlap_high = min(older_hi, newer_hi)
+
+4.  If overlap_high + epsilon < overlap_low:
+        return None                 # ranges do not intersect
+
+5.  Return PriceRange(overlap_low, overlap_high)
+
+
+============================================================
+FUNCTION: PASSES_OVERLAP_THRESHOLDS(overlap, older, newer, candles, config)
+============================================================
+
+INPUT:  overlap, older_pivot, newer_pivot, candles, config
+OUTPUT: bool
+
+1.  overlap_size = overlap.high - overlap.low
+
+2.  If overlap_size + epsilon < minimum_overlap:
+        return false
+
+3.  If minimum_overlap_ratio <= 0:
+        return true
+
+4.  # ratio check: overlap relative to the smaller candle range
+    older_range_size = size of older_candle's range (using intersection_method)
+    newer_range_size = size of newer_candle's range (using intersection_method)
+    reference = min(older_range_size, newer_range_size)
+
+    If (overlap_size / reference) + epsilon < minimum_overlap_ratio:
+        return false
+
+5.  Return true.
+
+
+============================================================
+FUNCTION: PASSES_SLOPE(older_pivot, newer_pivot, candles, direction, config)
+============================================================
+
+INPUT:  older_pivot, newer_pivot, candles, direction, config
+OUTPUT: bool
+
+1.  eps       = max(epsilon, slope_epsilon)
+    older_val = candles[older_pivot.index].[slope_attribute]
+    newer_val = candles[newer_pivot.index].[slope_attribute]
+
+    slope_attribute is one of: close | open | high | low
+
+2.  If direction == UPWARD:
+        If relaxed_slope:  return older_val <= newer_val + eps
+        Else:              return older_val <  newer_val - eps
+
+    If direction == DOWNWARD:
+        If relaxed_slope:  return older_val >= newer_val - eps
+        Else:              return older_val >  newer_val + eps
+
+
+============================================================
+FUNCTION: CHECK_ZONE_HUNTED(zone, candles, config)
+============================================================
+
+INPUT:  zone, candles, config
+OUTPUT: bool
+
+    # Only examine candles that arrive AFTER the zone's right pivot.
+    If zone.end_index + 1 >= len(candles):
+        return false
+
+    future_candles = candles[ zone.end_index + 1 : ]
+
+    If zone.direction == UPWARD:
+        # Support zone — hunted when price breaks BELOW the lower edge.
+        For each candle in future_candles:
+            value = candle.low   (if zone_hunt_mode == wick)
+                  = candle.close (if zone_hunt_mode == close)
+            If value <= zone.price_low + epsilon:
+                return true              ← uses price_LOW (lower boundary)
+
+    If zone.direction == DOWNWARD:
+        # Resistance zone — hunted when price breaks ABOVE the upper edge.
+        For each candle in future_candles:
+            value = candle.high  (if zone_hunt_mode == wick)
+                  = candle.close (if zone_hunt_mode == close)
+            If value >= zone.price_high - epsilon:
+                return true              ← uses price_HIGH (upper boundary)
+
+    return false
+
+
+============================================================
+FUNCTION: SELECT_REPRESENTATIVE(segment, candles, config)
+============================================================
+
+INPUT:  segment, candles, config
+OUTPUT: pivot or None
+
+    If representative_mode == latest_eligible:
+
+        eligible = FILTER_PIVOTS(segment.pivots, segment.direction,
+                       include_hunted = representative_include_hunted, config)
+        If eligible is empty and allow_representative_fallback:
+            eligible = non-hunted pivots in segment (or all if representative_include_hunted)
+        If eligible is empty:
+            return None
+        return pivot with the highest index in eligible
+
+    If representative_mode == choch:
+
+        choch_source_index = segment.metadata.representative_source_index
+        choch_source_level = segment.metadata.representative_source_level
+
+        If choch_source_index is None:
+            If allow_representative_fallback:
+                fall back to latest_eligible behavior above
+            Else:
+                return None
+
+        eligible = FILTER_PIVOTS(segment.pivots, segment.direction,
+                       include_hunted = representative_include_hunted, config)
+        If eligible is empty and allow_representative_fallback:
+            eligible = non-hunted pivots in segment (or all if representative_include_hunted)
+        If eligible is empty:
+            return None
+
+        Score each eligible pivot with a three-part key (lowest wins):
+            key[0] = |pivot.index - choch_source_index|    (nearest in time)
+            key[1] = |pivot_price  - choch_source_level|   (nearest in price)
+            key[2] = -pivot.index                          (tie-breaker: prefer newest)
+
+        where pivot_price = candle.low  for bullish pivots,
+                            candle.high for bearish pivots.
+
+        Return the pivot with the smallest key.
+
+
+============================================================
+FUNCTION: TRACE_CHOCH_SOURCE(reversal_event, bos_choch_result)
+============================================================
+
+INPUT:  reversal_event, bos_choch_result
+OUTPUT: (choch_source_candle_index, choch_source_level)
+        Returns (None, None) if no matching CHoCH update is found.
+
+    previous_direction = opposite of reversal_event.new_direction
+
+    # Step a: find the continuous CHoCH update at the reversal candle
+    #         that belongs to the newest BOS of the previous direction.
+    candidates = [
+        u for u in bos_choch_result.choch_updates
+        if u.candle_index == reversal_event.candle_index
+        and u.reason == "continuous"
+        and bos_direction[u.bos_index] == previous_direction
+    ]
+    If candidates is empty:
+        candidates = [                              # fallback: any earlier update
+            u for u in bos_choch_result.choch_updates
+            if u.candle_index <= reversal_event.candle_index
+            and bos_direction[u.bos_index] == previous_direction
+        ]
+    If candidates is empty:
+        return (None, None)
+
+    continuous_update = candidate with the largest bos_index (newest BOS)
+
+    # Step b: trace back to the initial-range update for the same BOS.
+    #         The initial-range candle holds the structural extreme
+    #         (min-low for UPWARD reversals, max-high for DOWNWARD reversals)
+    #         that defined the CHoCH level.
+    initial_update = first update where
+        u.bos_index == continuous_update.bos_index
+        and u.reason == "initial-range"
+    If not found:
+        initial_update = continuous_update      # graceful fallback
+
+    return (initial_update.candle_index, initial_update.level)
