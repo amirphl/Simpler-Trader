@@ -1,0 +1,229 @@
+============================================================
+ Liquidity Zones — Review Notes & Design Decisions
+ experiments/liquidity_zones.py
+============================================================
+
+
+────────────────────────────────────────────────────────────
+ 1. Review of existing files (no blocking bugs found)
+────────────────────────────────────────────────────────────
+
+pivot_detection.py
+──────────────────
+✓  Algorithm is sound.  The cursor advances to the trigger candle p after
+   each pivot, so consecutive pivots are chained correctly.
+✓  _argmax_high / _argmin_low: indices are always valid (p-1 >= k > j >=
+   pivot_start is guaranteed by the search order).
+✓  Hunted marking scans ALL candles after the pivot (not just the scan
+   window), which is the correct semantics.
+✓  PivotConfig.include_reference_candle corrects the off-by-one: when True,
+   candle j itself is included in the argmax/argmin range, ensuring the
+   structural extreme at j is never missed.
+
+Minor observations (not bugs):
+• min_swing_pct <= 0.0 treats negative values as "disabled" too.  Benign
+  since negative percentages have no meaning, but could be documented.
+• The haunted / hunted naming duality (field vs property alias) is
+  intentional for API backwards-compat; not a bug.
+
+bos_choch_detection.py
+───────────────────────
+✓  Algorithm is sound.  The phase-state machine (WAIT_PULLBACK → FORMING →
+   AWAIT_HUNT) is correctly implemented.
+✓  confirm_bos() returns early when the min_swing_pct filter fires, relying
+   on the caller to call reset_formation().  Every call site does:
+       confirm_bos(i)
+       reset_formation(i)
+   so the filtered BOS is always cleanly discarded.
+✓  bos_counter is incremented INSIDE confirm_bos only after the filter
+   passes, so filtered BOSes reuse the same counter value for the next BOS.
+   Since filtered BOSes are never committed to any output structure, the
+   apparent index collision is harmless.
+✓  Direction reversal (Step A) always runs before the phase state machine
+   (Step B) and short-circuits the iteration when reversed_now is True.
+   A partially-formed BOS is discarded on reversal via reset_formation.
+
+Minor observations (not bugs):
+• The function comment in confirm_bos says "reset_formation is called by
+  caller" — this implicit contract is reliable but non-obvious.
+
+
+────────────────────────────────────────────────────────────
+ 2. New file: experiments/liquidity_zones.py
+────────────────────────────────────────────────────────────
+
+Entry point
+───────────
+    result = detect_liquidity_zones(
+        candles,
+        pivot_config=PivotConfig(...),
+        bos_config=BosConfig(...),
+        zone_config=LiquidityZoneConfig(...),
+        pivot_scan_length=500,
+    )
+
+Key types
+─────────
+    LiquidityZoneConfig   — all knobs (see §3 below)
+    LiquidityZone         — a matched pivot pair with overlap region
+    DirectionSegment      — one direction period with its pivots + zones
+    LiquidityZoneResult   — segments, all_zones, pivots, bos_result
+
+
+────────────────────────────────────────────────────────────
+ 3. LiquidityZoneConfig parameters explained
+────────────────────────────────────────────────────────────
+
+Pivot terminology reminder
+    "bullish" pivot  →  SWING LOW  (confirmed by upward breakout)
+    "bearish" pivot  →  SWING HIGH (confirmed by downward breakout)
+    haunted/hunted   →  the pivot's extreme has since been taken out
+
+UP-direction filters
+    up_include_bullish  = True   (default) include swing lows
+    up_include_bearish  = False  also include swing highs in UP segments
+    up_include_hunted   = False  include already-hunted pivots
+
+DOWN-direction filters
+    down_include_bearish  = True   (default) include swing highs
+    down_include_bullish  = False  also include swing lows in DOWN segments
+    down_include_hunted   = False  include already-hunted pivots
+
+Body / wick intersection
+    intersection_method = "body"  [min(open,close), max(open,close)]
+    intersection_method = "wick"  [low, high]
+
+Slope attribute
+    slope_attribute = "close"  left.close < right.close → ascending (UP)
+    slope_attribute = "open"   compare opens instead
+    slope_attribute = "high"   compare highs
+    slope_attribute = "low"    compare lows
+
+Matching direction
+    match_from_newest = True   (default) newest pivot first (right→left)
+    match_from_newest = False  oldest pivot first (left→right)
+
+
+────────────────────────────────────────────────────────────
+ 4. Algorithm walkthrough
+────────────────────────────────────────────────────────────
+
+Step 1 — Direction segments
+    infer_initial_direction() gives (direction_0, since_index_0).
+    DIRECTION_REVERSED events in bos_result.events give subsequent transitions.
+    Example (3 segments):
+        [UPWARD, idx 2 – 47]  [DOWNWARD, idx 47 – 89]  [UPWARD, idx 89 – N-1]
+
+Step 2 — Pivot assignment
+    Each pivot p with start <= p.index <= end belongs to that segment.
+    Pivots outside the pivot_scan_length window simply won't exist and
+    won't appear in any segment.
+
+Step 3 — Pivot filtering per segment
+    Applied by _filter_pivots() according to LiquidityZoneConfig flags.
+    Result is sorted chronologically (oldest index first).
+
+Step 4 — Greedy zone matching (newest-first default)
+    Suppose filtered = [A, B, C, D, E]  (A = oldest, E = newest)
+    Pivot numbering from right: 1=E, 2=D, 3=C, 4=B, 5=A
+
+    i=4 (E):  try (D, E) → match?
+        YES → zone(D,E); i=2; try (B, C)
+        NO  → i=3; try (C, D)
+
+    i=3 (D):  try (C, D) → match?
+        YES → zone(C,D); i=1; try (A, B)
+        NO  → i=2; try (B, C)
+
+    … and so on.
+
+    On SUCCESS both pivots are consumed (i -= 2).
+    On FAILURE only the right pivot is abandoned (i -= 1); the left pivot
+    becomes the next right candidate.
+
+Step 5 — Representative pivot
+    For every segment after the first, we find the CHoCH that caused the
+    direction reversal:
+      a) Find the continuous CHoCHUpdate at the reversal candle.
+      b) Trace back to its initial-range CHoCHUpdate → choch_candle_idx.
+      c) Find the nearest "bullish" pivot (UPWARD→DOWNWARD reversal) or
+         "bearish" pivot (DOWNWARD→UPWARD reversal) to choch_candle_idx.
+    This pivot anchors the structural CHoCH level that defined the reversal.
+
+
+────────────────────────────────────────────────────────────
+ 5. Zone formation conditions (both required)
+────────────────────────────────────────────────────────────
+
+Condition A — Overlap
+    left_lo  = min(left_candle.open,  left_candle.close)   # body
+    left_hi  = max(left_candle.open,  left_candle.close)
+    right_lo = min(right_candle.open, right_candle.close)
+    right_hi = max(right_candle.open, right_candle.close)
+    overlap  = max(left_lo, right_lo) <= min(left_hi, right_hi)
+
+    (or [low, high] when intersection_method = "wick")
+
+Condition B — Slope (strictly)
+    UPWARD   → left.close  <  right.close   (ascending)
+    DOWNWARD → left.close  >  right.close   (descending)
+    Equality is rejected (flat pair has no slope information).
+
+Zone output fields
+    overlap_low / overlap_high  — price boundaries of the intersection
+    midpoint                    — (overlap_high + overlap_low) / 2
+    thickness                   — overlap_high - overlap_low
+    thickness_pct               — thickness / midpoint * 100
+
+
+────────────────────────────────────────────────────────────
+ 6. CLI usage examples
+────────────────────────────────────────────────────────────
+
+Basic:
+    python -m experiments.liquidity_zones \
+        --symbol BTCUSDT --timeframe 1h \
+        --start 2026-01-01T00:00:00Z --end 2026-02-01T00:00:00Z
+
+With chart:
+    python -m experiments.liquidity_zones \
+        --symbol ETHUSDT --timeframe 4h \
+        --start 2026-01-01T00:00:00Z --end 2026-01-15T00:00:00Z \
+        --plot --plot-output /tmp/zones.html
+
+Include hunted pivots and wick intersection:
+    ... --up-include-hunted --intersection-method wick
+
+Match from oldest pivot first:
+    ... --match-from-oldest
+
+All bearish pivots visible in UP segments too:
+    ... --up-include-bearish
+
+Full pivot history scan (no window limit):
+    ... --pivot-scan-length 99999
+
+
+────────────────────────────────────────────────────────────
+ 7. Important caveats
+────────────────────────────────────────────────────────────
+
+• pivot_scan_length limits pivot detection to the LAST N candles.  Direction
+  segments are always computed over the full candle array.  Segments early in
+  the history will have zero pivots (and therefore zero zones) when the window
+  is shorter than the full history.  Set pivot_scan_length = len(candles) to
+  scan everything.
+
+• A pivot's `index` is its position in the global candle array, not within a
+  segment.  This ensures correct assignment even when segments overlap with
+  the pivot scan window boundary.
+
+• The Candle model (candle_downloader/models.py) uses:
+    is_bullish()  →  close > open
+    is_bearish()  →  close < open
+  Doji candles (close == open) are neither and are skipped by pivot detection
+  and BOS/CHoCH detection alike.
+
+• All_zones is flattened from segments in chronological segment order.  Within
+  each segment, zones appear newest-first (when match_from_newest=True) or
+  oldest-first (when match_from_newest=False).
