@@ -55,6 +55,25 @@ def configure_logging(level: str) -> None:
     logging.basicConfig(level=numeric_level, handlers=[handler])
 
 
+def load_env_file_defaults(path: Path) -> None:
+    if not path.exists() or not path.is_file():
+        return
+
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export "):].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key:
+            os.environ.setdefault(key, value)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Launch the backtest web control panel.")
     parser.add_argument("--host", default=os.getenv("WEB_HOST", "0.0.0.0"), help="Bind address (default: 0.0.0.0)")
@@ -94,6 +113,7 @@ def main(argv: list[str] | None = None) -> int:
 
     configure_logging(args.log_level)
     if args.postgres_config_file:
+        load_env_file_defaults(args.postgres_config_file)
         os.environ["CANDLE_DB_ENV_FILE"] = str(args.postgres_config_file)
         if args.postgres_config_file.exists():
             logging.info("Using Postgres config file: %s", args.postgres_config_file)
