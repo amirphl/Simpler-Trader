@@ -149,6 +149,22 @@ Supported env keys:
 
 The same settings can also be provided with `POSTGRES_*` aliases.
 
+### Candle Download Proxy
+
+For the web server, proxy defaults can live in the same `configs/postgres.env` file:
+
+```env
+WEB_CANDLE_HTTPS_PROXY=http://127.0.0.1:7890
+```
+
+Or set both HTTP and HTTPS with one value:
+
+```env
+WEB_CANDLE_PROXY=http://127.0.0.1:7890
+```
+
+Values entered in the web UI request still override these defaults.
+
 ### Network / Telegram
 
 - `HTTP_PROXY`, `HTTPS_PROXY`, `PROXY`

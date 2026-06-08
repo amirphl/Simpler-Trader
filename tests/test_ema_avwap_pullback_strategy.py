@@ -7,6 +7,8 @@ from backtest.base import BacktestContext, BacktestRunConfig
 from backtest.ema_avwap_pullback_strategy import (
     EmaAvwapPullbackStrategy,
     EmaAvwapPullbackStrategyConfig,
+    _AvwapSnapshot,
+    _PositionState,
 )
 from candle_downloader.models import Candle
 
@@ -415,6 +417,82 @@ class EmaAvwapPullbackStrategyTests(unittest.TestCase):
         self.assertAlmostEqual(
             float(trades[0].metadata["rigid_stop_level_at_entry"]),  # type: ignore[arg-type,index]
             expected_rigid_level,
+        )
+
+    def test_short_open_already_beyond_rigid_stop_exits_before_trailing(self) -> None:
+        strategy = EmaAvwapPullbackStrategy(
+            EmaAvwapPullbackStrategyConfig(
+                symbol="ETHUSDT",
+                timeframe="1h",
+                initial_equity=10_000.0,
+                leverage=1.0,
+                equity_risk_pct=1.0,
+                ema_length=2,
+                consecutive_count=1,
+                rigid_stop_loss_pct=2.0,
+                maker_fee_pct=0.0,
+                taker_fee_pct=0.0,
+            )
+        )
+        entry_time = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        position = _PositionState(
+            direction="short",
+            anchor_index=0,
+            setup_detected_index=0,
+            setup_detected_time=entry_time,
+            entry_time=entry_time,
+            entry_index=0,
+            raw_entry_price=0.5380697249397747,
+            entry_price=0.5380697249397747,
+            qty=1.0,
+            risk_amount=100.0,
+            risk_amount_interpretation="position_notional_budget",
+            entry_fee=0.0,
+            stop_level_at_entry=0.5652344648652496,
+            rigid_stop_level_at_entry=0.5488311194385702,
+            trailing_activation_level_at_entry=0.529014811631283,
+            entry_trigger_mode="intrabar",
+            position_sizing_mode="risk_amount_per_price",
+            trailing_active=True,
+            trailing_stop=0.563,
+            extreme_price=0.5574257425742574,
+        )
+        candle = _candle(
+            offset=1,
+            open=0.55,
+            high=0.564,
+            low=0.55,
+            close=0.562,
+        )
+        avwap = _AvwapSnapshot(
+            anchor_index=0,
+            anchor_time=entry_time,
+            candle_index=1,
+            vwap=0.59,
+            stdev=0.02,
+            upper1=0.61,
+            lower1=0.57,
+            upper2=0.64,
+            lower2=0.55,
+            upper3=0.65,
+            lower3=0.53,
+        )
+        stats = {"trailing_activations": 0, "trailing_updates": 0}
+        decision = strategy._process_position_for_candle(
+            position=position,
+            candle=candle,
+            candle_index=1,
+            prev_close=0.55,
+            avwap=avwap,
+            stats=stats,
+            decision_log=[],
+        )
+
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.reason, "Rigid stop loss")  # type: ignore[union-attr]
+        self.assertAlmostEqual(
+            decision.raw_exit_price,  # type: ignore[union-attr]
+            position.rigid_stop_level_at_entry,
         )
 
     def test_short_stop_loss_uses_current_upper_band_two(self) -> None:

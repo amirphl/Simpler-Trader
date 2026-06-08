@@ -805,6 +805,19 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
                     stop_level=stop_level,
                     activation_level=activation_level,
                 )
+            open_exit = self._check_long_open_exit(
+                position=position,
+                open_price=candle.open,
+                stop_level=stop_level,
+                rigid_stop_level=rigid_stop_level,
+            )
+            if open_exit is not None:
+                return _ExitDecision(
+                    reason=open_exit[0],
+                    raw_exit_price=open_exit[1],
+                    stop_level=stop_level,
+                    activation_level=activation_level,
+                )
 
             if not position.trailing_active and candle.open >= activation_level:
                 self._activate_long_trailing(
@@ -873,6 +886,19 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
             return _ExitDecision(
                 reason=gap_exit[0],
                 raw_exit_price=gap_exit[1],
+                stop_level=stop_level,
+                activation_level=activation_level,
+            )
+        open_exit = self._check_short_open_exit(
+            position=position,
+            open_price=candle.open,
+            stop_level=stop_level,
+            rigid_stop_level=rigid_stop_level,
+        )
+        if open_exit is not None:
+            return _ExitDecision(
+                reason=open_exit[0],
+                raw_exit_price=open_exit[1],
                 stop_level=stop_level,
                 activation_level=activation_level,
             )
@@ -957,6 +983,29 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
             return None
         return max(candidates, key=lambda item: item[1])
 
+    def _check_long_open_exit(
+        self,
+        *,
+        position: _PositionState,
+        open_price: float,
+        stop_level: float,
+        rigid_stop_level: float | None,
+    ) -> Tuple[str, float] | None:
+        candidates: List[Tuple[str, float]] = []
+        if (
+            position.trailing_active
+            and position.trailing_stop is not None
+            and open_price <= position.trailing_stop
+        ):
+            candidates.append(("Trailing stop", position.trailing_stop))
+        if rigid_stop_level is not None and open_price <= rigid_stop_level:
+            candidates.append(("Rigid stop loss", rigid_stop_level))
+        if open_price <= stop_level:
+            candidates.append(("Stop loss", stop_level))
+        if not candidates:
+            return None
+        return max(candidates, key=lambda item: item[1])
+
     def _check_short_gap_exit(
         self,
         *,
@@ -976,6 +1025,29 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
         if rigid_stop_level is not None and prev_close <= rigid_stop_level <= open_price:
             candidates.append(("Rigid stop loss", rigid_stop_level))
         if prev_close <= stop_level <= open_price:
+            candidates.append(("Stop loss", stop_level))
+        if not candidates:
+            return None
+        return min(candidates, key=lambda item: item[1])
+
+    def _check_short_open_exit(
+        self,
+        *,
+        position: _PositionState,
+        open_price: float,
+        stop_level: float,
+        rigid_stop_level: float | None,
+    ) -> Tuple[str, float] | None:
+        candidates: List[Tuple[str, float]] = []
+        if (
+            position.trailing_active
+            and position.trailing_stop is not None
+            and open_price >= position.trailing_stop
+        ):
+            candidates.append(("Trailing stop", position.trailing_stop))
+        if rigid_stop_level is not None and open_price >= rigid_stop_level:
+            candidates.append(("Rigid stop loss", rigid_stop_level))
+        if open_price >= stop_level:
             candidates.append(("Stop loss", stop_level))
         if not candidates:
             return None
@@ -1044,7 +1116,8 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
     ) -> None:
         position.trailing_active = True
         position.extreme_price = extreme_price
-        position.trailing_stop = extreme_price * (1.0 - self._config.trailing_gap_pct / 100.0)
+        trailing_stop = extreme_price * (1.0 - self._config.trailing_gap_pct / 100.0)
+        position.trailing_stop = self._constrain_trailing_stop(position, trailing_stop)
         stats["trailing_activations"] += 1
         self._record_event(
             decision_log=decision_log,
@@ -1083,7 +1156,8 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
     ) -> None:
         position.trailing_active = True
         position.extreme_price = extreme_price
-        position.trailing_stop = extreme_price * (1.0 + self._config.trailing_gap_pct / 100.0)
+        trailing_stop = extreme_price * (1.0 + self._config.trailing_gap_pct / 100.0)
+        position.trailing_stop = self._constrain_trailing_stop(position, trailing_stop)
         stats["trailing_activations"] += 1
         self._record_event(
             decision_log=decision_log,
@@ -1125,7 +1199,8 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
             return
         previous_stop = position.trailing_stop
         position.extreme_price = extreme_price
-        position.trailing_stop = extreme_price * (1.0 - self._config.trailing_gap_pct / 100.0)
+        trailing_stop = extreme_price * (1.0 - self._config.trailing_gap_pct / 100.0)
+        position.trailing_stop = self._constrain_trailing_stop(position, trailing_stop)
         if previous_stop == position.trailing_stop:
             return
         stats["trailing_updates"] += 1
@@ -1163,7 +1238,8 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
             return
         previous_stop = position.trailing_stop
         position.extreme_price = extreme_price
-        position.trailing_stop = extreme_price * (1.0 + self._config.trailing_gap_pct / 100.0)
+        trailing_stop = extreme_price * (1.0 + self._config.trailing_gap_pct / 100.0)
+        position.trailing_stop = self._constrain_trailing_stop(position, trailing_stop)
         if previous_stop == position.trailing_stop:
             return
         stats["trailing_updates"] += 1
@@ -1182,6 +1258,16 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
                 "upper_band_2": avwap.upper2,
             },
         )
+
+    def _constrain_trailing_stop(
+        self, position: _PositionState, trailing_stop: float
+    ) -> float:
+        rigid_stop = position.rigid_stop_level_at_entry
+        if rigid_stop is None:
+            return trailing_stop
+        if position.direction == "long":
+            return max(trailing_stop, rigid_stop)
+        return min(trailing_stop, rigid_stop)
 
     def _close_position(
         self,
