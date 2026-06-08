@@ -8,9 +8,11 @@ This directory contains runtime configuration files.
 - `live_trading.heiken_ashi.env.example`: template for Heiken Ashi strategy
 - `live_trading.pinbar_magic_v3.env.example`: template for PinBar Magic v3 strategy
 - `live_trading.strong_trend_stair.env.example`: template for Strong Trend Stair strategy
+- `postgres.env.example`: template for web/backtest candle PostgreSQL settings
 - `live_trading.heiken_ashi.env`: local runtime config for Heiken Ashi (do not commit secrets)
 - `live_trading.pinbar_magic_v3.env`: local runtime config for PinBar Magic v3 (do not commit secrets)
 - `live_trading.strong_trend_stair.env`: local runtime config for Strong Trend Stair (do not commit secrets)
+- `postgres.env`: local runtime config for web/backtest candle PostgreSQL settings (do not commit secrets)
 
 ## Live Trading Config
 
@@ -112,6 +114,24 @@ Note:
 - `DI_LEN`, `ADX_SMOOTH`, `ADX_MIN`
 
 ### Candle DB (PostgreSQL)
+
+For the web server, create a local config file:
+
+```bash
+cp configs/postgres.env.example configs/postgres.env
+```
+
+Then run:
+
+```bash
+python -m cmd.web.main --local
+```
+
+By default, the web command reads `./configs/postgres.env`. To use another file:
+
+```bash
+python -m cmd.web.main --local --postgres-config-file ./configs/postgres.local.env
+```
 
 Defaults:
 
