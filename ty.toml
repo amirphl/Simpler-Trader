@@ -1,0 +1,37 @@
+[environment]
+python = ".venv"
+python-version = "3.10"
+python-platform = "all"
+extra-paths = ["typings"]
+
+[src]
+include = [
+  "backtest",
+  "candle_downloader",
+  "cmd",
+  "live_trading",
+  "signal_notifier",
+  "webserver",
+]
+exclude = [
+  "**/__pycache__",
+  "**/node_modules",
+  "**/venv",
+  "**/.venv",
+]
+
+[terminal]
+output-format = "concise"
+
+[rules]
+# Migration baseline: keep existing repo-wide typing debt visible without
+# failing `ty check`. Promote these back to errors as each area is cleaned up.
+invalid-argument-type = "warn"
+invalid-assignment = "warn"
+invalid-return-type = "warn"
+unknown-argument = "warn"
+unsupported-operator = "warn"
+unresolved-attribute = "warn"
+unresolved-import = "warn"
+unresolved-reference = "warn"
+unused-type-ignore-comment = "ignore"

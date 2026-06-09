@@ -11,7 +11,10 @@ venv/
 
 # IDE / tooling
 .idea/
-.vscode/
+.vscode/*
+!.vscode/
+!.vscode/settings.json
+!.vscode/extensions.json
 .mypy_cache/
 .pytest_cache/
 

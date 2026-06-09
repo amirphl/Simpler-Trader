@@ -6,9 +6,11 @@ kaleido>=0.2.1  # For exporting plots to PNG/SVG/PDF (optional)
 fastapi>=0.110.0
 uvicorn[standard]>=0.30.0,<1.0.0
 requests>=2.31.0
-websocket-client>=1.8.0
 psycopg[binary]>=3.2.0
 psycopg_pool>=3.2.0
+
+# Developer tooling
+ty>=0.0.56
 
 # Note: The core backtest and candle downloader modules use only Python standard library
 # Plotly is only required if you want to generate visualizations
