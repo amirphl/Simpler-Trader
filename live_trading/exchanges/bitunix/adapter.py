@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from datetime import datetime, timezone
-import threading
 from typing import Any, Dict, List, Optional
 
 from ...exchange import (
@@ -18,7 +17,6 @@ from ...exchange import (
     PositionSide,
 )
 from .client import BitunixClient
-from .websocket_client import BitunixWebsocketClient
 from .utils import infer_margin_coin_from_symbol, interval_to_milliseconds
 
 
@@ -31,52 +29,8 @@ class BitunixExchange(Exchange):
         self._config = config
         self._log = logger or logging.getLogger(__name__)
         self._client = BitunixClient(config, self._log)
-        self._ws_lock = threading.Lock()
-        self._ws_client: Optional[BitunixWebsocketClient] = None
-        self._ws_unavailable = False
-        self._ws_tickers_bootstrap_done = False
         self._default_margin_coin = "USDT"
         self._pair_meta_cache: Dict[str, Dict[str, Any]] = {}
-
-    def _get_ws_client(self) -> Optional[BitunixWebsocketClient]:
-        with self._ws_lock:
-            if self._ws_unavailable:
-                return None
-            if self._ws_client is not None:
-                return self._ws_client
-            try:
-                self._ws_client = BitunixWebsocketClient(self._config, self._log)
-                return self._ws_client
-            except Exception as exc:
-                self._ws_unavailable = True
-                self._log.warning(
-                    "Bitunix WS unavailable, falling back to REST only: %s", exc
-                )
-                return None
-
-    def _bootstrap_ws_tickers(self, ws_client: BitunixWebsocketClient) -> None:
-        """Subscribe tickers channel for known symbols once per adapter lifetime."""
-        if self._ws_tickers_bootstrap_done:
-            return
-        try:
-            symbols = list(self._pair_meta_cache.keys())
-            if not symbols:
-                symbols = [
-                    str(item.get("symbol", "")).strip().upper()
-                    for item in self.get_trading_pairs()
-                    if str(item.get("symbol", "")).strip()
-                ]
-            symbols = [symbol for symbol in symbols if symbol]
-            if not symbols:
-                return
-            ws_client.subscribe_tickers(symbols)
-            self._ws_tickers_bootstrap_done = True
-            self._log.info(
-                "Bitunix WS: bootstrapped tickers subscription for %s symbol(s)",
-                len(symbols),
-            )
-        except Exception as exc:
-            self._log.debug("Bitunix WS tickers bootstrap failed: %s", exc)
 
     @staticmethod
     def _quantize(
@@ -161,40 +115,37 @@ class BitunixExchange(Exchange):
         self, position: Position, stop_price: float
     ) -> float:
         """Normalize SL to symbol precision and keep it on valid side of last price."""
-        meta = self._get_symbol_meta(position.symbol)
+        return self._normalize_directional_stop_loss_price(
+            position.symbol, position.side, stop_price
+        )
+
+    def _normalize_directional_stop_loss_price(
+        self, symbol: str, side: PositionSide, stop_price: float
+    ) -> float:
+        """Normalize an SL for a position side before sending it to Bitunix."""
+        meta = self._get_symbol_meta(symbol)
         quote_precision = int(meta.get("quotePrecision", 8) or 8)
         tick_size = 10 ** (-max(quote_precision, 0))
-        mark_price = self.fetch_price(position.symbol)
+        mark_price = self.fetch_price(symbol)
         safety_offset = tick_size * 2  # keep a small buffer away from trigger boundary
 
         adjusted = float(stop_price)
         if mark_price is not None and mark_price > 0:
-            if position.side == PositionSide.LONG:
+            if side == PositionSide.LONG:
                 adjusted = min(adjusted, mark_price - safety_offset)
             else:
                 adjusted = max(adjusted, mark_price + safety_offset)
 
-        rounding = ROUND_DOWN if position.side == PositionSide.LONG else ROUND_UP
+        rounding = ROUND_DOWN if side == PositionSide.LONG else ROUND_UP
         normalized = self._quantize(adjusted, quote_precision, rounding_mode=rounding)
         if normalized <= 0:
             raise RuntimeError(
-                f"Normalized stop loss is invalid for {position.symbol}: raw={stop_price} normalized={normalized}"
+                f"Normalized stop loss is invalid for {symbol}: raw={stop_price} normalized={normalized}"
             )
         return normalized
 
     def fetch_price(self, symbol: str) -> Optional[float]:
         """Fetch last price for a symbol (public endpoint)."""
-        ws_client = self._get_ws_client()
-        if ws_client is not None:
-            try:
-                ws_client.subscribe_price([symbol])
-                cached = ws_client.get_latest_price(symbol)
-                if cached is not None and cached > 0:
-                    return cached
-            except Exception as exc:
-                self._log.debug(
-                    "Bitunix WS price fetch failed symbol=%s error=%s", symbol, exc
-                )
         return self._client.fetch_price(symbol)
 
     def get_account_balance(self) -> float:
@@ -205,16 +156,6 @@ class BitunixExchange(Exchange):
         return balance
 
     def get_24h_tickers(self) -> List[Dict[str, Any]]:
-        ws_client = self._get_ws_client()
-        if ws_client is not None:
-            # Use already-streamed websocket tickers when available.
-            try:
-                self._bootstrap_ws_tickers(ws_client)
-                cached = ws_client.get_latest_tickers()
-                if cached:
-                    return cached
-            except Exception as exc:
-                self._log.debug("Bitunix WS tickers fetch failed: %s", exc)
         ticks = self._client.fetch_tickers()
         return list(ticks.values())
 
@@ -356,6 +297,11 @@ class BitunixExchange(Exchange):
     ) -> OrderResult:
         # self.set_leverage(symbol, leverage)
         normalized_qty = self._normalize_quantity(symbol, quantity)
+        normalized_stop_loss = (
+            self._normalize_directional_stop_loss_price(symbol, side, stop_loss)
+            if stop_loss is not None
+            else None
+        )
         response = self._client.place_order(
             symbol=symbol,
             side="BUY" if side == PositionSide.LONG else "SELL",
@@ -364,7 +310,7 @@ class BitunixExchange(Exchange):
             trade_side="OPEN",
             reduce_only=False,
             tp_price=take_profit,
-            sl_price=stop_loss,
+            sl_price=normalized_stop_loss,
         )
         if not response or not response.get("orderId"):
             raise RuntimeError("Bitunix open position failed: no order id returned")
@@ -394,6 +340,11 @@ class BitunixExchange(Exchange):
         # self.set_leverage(symbol, leverage)
         normalized_qty = self._normalize_quantity(symbol, quantity)
         normalized_price = self._normalize_limit_price(symbol, side, price)
+        normalized_stop_loss = (
+            self._normalize_directional_stop_loss_price(symbol, side, stop_loss)
+            if stop_loss is not None
+            else None
+        )
         response = self._client.place_order(
             symbol=symbol,
             side="BUY" if side == PositionSide.LONG else "SELL",
@@ -404,7 +355,7 @@ class BitunixExchange(Exchange):
             trade_side="OPEN",
             reduce_only=False,
             tp_price=take_profit,
-            sl_price=stop_loss,
+            sl_price=normalized_stop_loss,
         )
         if not response or not response.get("orderId"):
             raise RuntimeError(
@@ -595,6 +546,12 @@ class BitunixExchange(Exchange):
         start_time: Optional[int] = None,
         end_time: Optional[int] = None,
     ) -> List[List]:
+        def row_time(row: Dict[str, Any]) -> int:
+            try:
+                return int(row.get("time", 0) or 0)
+            except (AttributeError, TypeError, ValueError):
+                return 0
+
         rows = self._client.get_kline_history(
             symbol=symbol,
             interval=interval,
@@ -603,43 +560,12 @@ class BitunixExchange(Exchange):
             end_time=end_time,
             kline_type="LAST_PRICE",
         )
-        ws_row: Optional[Dict[str, Any]] = None
-        ws_client = self._get_ws_client()
-        if ws_client is not None:
-            try:
-                ws_client.subscribe_kline(symbol=symbol, interval=interval)
-                ws_row = ws_client.get_latest_kline(
-                    symbol=symbol, interval=interval, price_type="market"
-                )
-            except Exception as exc:
-                self._log.debug(
-                    "Bitunix WS kline fetch failed symbol=%s interval=%s error=%s",
-                    symbol,
-                    interval,
-                    exc,
-                )
-        if ws_row:
-            ws_open_time = int(ws_row.get("time", 0) or 0)
-            if ws_open_time > 0:
-                replaced = False
-                for idx, row in enumerate(rows):
-                    try:
-                        if int(row.get("time", 0) or 0) == ws_open_time:
-                            rows[idx] = ws_row
-                            replaced = True
-                            break
-                    except (TypeError, ValueError):
-                        continue
-                if not replaced:
-                    rows.append(ws_row)
-                rows = sorted(
-                    rows,
-                    key=lambda item: int(item.get("time", 0) or 0),
-                )
-                if limit > 0 and len(rows) > limit:
-                    rows = rows[-limit:]
         if not rows:
             return []
+
+        rows = sorted(rows, key=row_time)
+        if limit > 0 and len(rows) > limit:
+            rows = rows[-limit:]
 
         interval_ms = interval_to_milliseconds(interval)
         out: List[List] = []
@@ -680,13 +606,6 @@ class BitunixExchange(Exchange):
             raise RuntimeError(f"Bitunix connection test failed: {exc}") from exc
 
     def close(self) -> None:
-        ws_client = self._ws_client
-        if ws_client is not None:
-            try:
-                ws_client.stop()
-            except Exception:
-                pass
-        self._ws_client = None
         try:
             self._client._session.close()
         except Exception:

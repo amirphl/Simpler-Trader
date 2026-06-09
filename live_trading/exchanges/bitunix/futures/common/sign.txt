@@ -84,19 +84,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-WebSocket API Singature Parameters
-WebSocket API requests require authentication, and the following fields need to be included in all request parameter params:
-
-Name	Type	Mandatory	Description
-apiKey	string	Y	API Key
-timestamp	string	Y	Timestapmp
-nonce	string	Y	Random string
-sign	string	Y	Signature string
-Signature steps:
-
-Sort all fields in params except the sign field in ascending ASCII order by Key, remember to remove all spaces, Example: String params = "apiKey9a25209b66004da404d9ddcb48d1e11fnonce123456symbolBTCtimestamp1724285700000"
-Signature, needs to be encrypted 2 times
-String digest = SHA256(nonce + timestamp + apiKey + params)
-String sign = SHA256(digest + secretKey)
-Note: secretKey is together when applying for apiKey. Please keep them safely and do not pass it around.
 Pager
