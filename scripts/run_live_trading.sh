@@ -73,6 +73,9 @@ resolve_strategy_module() {
         strong_trend_stair)
             printf '%s\n' "cmd.live_trading.strong_trend_stair_main"
             ;;
+        ema_avwap_pullback)
+            printf '%s\n' "cmd.live_trading.ema_avwap_pullback_main"
+            ;;
         pinbar_magic_v3|"")
             printf '%s\n' "cmd.live_trading.pinbar_magic_v3_main"
             ;;

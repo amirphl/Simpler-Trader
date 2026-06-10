@@ -5,11 +5,13 @@ This directory contains runtime configuration files.
 ## Files
 
 - `backtest.ema_avwap_pullback.env.example`: template for EMA + AVWAP pullback backtests
+- `live_trading.ema_avwap_pullback.env.example`: template for EMA + AVWAP pullback live trading
 - `live_trading.heiken_ashi.env.example`: template for Heiken Ashi strategy
 - `live_trading.pinbar_magic_v3.env.example`: template for PinBar Magic v3 strategy
 - `live_trading.strong_trend_stair.env.example`: template for Strong Trend Stair strategy
 - `postgres.env.example`: template for web/backtest candle PostgreSQL settings
 - `live_trading.heiken_ashi.env`: local runtime config for Heiken Ashi (do not commit secrets)
+- `live_trading.ema_avwap_pullback.env`: local runtime config for EMA + AVWAP pullback (do not commit secrets)
 - `live_trading.pinbar_magic_v3.env`: local runtime config for PinBar Magic v3 (do not commit secrets)
 - `live_trading.strong_trend_stair.env`: local runtime config for Strong Trend Stair (do not commit secrets)
 - `postgres.env`: local runtime config for web/backtest candle PostgreSQL settings (do not commit secrets)
@@ -20,6 +22,7 @@ Use strategy-specific templates:
 
 ```bash
 cp configs/live_trading.heiken_ashi.env.example configs/live_trading.heiken_ashi.env
+cp configs/live_trading.ema_avwap_pullback.env.example configs/live_trading.ema_avwap_pullback.env
 cp configs/live_trading.pinbar_magic_v3.env.example configs/live_trading.pinbar_magic_v3.env
 cp configs/live_trading.strong_trend_stair.env.example configs/live_trading.strong_trend_stair.env
 ```
@@ -30,11 +33,25 @@ Then run:
 ./scripts/run_live_trading.sh
 # or
 python -m cmd.live_trading.heiken_ashi_main
+python -m cmd.live_trading.ema_avwap_pullback_main
 python -m cmd.live_trading.pinbar_magic_v3_main
 python -m cmd.live_trading.strong_trend_stair_main
 # explicit file override:
 python -m cmd.live_trading.pinbar_magic_v3_main --config-file ./configs/live_trading.pinbar_magic_v3.env
 ```
+
+For multiple EMA + AVWAP symbols without creating one config per symbol:
+
+```bash
+scripts/run_ema_avwap_pullback_live_multi.sh \
+  --config-file configs/live_trading.ema_avwap_pullback.env \
+  --symbols ETHUSDT,BTCUSDT,SOLUSDT \
+  --mode blocking
+```
+
+`blocking` streams prefixed logs to your terminal. `async` starts each symbol in
+the background and writes per-symbol pid/log/state files under `./data` and
+`./logs`.
 
 ## Config Resolution Order (Live Trading)
 
@@ -57,7 +74,7 @@ cp configs/backtest.ema_avwap_pullback.env.example configs/backtest.ema_avwap_pu
 
 ### Strategy Selection
 
-- `STRATEGY_NAME=heiken_ashi` or `pinbar_magic_v3` or `strong_trend_stair`
+- `STRATEGY_NAME=heiken_ashi` or `ema_avwap_pullback` or `pinbar_magic_v3` or `strong_trend_stair`
 - `TIMEFRAME=...`
 
 `STRATEGY_NAME` still matters when using `./scripts/run_live_trading.sh`, because the script uses it to choose the correct `cmd.live_trading.*_main` module.
@@ -88,6 +105,26 @@ cp configs/backtest.ema_avwap_pullback.env.example configs/backtest.ema_avwap_pu
 Note:
 - PinBar Magic v3 does not rely on symbol scanning in the live coordinator.
 - `TOP_M_SYMBOLS`, `TOP_N_SIGNALS`, and `PRICE_CHANGE_THRESHOLD` are scanner-oriented knobs used by Heiken Ashi flow, not the ETH-only PinBar coordinator path.
+
+### EMA + AVWAP Pullback Variables
+
+- `SYMBOLS=ETHUSDT`
+- `EQUITY_RISK_PCT`
+- `EMA_LENGTH`
+- `CONSECUTIVE_COUNT`
+- `EMA_VALIDATION_MODE=body|wick`
+- `SETUP_WAITING_REPLACEMENT_MODE=keep_waiting|replace_waiting`
+- `POSITION_SIZING_MODE=risk_distance|risk_amount_per_price`
+- `AVWAP_MULTIPLIER_1`, `AVWAP_MULTIPLIER_2`, `AVWAP_MULTIPLIER_3`
+- `RIGID_STOP_LOSS_PCT`
+- `TRAILING_ACTIVATION_THRESHOLD_PCT`
+- `TRAILING_GAP_PCT`
+- `ENTRY_CANCEL_BARS`
+- `MAX_HISTORY_BARS`
+- `EMERGENCY_CLOSE_ON_STOP_FAILURE=true|false`
+- `ALLOW_DYNAMIC_STOP_WIDENING=true|false`
+- `POLL_INTERVAL_SECONDS`
+- `TRAILING_CHECK_INTERVAL_SECONDS`
 
 ### Exchange / Risk / Scheduling
 
@@ -193,5 +230,6 @@ python3 scripts/check_missing_candles.py \
 
 Never commit real credentials in:
 - `configs/live_trading.heiken_ashi.env`
+- `configs/live_trading.ema_avwap_pullback.env`
 - `configs/live_trading.pinbar_magic_v3.env`
 - `configs/live_trading.strong_trend_stair.env`
