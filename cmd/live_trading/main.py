@@ -9,6 +9,7 @@ from typing import List, Optional
 
 from ._shared import load_env_config, resolve_config_file
 from .heiken_ashi_main import main as heiken_ashi_main
+from .ema_avwap_pullback_main import main as ema_avwap_pullback_main
 from .pinbar_magic_v3_main import main as pinbar_magic_v3_main
 from .strong_trend_stair_main import main as strong_trend_stair_main
 
@@ -19,6 +20,7 @@ def _resolve_strategy(argv: Optional[List[str]] = None) -> str:
         "--strategy-name",
         choices=[
             "heiken_ashi",
+            "ema_avwap_pullback",
             "pinbar_magic_v3",
             "strong_trend_stair",
         ],
@@ -35,6 +37,8 @@ def _resolve_strategy(argv: Optional[List[str]] = None) -> str:
     strategy = str(env_config.get("strategy_name") or "pinbar_magic_v3").strip().lower()
     if strategy == "heiken_ashi":
         return "heiken_ashi"
+    if strategy == "ema_avwap_pullback":
+        return "ema_avwap_pullback"
     if strategy == "strong_trend_stair":
         return "strong_trend_stair"
     if strategy == "pinbar_magic_v3":
@@ -51,6 +55,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     if strategy == "heiken_ashi":
         return heiken_ashi_main(effective_argv)
+    if strategy == "ema_avwap_pullback":
+        return ema_avwap_pullback_main(effective_argv)
     if strategy == "strong_trend_stair":
         return strong_trend_stair_main(effective_argv)
     if strategy == "pinbar_magic_v3":

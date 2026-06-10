@@ -13,6 +13,10 @@ from signal_notifier import TelegramClient, TelegramConfig
 
 from live_trading import LiveTradingConfig
 from live_trading.coordinator import LiveTradingCoordinator
+from live_trading.ema_avwap_pullback_strategy import (
+    EmaAvwapPullbackLiveConfig,
+    EmaAvwapPullbackLiveCoordinator,
+)
 from live_trading.exchange import ExchangeConfig, MarginMode
 from live_trading.pinbar_magic_coordinator_v3 import (
     PinBarMagicCoordinatorV3,
@@ -27,6 +31,7 @@ DEFAULT_CONFIG_BY_STRATEGY: Dict[str, Path] = {
     "heiken_ashi": Path("./configs/live_trading.heiken_ashi.env"),
     "pinbar_magic_v3": Path("./configs/live_trading.pinbar_magic_v3.env"),
     "strong_trend_stair": Path("./configs/live_trading.strong_trend_stair.env"),
+    "ema_avwap_pullback": Path("./configs/live_trading.ema_avwap_pullback.env"),
 }
 ALLOWED_STRATEGIES = tuple(DEFAULT_CONFIG_BY_STRATEGY.keys())
 
@@ -225,6 +230,101 @@ def _load_pinbar_magic_v3_env_config(read_env: Callable[..., str]) -> Dict[str, 
     }
 
 
+def _load_ema_avwap_pullback_env_config(read_env: Callable[..., str]) -> Dict[str, str]:
+    return {
+        "exchange": read_env("EXCHANGE"),
+        "trading_mode": read_env("TRADING_MODE"),
+        "api_key": read_env("API_KEY"),
+        "api_secret": read_env("API_SECRET"),
+        "api_passphrase": read_env("API_PASSPHRASE", "PASS_PHRASE"),
+        "testnet": read_env("TESTNET"),
+        "timeframe": read_env("TIMEFRAME"),
+        "strategy_name": read_env("STRATEGY_NAME", "LIVE_STRATEGY_NAME"),
+        "leverage": read_env("LEVERAGE"),
+        "take_profit_pct": read_env("TAKE_PROFIT_PCT"),
+        "margin_mode": read_env("MARGIN_MODE"),
+        "disable_symbol_hours": read_env("DISABLE_SYMBOL_HOURS"),
+        "position_size_usdt": read_env("POSITION_SIZE_USDT"),
+        "max_entry_notional_usdt": read_env("MAX_ENTRY_NOTIONAL_USDT"),
+        "max_concurrent_positions": read_env("MAX_CONCURRENT_POSITIONS"),
+        "max_position_size_pct": read_env("MAX_POSITION_SIZE_PCT"),
+        "state_file": read_env("STATE_FILE"),
+        "positions_db": read_env("POSITIONS_DB"),
+        "klines_db": read_env("KLINES_DB"),
+        "log_file": read_env("LOG_FILE"),
+        "candle_ready_delay_seconds": read_env("CANDLE_READY_DELAY_SECONDS"),
+        "execution_interval_minutes": read_env("EXECUTION_INTERVAL_MINUTES"),
+        "poll_interval_seconds": read_env("POLL_INTERVAL_SECONDS"),
+        "trailing_check_interval_seconds": read_env("TRAILING_CHECK_INTERVAL_SECONDS"),
+        "exchange_base_url": read_env("EXCHANGE_BASE_URL"),
+        "http_proxy": read_env("HTTP_PROXY"),
+        "https_proxy": read_env("HTTPS_PROXY"),
+        "proxy": read_env("PROXY"),
+        "telegram_enabled": read_env("TELEGRAM_ENABLED"),
+        "telegram_token": read_env("TELEGRAM_BOT_TOKEN", "TELEGRAM_TOKEN"),
+        "telegram_chat_id": read_env("TELEGRAM_CHAT_ID"),
+        "telegram_proxy": read_env("TELEGRAM_PROXY"),
+        "telegram_timeout": read_env("TELEGRAM_TIMEOUT"),
+        "log_level": read_env("LOG_LEVEL"),
+        "symbols": read_env("SYMBOLS", "EMA_AVWAP_SYMBOLS", "PINBAR_SYMBOLS"),
+        "trailing_tick_timeframe": read_env("TRAILING_TICK_TIMEFRAME"),
+        "use_trailing_tick_emulation": read_env("USE_TRAILING_TICK_EMULATION"),
+        "equity_risk_pct": read_env("EQUITY_RISK_PCT", "STRATEGY_EQUITY_RISK_PCT"),
+        "ema_length": read_env("EMA_LENGTH", "STRATEGY_EMA_LENGTH"),
+        "consecutive_count": read_env(
+            "CONSECUTIVE_COUNT", "STRATEGY_CONSECUTIVE_COUNT"
+        ),
+        "ema_validation_mode": read_env(
+            "EMA_VALIDATION_MODE", "STRATEGY_EMA_VALIDATION_MODE"
+        ),
+        "setup_waiting_replacement_mode": read_env(
+            "SETUP_WAITING_REPLACEMENT_MODE",
+            "STRATEGY_SETUP_WAITING_REPLACEMENT_MODE",
+        ),
+        "position_sizing_mode": read_env(
+            "POSITION_SIZING_MODE", "STRATEGY_POSITION_SIZING_MODE"
+        ),
+        "avwap_multiplier_1": read_env(
+            "AVWAP_MULTIPLIER_1", "STRATEGY_AVWAP_MULTIPLIER_1"
+        ),
+        "avwap_multiplier_2": read_env(
+            "AVWAP_MULTIPLIER_2", "STRATEGY_AVWAP_MULTIPLIER_2"
+        ),
+        "avwap_multiplier_3": read_env(
+            "AVWAP_MULTIPLIER_3", "STRATEGY_AVWAP_MULTIPLIER_3"
+        ),
+        "rigid_stop_loss_pct": read_env(
+            "RIGID_STOP_LOSS_PCT", "STRATEGY_RIGID_STOP_LOSS_PCT"
+        ),
+        "trailing_activation_threshold_pct": read_env(
+            "TRAILING_ACTIVATION_THRESHOLD_PCT",
+            "STRATEGY_TRAILING_ACTIVATION_THRESHOLD_PCT",
+        ),
+        "trailing_gap_pct": read_env("TRAILING_GAP_PCT", "STRATEGY_TRAILING_GAP_PCT"),
+        "maker_fee_pct": read_env("MAKER_FEE_PCT", "STRATEGY_MAKER_FEE_PCT"),
+        "taker_fee_pct": read_env("TAKER_FEE_PCT", "STRATEGY_TAKER_FEE_PCT"),
+        "entry_slippage_pct": read_env(
+            "ENTRY_SLIPPAGE_PCT", "STRATEGY_ENTRY_SLIPPAGE_PCT"
+        ),
+        "exit_slippage_pct": read_env(
+            "EXIT_SLIPPAGE_PCT", "STRATEGY_EXIT_SLIPPAGE_PCT"
+        ),
+        "use_gap_cross_detection": read_env(
+            "USE_GAP_CROSS_DETECTION", "STRATEGY_USE_GAP_CROSS_DETECTION"
+        ),
+        "entry_cancel_bars": read_env("ENTRY_CANCEL_BARS"),
+        "max_history_bars": read_env("MAX_HISTORY_BARS"),
+        "minimum_balance_usdt": read_env("MINIMUM_BALANCE_USDT"),
+        "api_retries": read_env("API_RETRIES"),
+        "api_retry_delay_seconds": read_env("API_RETRY_DELAY_SECONDS"),
+        "emergency_close_on_stop_failure": read_env(
+            "EMERGENCY_CLOSE_ON_STOP_FAILURE"
+        ),
+        "allow_dynamic_stop_widening": read_env("ALLOW_DYNAMIC_STOP_WIDENING"),
+        "min_stop_update_pct": read_env("MIN_STOP_UPDATE_PCT"),
+    }
+
+
 def _load_strong_trend_stair_env_config(read_env: Callable[..., str]) -> Dict[str, str]:
     return {
         "exchange": read_env("EXCHANGE"),
@@ -283,6 +383,7 @@ STRATEGY_ENV_LOADERS: Dict[str, Callable[[Callable[..., str]], Dict[str, str]]] 
     "heiken_ashi": _load_heiken_ashi_env_config,
     "pinbar_magic_v3": _load_pinbar_magic_v3_env_config,
     "strong_trend_stair": _load_strong_trend_stair_env_config,
+    "ema_avwap_pullback": _load_ema_avwap_pullback_env_config,
 }
 
 
@@ -572,6 +673,197 @@ def _apply_pinbar_magic_v3_env_defaults(
         args.risk_equity_mark_source = config["risk_equity_mark_source"].strip().lower()
 
 
+def _apply_ema_avwap_pullback_env_defaults(
+    args: argparse.Namespace, config: Dict[str, str]
+) -> None:
+    if config["exchange"]:
+        args.exchange = config["exchange"].strip().lower()
+    if config["trading_mode"]:
+        args.trading_mode = config["trading_mode"].strip().lower()
+    if config["api_key"]:
+        args.api_key = config["api_key"]
+    if config["api_secret"]:
+        args.api_secret = config["api_secret"]
+    if config["api_passphrase"]:
+        args.api_passphrase = config["api_passphrase"]
+    if config["testnet"]:
+        args.testnet = _parse_bool(config["testnet"])
+    if config["timeframe"]:
+        args.timeframe = config["timeframe"].strip().lower()
+    if config["strategy_name"]:
+        args.strategy_name = config["strategy_name"].strip().lower()
+    if config["leverage"]:
+        args.leverage = _parse_int(config["leverage"], "LEVERAGE")
+    if config["take_profit_pct"]:
+        args.take_profit_pct = _parse_float(
+            config["take_profit_pct"], "TAKE_PROFIT_PCT"
+        )
+    if config["margin_mode"]:
+        args.margin_mode = config["margin_mode"].strip().lower()
+    if config["disable_symbol_hours"]:
+        args.disable_symbol_hours = _parse_float(
+            config["disable_symbol_hours"], "DISABLE_SYMBOL_HOURS"
+        )
+    if config["position_size_usdt"]:
+        args.position_size_usdt = _parse_float(
+            config["position_size_usdt"], "POSITION_SIZE_USDT"
+        )
+    if config["max_entry_notional_usdt"]:
+        args.max_entry_notional_usdt = _parse_float(
+            config["max_entry_notional_usdt"], "MAX_ENTRY_NOTIONAL_USDT"
+        )
+    if config["max_concurrent_positions"]:
+        args.max_concurrent_positions = _parse_int(
+            config["max_concurrent_positions"], "MAX_CONCURRENT_POSITIONS"
+        )
+    if config["max_position_size_pct"]:
+        args.max_position_size_pct = _parse_float(
+            config["max_position_size_pct"], "MAX_POSITION_SIZE_PCT"
+        )
+    if config["state_file"]:
+        args.state_file = Path(config["state_file"])
+    if config["positions_db"]:
+        args.positions_db = Path(config["positions_db"])
+    if config["klines_db"]:
+        args.klines_db = Path(config["klines_db"])
+    if config["log_file"]:
+        args.log_file = Path(config["log_file"])
+    if config["candle_ready_delay_seconds"]:
+        args.candle_ready_delay_seconds = _parse_int(
+            config["candle_ready_delay_seconds"], "CANDLE_READY_DELAY_SECONDS"
+        )
+    if config["execution_interval_minutes"]:
+        args.execution_interval_minutes = _parse_int(
+            config["execution_interval_minutes"], "EXECUTION_INTERVAL_MINUTES"
+        )
+    if config["poll_interval_seconds"]:
+        args.poll_interval_seconds = _parse_float(
+            config["poll_interval_seconds"], "POLL_INTERVAL_SECONDS"
+        )
+    if config["trailing_check_interval_seconds"]:
+        args.trailing_check_interval_seconds = _parse_float(
+            config["trailing_check_interval_seconds"],
+            "TRAILING_CHECK_INTERVAL_SECONDS",
+        )
+    if config["exchange_base_url"]:
+        args.exchange_base_url = config["exchange_base_url"]
+    if config["http_proxy"]:
+        args.http_proxy = config["http_proxy"]
+    if config["https_proxy"]:
+        args.https_proxy = config["https_proxy"]
+    if config["proxy"]:
+        args.proxy = config["proxy"]
+    if config["telegram_enabled"]:
+        args.telegram_enabled = _parse_bool(config["telegram_enabled"])
+    if config["telegram_token"]:
+        args.telegram_token = config["telegram_token"]
+    if config["telegram_chat_id"]:
+        args.telegram_chat_id = config["telegram_chat_id"]
+    if config["telegram_proxy"]:
+        args.telegram_proxy = config["telegram_proxy"]
+    if config["telegram_timeout"]:
+        args.telegram_timeout = _parse_float(
+            config["telegram_timeout"], "TELEGRAM_TIMEOUT"
+        )
+    if config["log_level"]:
+        args.log_level = config["log_level"].strip().upper()
+    if config.get("symbols"):
+        args.symbols = config["symbols"]
+    if config.get("trailing_tick_timeframe"):
+        args.trailing_tick_timeframe = config["trailing_tick_timeframe"].strip().lower()
+    if config.get("use_trailing_tick_emulation"):
+        args.use_trailing_tick_emulation = _parse_bool(
+            config["use_trailing_tick_emulation"]
+        )
+    if config.get("equity_risk_pct"):
+        args.equity_risk_pct = _parse_float(
+            config["equity_risk_pct"], "EQUITY_RISK_PCT"
+        )
+    if config.get("ema_length"):
+        args.ema_length = _parse_int(config["ema_length"], "EMA_LENGTH")
+    if config.get("consecutive_count"):
+        args.consecutive_count = _parse_int(
+            config["consecutive_count"], "CONSECUTIVE_COUNT"
+        )
+    if config.get("ema_validation_mode"):
+        args.ema_validation_mode = config["ema_validation_mode"].strip().lower()
+    if config.get("setup_waiting_replacement_mode"):
+        args.setup_waiting_replacement_mode = config[
+            "setup_waiting_replacement_mode"
+        ].strip().lower()
+    if config.get("position_sizing_mode"):
+        args.position_sizing_mode = config["position_sizing_mode"].strip().lower()
+    if config.get("avwap_multiplier_1"):
+        args.avwap_multiplier_1 = _parse_float(
+            config["avwap_multiplier_1"], "AVWAP_MULTIPLIER_1"
+        )
+    if config.get("avwap_multiplier_2"):
+        args.avwap_multiplier_2 = _parse_float(
+            config["avwap_multiplier_2"], "AVWAP_MULTIPLIER_2"
+        )
+    if config.get("avwap_multiplier_3"):
+        args.avwap_multiplier_3 = _parse_float(
+            config["avwap_multiplier_3"], "AVWAP_MULTIPLIER_3"
+        )
+    if config.get("rigid_stop_loss_pct"):
+        args.rigid_stop_loss_pct = _parse_float(
+            config["rigid_stop_loss_pct"], "RIGID_STOP_LOSS_PCT"
+        )
+    if config.get("trailing_activation_threshold_pct"):
+        args.trailing_activation_threshold_pct = _parse_float(
+            config["trailing_activation_threshold_pct"],
+            "TRAILING_ACTIVATION_THRESHOLD_PCT",
+        )
+    if config.get("trailing_gap_pct"):
+        args.trailing_gap_pct = _parse_float(
+            config["trailing_gap_pct"], "TRAILING_GAP_PCT"
+        )
+    if config.get("maker_fee_pct"):
+        args.maker_fee_pct = _parse_float(config["maker_fee_pct"], "MAKER_FEE_PCT")
+    if config.get("taker_fee_pct"):
+        args.taker_fee_pct = _parse_float(config["taker_fee_pct"], "TAKER_FEE_PCT")
+    if config.get("entry_slippage_pct"):
+        args.entry_slippage_pct = _parse_float(
+            config["entry_slippage_pct"], "ENTRY_SLIPPAGE_PCT"
+        )
+    if config.get("exit_slippage_pct"):
+        args.exit_slippage_pct = _parse_float(
+            config["exit_slippage_pct"], "EXIT_SLIPPAGE_PCT"
+        )
+    if config.get("use_gap_cross_detection"):
+        args.use_gap_cross_detection = _parse_bool(config["use_gap_cross_detection"])
+    if config.get("entry_cancel_bars"):
+        args.entry_cancel_bars = _parse_int(
+            config["entry_cancel_bars"], "ENTRY_CANCEL_BARS"
+        )
+    if config.get("max_history_bars"):
+        args.max_history_bars = _parse_int(
+            config["max_history_bars"], "MAX_HISTORY_BARS"
+        )
+    if config.get("minimum_balance_usdt"):
+        args.minimum_balance_usdt = _parse_float(
+            config["minimum_balance_usdt"], "MINIMUM_BALANCE_USDT"
+        )
+    if config.get("api_retries"):
+        args.api_retries = _parse_int(config["api_retries"], "API_RETRIES")
+    if config.get("api_retry_delay_seconds"):
+        args.api_retry_delay_seconds = _parse_float(
+            config["api_retry_delay_seconds"], "API_RETRY_DELAY_SECONDS"
+        )
+    if config.get("emergency_close_on_stop_failure"):
+        args.emergency_close_on_stop_failure = _parse_bool(
+            config["emergency_close_on_stop_failure"]
+        )
+    if config.get("allow_dynamic_stop_widening"):
+        args.allow_dynamic_stop_widening = _parse_bool(
+            config["allow_dynamic_stop_widening"]
+        )
+    if config.get("min_stop_update_pct"):
+        args.min_stop_update_pct = _parse_float(
+            config["min_stop_update_pct"], "MIN_STOP_UPDATE_PCT"
+        )
+
+
 def _apply_strong_trend_stair_env_defaults(
     args: argparse.Namespace, config: Dict[str, str]
 ) -> None:
@@ -705,6 +997,7 @@ STRATEGY_DEFAULT_APPLIERS: Dict[
     "heiken_ashi": _apply_heiken_ashi_env_defaults,
     "pinbar_magic_v3": _apply_pinbar_magic_v3_env_defaults,
     "strong_trend_stair": _apply_strong_trend_stair_env_defaults,
+    "ema_avwap_pullback": _apply_ema_avwap_pullback_env_defaults,
 }
 
 
@@ -773,6 +1066,8 @@ def create_exchange(args: argparse.Namespace, logger: logging.Logger):
         proxies = {}
         if args.http_proxy:
             proxies["http"] = args.http_proxy
+            if not args.https_proxy:
+                proxies["https"] = args.http_proxy
         if args.https_proxy:
             proxies["https"] = args.https_proxy
 
@@ -826,6 +1121,16 @@ def create_telegram_client(
     return TelegramClient(telegram_config, telegram_logger)
 
 
+def _resolve_telegram_proxy(args: argparse.Namespace) -> Optional[str]:
+    return (
+        args.telegram_proxy
+        or args.proxy
+        or args.https_proxy
+        or args.http_proxy
+        or None
+    )
+
+
 def build_pinbar_magic_v3_coordinator_config(
     config: LiveTradingConfig,
 ) -> PinBarMagicCoordinatorV3Config:
@@ -860,6 +1165,66 @@ def build_pinbar_magic_v3_coordinator_config(
         risk_equity_include_unrealized=config.risk_equity_include_unrealized,
         risk_equity_mark_source=config.risk_equity_mark_source,
         use_stop_fill_open_gap=config.use_stop_fill_open_gap,
+        disable_symbol_hours=config.disable_symbol_hours,
+        state_file=config.state_file,
+        positions_db=config.positions_db,
+        klines_db=config.klines_db,
+        log_file=config.log_file,
+    )
+
+
+def build_ema_avwap_pullback_config(
+    args: argparse.Namespace, config: LiveTradingConfig
+) -> EmaAvwapPullbackLiveConfig:
+    symbols = _parse_symbols_csv(str(_arg(args, "symbols", ""))) or ("ETHUSDT",)
+    return EmaAvwapPullbackLiveConfig(
+        symbols=symbols,
+        timeframe=config.timeframe,
+        trailing_tick_timeframe=str(_arg(args, "trailing_tick_timeframe", "1m")),
+        use_trailing_tick_emulation=bool(
+            _arg(args, "use_trailing_tick_emulation", False)
+        ),
+        poll_interval_seconds=float(_arg(args, "poll_interval_seconds", 5.0)),
+        trailing_check_interval_seconds=float(
+            _arg(args, "trailing_check_interval_seconds", 5.0)
+        ),
+        leverage=config.leverage,
+        margin_mode=config.margin_mode,
+        max_concurrent_positions=config.max_concurrent_positions,
+        max_entry_notional_usdt=config.max_entry_notional_usdt,
+        equity_risk_pct=float(_arg(args, "equity_risk_pct", 1.0)),
+        ema_length=int(_arg(args, "ema_length", 55)),
+        consecutive_count=int(_arg(args, "consecutive_count", 4)),
+        ema_validation_mode=str(_arg(args, "ema_validation_mode", "body")),
+        setup_waiting_replacement_mode=str(
+            _arg(args, "setup_waiting_replacement_mode", "keep_waiting")
+        ),
+        position_sizing_mode=str(_arg(args, "position_sizing_mode", "risk_distance")),
+        avwap_multiplier_1=float(_arg(args, "avwap_multiplier_1", 1.0)),
+        avwap_multiplier_2=float(_arg(args, "avwap_multiplier_2", 2.0)),
+        avwap_multiplier_3=float(_arg(args, "avwap_multiplier_3", 3.0)),
+        rigid_stop_loss_pct=float(_arg(args, "rigid_stop_loss_pct", 0.0)),
+        trailing_activation_threshold_pct=float(
+            _arg(args, "trailing_activation_threshold_pct", 0.0)
+        ),
+        trailing_gap_pct=float(_arg(args, "trailing_gap_pct", 1.0)),
+        maker_fee_pct=float(_arg(args, "maker_fee_pct", 0.0002)),
+        taker_fee_pct=float(_arg(args, "taker_fee_pct", 0.0006)),
+        entry_slippage_pct=float(_arg(args, "entry_slippage_pct", 0.0)),
+        exit_slippage_pct=float(_arg(args, "exit_slippage_pct", 0.0)),
+        use_gap_cross_detection=bool(_arg(args, "use_gap_cross_detection", True)),
+        entry_cancel_bars=int(_arg(args, "entry_cancel_bars", 1)),
+        max_history_bars=int(_arg(args, "max_history_bars", 512)),
+        minimum_balance_usdt=float(_arg(args, "minimum_balance_usdt", 0.0)),
+        api_retries=int(_arg(args, "api_retries", 3)),
+        api_retry_delay_seconds=float(_arg(args, "api_retry_delay_seconds", 1.0)),
+        emergency_close_on_stop_failure=bool(
+            _arg(args, "emergency_close_on_stop_failure", True)
+        ),
+        allow_dynamic_stop_widening=bool(
+            _arg(args, "allow_dynamic_stop_widening", True)
+        ),
+        min_stop_update_pct=float(_arg(args, "min_stop_update_pct", 0.0)),
         disable_symbol_hours=config.disable_symbol_hours,
         state_file=config.state_file,
         positions_db=config.positions_db,
@@ -956,10 +1321,15 @@ def run_main(
         logger.warning("=" * 80)
         logger.warning("LIVE TRADING MODE ENABLED - REAL MONEY WILL BE TRADED")
         logger.warning("=" * 80)
-        response = input("Are you sure you want to continue? Type 'YES' to confirm: ")
-        if response != "YES":
-            logger.info("Live trading cancelled")
-            return 0
+        if os.getenv("LIVE_TRADING_CONFIRM") == "YES":
+            logger.warning("Live trading confirmation accepted from environment")
+        else:
+            response = input(
+                "Are you sure you want to continue? Type 'YES' to confirm: "
+            )
+            if response != "YES":
+                logger.info("Live trading cancelled")
+                return 0
 
     try:
         # Create exchange client
@@ -1027,7 +1397,7 @@ def run_main(
             telegram_enabled=args.telegram_enabled,
             telegram_bot_token=args.telegram_token or "",
             telegram_chat_id=args.telegram_chat_id or "",
-            telegram_proxy=args.telegram_proxy or None,
+            telegram_proxy=_resolve_telegram_proxy(args),
             telegram_timeout_seconds=args.telegram_timeout,
         )
 
@@ -1044,6 +1414,15 @@ def run_main(
             coordinator = PinBarMagicCoordinatorV3(
                 exchange=exchange,
                 config=pinbar_cfg,
+                telegram_client=telegram_client,
+                logger=logger,
+            )
+            coordinator.run_forever()
+        elif config.strategy_name == "ema_avwap_pullback":
+            ema_avwap_cfg = build_ema_avwap_pullback_config(args, config)
+            coordinator = EmaAvwapPullbackLiveCoordinator(
+                exchange=exchange,
+                config=ema_avwap_cfg,
                 telegram_client=telegram_client,
                 logger=logger,
             )
