@@ -442,7 +442,7 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             return None
 
         raw_entry_price = avwap.vwap
-        stop_level = avwap.lower2 if setup.direction == "long" else avwap.upper2
+        stop_level = avwap.lower1 if setup.direction == "long" else avwap.upper1
         sizing = self._build_sizing_decision(
             direction=setup.direction,
             raw_entry_price=raw_entry_price,

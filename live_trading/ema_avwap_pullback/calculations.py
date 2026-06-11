@@ -470,7 +470,7 @@ class EmaAvwapCalculationMixin(EmaAvwapMixinTyping):
     def _dynamic_stop_from_avwap(
         self, direction: Direction, avwap: _AvwapSnapshot
     ) -> float:
-        return avwap.lower2 if direction == "long" else avwap.upper2
+        return avwap.lower1 if direction == "long" else avwap.upper1
 
     def _protective_stop_price(
         self,
