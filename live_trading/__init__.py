@@ -19,6 +19,10 @@ from .models import (
     TradingState,
     PositionRecord,
 )
+from .ema_avwap_pullback_strategy import (
+    EmaAvwapPullbackLiveConfig,
+    EmaAvwapPullbackLiveCoordinator,
+)
 from .pinbar_magic_strategy_v3 import PinBarMagicLiveStrategyV3
 from .strategy_shared import BaseLiveTradingStrategy
 
@@ -34,6 +38,8 @@ __all__ = [
     "HeikenAshiLiveStrategy",
     "LiveTradingStrategy",
     "PinBarMagicLiveStrategyV3",
+    "EmaAvwapPullbackLiveConfig",
+    "EmaAvwapPullbackLiveCoordinator",
     "LiveTradingConfig",
     "SymbolInfo",
     "TradingSignal",
