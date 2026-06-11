@@ -28,6 +28,7 @@ ALLOWED_STRATEGIES = (
     "heiken_ashi",
     "pinbar_magic_v3",
     "strong_trend_stair",
+    "ema_avwap_pullback",
 )
 
 
@@ -48,7 +49,10 @@ class LiveTradingConfig:
     api_secret: str
     testnet: bool = True
     strategy_name: Literal[
-        "heiken_ashi", "pinbar_magic_v3", "strong_trend_stair"
+        "heiken_ashi",
+        "pinbar_magic_v3",
+        "strong_trend_stair",
+        "ema_avwap_pullback",
     ] = "pinbar_magic_v3"
 
     # Trading parameters
@@ -123,7 +127,8 @@ class LiveTradingConfig:
             )
         if self.strategy_name not in ALLOWED_STRATEGIES:
             raise ValueError(
-                "strategy_name must be one of: heiken_ashi, pinbar_magic_v3, strong_trend_stair"
+                "strategy_name must be one of: heiken_ashi, pinbar_magic_v3, "
+                "strong_trend_stair, ema_avwap_pullback"
             )
 
         # Scanner parameters are only required by Heiken Ashi flow.
