@@ -16,7 +16,7 @@ from backtest.indicators import ema as calc_ema
 
 from .constants import KLINES_RETRIES, KLINES_RETRY_DELAY_SECONDS
 from ._mixin_typing import EmaAvwapMixinTyping
-from .state import _AvwapSnapshot, _SetupState, _SymbolSnapshot
+from .state import _AvwapSnapshot, _PositionRuntime, _SetupState, _SymbolSnapshot
 
 
 class EmaAvwapDataMixin(EmaAvwapMixinTyping):
@@ -70,10 +70,21 @@ class EmaAvwapDataMixin(EmaAvwapMixinTyping):
         )
 
     def _build_live_avwap_snapshot(
-        self, snapshot: _SymbolSnapshot, setup: _SetupState
+        self,
+        snapshot: _SymbolSnapshot,
+        setup: _SetupState | _PositionRuntime,
     ) -> Tuple[_SymbolSnapshot, _AvwapSnapshot]:
         candles = self._live_avwap_candles(snapshot)
+        if candles[-1].open_time <= snapshot.candle.open_time:
+            raise ValueError(
+                "latest forming candle is unavailable; refusing to use stale "
+                "closed-candle indicators"
+            )
         tpv_prefix, vol_prefix, tpv2_prefix = self._build_avwap_prefixes(candles)
+        ema_values = calc_ema(
+            [candle.close for candle in candles], self._cfg.ema_length
+        )
+        live_ema = ema_values[-1]
         live_snapshot = _SymbolSnapshot(
             symbol=snapshot.symbol,
             timeframe=snapshot.timeframe,
@@ -82,7 +93,9 @@ class EmaAvwapDataMixin(EmaAvwapMixinTyping):
             candle_index=len(candles) - 1,
             candle=candles[-1],
             previous_candle=candles[-2],
-            ema_value=snapshot.ema_value,
+            ema_value=(
+                float(live_ema) if live_ema is not None else snapshot.ema_value
+            ),
             tpv_prefix=tpv_prefix,
             vol_prefix=vol_prefix,
             tpv2_prefix=tpv2_prefix,
