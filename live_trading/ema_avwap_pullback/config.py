@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Literal
 
@@ -11,6 +12,21 @@ from candle_downloader.binance import interval_to_milliseconds
 from ..exchange import MarginMode
 
 Direction = Literal["long", "short"]
+
+
+class EntryExitMode(str, Enum):
+    LIVE_MIDDLE_FIRST_BAND = "live_middle_first_band"
+    CANDLE_CLOSE_FIRST_BAND = "candle_close_first_band"
+    LIVE_MIDDLE_SECOND_BAND = "live_middle_second_band"
+
+    @property
+    def uses_closed_candle_entry(self) -> bool:
+        return self is EntryExitMode.CANDLE_CLOSE_FIRST_BAND
+
+    @property
+    def exit_band_number(self) -> int:
+        return 2 if self is EntryExitMode.LIVE_MIDDLE_SECOND_BAND else 1
+
 EmaValidationMode = Literal["body", "wick"]
 SetupWaitingReplacementMode = Literal["keep_waiting", "replace_waiting"]
 PositionSizingMode = Literal["risk_distance", "risk_amount_per_price"]
@@ -35,6 +51,7 @@ class EmaAvwapPullbackLiveConfig:
     ema_validation_mode: EmaValidationMode = "body"
     setup_waiting_replacement_mode: SetupWaitingReplacementMode = "keep_waiting"
     position_sizing_mode: PositionSizingMode = "risk_distance"
+    entry_exit_mode: EntryExitMode = EntryExitMode.LIVE_MIDDLE_FIRST_BAND
 
     avwap_multiplier_1: float = 1.0
     avwap_multiplier_2: float = 2.0
@@ -106,6 +123,11 @@ class EmaAvwapPullbackLiveConfig:
                 "position_sizing_mode must be one of: "
                 "risk_distance, risk_amount_per_price"
             )
+        try:
+            entry_exit_mode = EntryExitMode(self.entry_exit_mode)
+        except ValueError as exc:
+            allowed = ", ".join(mode.value for mode in EntryExitMode)
+            raise ValueError(f"entry_exit_mode must be one of: {allowed}") from exc
         if min(
             self.avwap_multiplier_1,
             self.avwap_multiplier_2,
@@ -140,8 +162,8 @@ class EmaAvwapPullbackLiveConfig:
         if self.disable_symbol_hours < 0:
             raise ValueError("disable_symbol_hours must be non-negative")
         object.__setattr__(self, "symbols", symbols)
+        object.__setattr__(self, "entry_exit_mode", entry_exit_mode)
         object.__setattr__(self, "timeframe", self.timeframe.strip())
         object.__setattr__(
             self, "trailing_tick_timeframe", self.trailing_tick_timeframe.strip()
         )
-
