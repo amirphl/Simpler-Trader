@@ -9,6 +9,7 @@ from typing import Any, Dict, Mapping
 
 from ..exchange import MarginMode, PositionSide
 from ..models import PendingEntryRecord, PositionRecord, TradingState
+from .config import EntryExitMode
 from ._mixin_typing import EmaAvwapMixinTyping
 from .state import (
     _AvwapSnapshot,
@@ -369,6 +370,9 @@ class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
             "risk_amount": candidate.risk_amount,
             "risk_amount_interpretation": candidate.risk_amount_interpretation,
             "entry_trigger_mode": candidate.entry_trigger_mode,
+            "entry_exit_mode": candidate.entry_exit_mode.value,
+            "ema_value": candidate.ema_value,
+            "decision_price": candidate.decision_price,
             "sizing": self._sizing_to_dict(candidate.sizing),
             "avwap": self._avwap_to_dict(candidate.avwap),
         }
@@ -394,6 +398,22 @@ class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
             entry_trigger_mode=str(data["entry_trigger_mode"]),
             sizing=self._sizing_from_dict(data["sizing"]),
             avwap=self._avwap_from_dict(data["avwap"]),
+            entry_exit_mode=EntryExitMode(
+                str(
+                    data.get(
+                        "entry_exit_mode",
+                        EntryExitMode.LIVE_MIDDLE_FIRST_BAND.value,
+                    )
+                )
+            ),
+            ema_value=(
+                float(data["ema_value"]) if data.get("ema_value") is not None else None
+            ),
+            decision_price=(
+                float(data["decision_price"])
+                if data.get("decision_price") is not None
+                else None
+            ),
         )
 
     def _sizing_to_dict(self, sizing: _SizingDecision) -> Dict[str, Any]:
@@ -445,6 +465,8 @@ class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
             "entry_trigger_mode": runtime.entry_trigger_mode,
             "risk_amount_interpretation": runtime.risk_amount_interpretation,
             "position_sizing_mode": runtime.position_sizing_mode,
+            "entry_exit_mode": runtime.entry_exit_mode.value,
+            "last_ema_value": runtime.last_ema_value,
             "last_avwap": self._avwap_to_dict(runtime.last_avwap)
             if runtime.last_avwap
             else None,
@@ -472,6 +494,19 @@ class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
             trailing_active=bool(data.get("trailing_active", False)),
             trailing_stop=data.get("trailing_stop"),
             extreme_price=data.get("extreme_price"),
+            entry_exit_mode=EntryExitMode(
+                str(
+                    data.get(
+                        "entry_exit_mode",
+                        EntryExitMode.LIVE_MIDDLE_FIRST_BAND.value,
+                    )
+                )
+            ),
+            last_ema_value=(
+                float(data["last_ema_value"])
+                if data.get("last_ema_value") is not None
+                else None
+            ),
         )
 
     def _avwap_to_dict(self, avwap: _AvwapSnapshot) -> Dict[str, Any]:
