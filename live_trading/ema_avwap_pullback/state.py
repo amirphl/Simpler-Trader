@@ -9,7 +9,7 @@ from typing import Sequence
 from candle_downloader.models import Candle
 
 from ..exchange import PositionSide
-from .config import Direction, PositionSizingMode
+from .config import Direction, EntryExitMode, PositionSizingMode
 
 class _InsufficientBalanceError(RuntimeError):
     """Raised when the exchange rejects an action due to balance or margin."""
@@ -109,6 +109,9 @@ class _EntryCandidate:
     entry_trigger_mode: str
     sizing: _SizingDecision
     avwap: _AvwapSnapshot
+    entry_exit_mode: EntryExitMode = EntryExitMode.LIVE_MIDDLE_FIRST_BAND
+    ema_value: float | None = None
+    decision_price: float | None = None
 
 
 @dataclass
@@ -128,6 +131,8 @@ class _PositionRuntime:
     trailing_active: bool = False
     trailing_stop: float | None = None
     extreme_price: float | None = None
+    entry_exit_mode: EntryExitMode = EntryExitMode.LIVE_MIDDLE_FIRST_BAND
+    last_ema_value: float | None = None
 
 
 @dataclass(frozen=True)
