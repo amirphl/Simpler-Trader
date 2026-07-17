@@ -12,7 +12,7 @@ from candle_downloader.models import Candle
 
 from ..exchange import Position, PositionSide
 from ..models import PendingEntryRecord, PositionRecord
-from .config import Direction
+from .config import Direction, EntryExitMode
 from ._mixin_typing import EmaAvwapMixinTyping
 from .state import _AvwapSnapshot, _CrossDecision, _PositionRuntime, _SetupState, _SizingDecision
 
@@ -98,6 +98,29 @@ class EmaAvwapCalculationMixin(EmaAvwapMixinTyping):
             return avwap.upper1 * (1.0 + threshold)
         return avwap.lower1 * (1.0 - threshold)
 
+    def _target_band_number(
+        self, entry_exit_mode: EntryExitMode | None = None
+    ) -> int:
+        mode = self._cfg.entry_exit_mode if entry_exit_mode is None else entry_exit_mode
+        return mode.exit_band_number
+
+    def _target_band_level(
+        self,
+        direction: Direction,
+        avwap: _AvwapSnapshot,
+        entry_exit_mode: EntryExitMode | None = None,
+    ) -> float:
+        if self._target_band_number(entry_exit_mode) == 2:
+            return avwap.upper2 if direction == "long" else avwap.lower2
+        return avwap.upper1 if direction == "long" else avwap.lower1
+
+    def _target_is_touched(
+        self, *, direction: Direction, price: float, target: float
+    ) -> bool:
+        if direction == "long":
+            return price >= target
+        return price <= target
+
     def _rigid_stop_level(
         self, direction: Direction, entry_price: float
     ) -> float | None:
@@ -113,15 +136,19 @@ class EmaAvwapCalculationMixin(EmaAvwapMixinTyping):
         *,
         direction: Direction,
         raw_entry_price: float,
-        stop_level: float,
+        stop_level: float | None,
         risk_amount: float,
     ) -> _SizingDecision | None:
-        distance = (
-            raw_entry_price - stop_level
-            if direction == "long"
-            else stop_level - raw_entry_price
-        )
-        if distance <= 0 or raw_entry_price <= 0:
+        if raw_entry_price <= 0:
+            return None
+        distance = 0.0
+        if stop_level is not None:
+            distance = (
+                raw_entry_price - stop_level
+                if direction == "long"
+                else stop_level - raw_entry_price
+            )
+        if self._cfg.position_sizing_mode == "risk_distance" and distance <= 0:
             return None
         entry_price = self._apply_entry_slippage(direction, raw_entry_price)
         estimated_exit_price = self._apply_exit_slippage(direction, raw_entry_price)
@@ -467,24 +494,18 @@ class EmaAvwapCalculationMixin(EmaAvwapMixinTyping):
                 return idx
         raise ValueError(f"anchor candle {anchor_time.isoformat()} not found")
 
-    def _dynamic_stop_from_avwap(
-        self, direction: Direction, avwap: _AvwapSnapshot
-    ) -> float:
-        return avwap.lower1 if direction == "long" else avwap.upper1
-
     def _protective_stop_price(
         self,
         *,
         direction: Direction,
-        dynamic_stop: float,
         rigid_stop: float | None,
         trailing_stop: float | None,
-    ) -> float:
-        candidates = [dynamic_stop]
-        if rigid_stop is not None:
-            candidates.append(rigid_stop)
-        if trailing_stop is not None:
-            candidates.append(trailing_stop)
+    ) -> float | None:
+        candidates = [
+            stop for stop in (rigid_stop, trailing_stop) if stop is not None
+        ]
+        if not candidates:
+            return None
         if direction == "long":
             return max(candidates)
         return min(candidates)
