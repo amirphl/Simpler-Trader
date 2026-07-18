@@ -7,62 +7,179 @@ from typing import Optional
 
 from ..models import PositionRecord
 from ._mixin_typing import EmaAvwapMixinTyping
-from .state import _PositionRuntime
+from .state import _AvwapSnapshot, _EntryCandidate, _PositionRuntime
 
 
 class EmaAvwapNotificationMixin(EmaAvwapMixinTyping):
-    def _notify_trade_opened(
-        self, position: PositionRecord, runtime: _PositionRuntime, stop_price: float
+    def _send_trade_notification(
+        self, *, symbol: str, event: str, lines: list[str]
     ) -> None:
         if not self._telegram:
             return
         try:
-            lines = [
-                f"[EMA AVWAP OPEN] {position.symbol}",
-                f"Timeframe: {self._cfg.timeframe}",
-                f"Side: {position.side.value}",
-                f"Entry: {position.entry_price:.8g}",
-                f"Qty: {position.quantity:.8g}",
-                f"Leverage: {position.leverage}x",
-                f"Stop: {stop_price:.8g}",
-                f"Rigid Stop: {runtime.rigid_stop_level:.8g}"
-                if runtime.rigid_stop_level is not None
-                else "Rigid Stop: n/a",
-                f"Anchor: {runtime.anchor_time.isoformat()}",
-                f"Trigger: {runtime.entry_trigger_mode}",
-                f"Time: {datetime.now(timezone.utc).isoformat()}",
-            ]
-            self._telegram.send_message("\n".join(lines))
+            self._telegram.send_message(
+                "\n".join([f"[EMA AVWAP {event}] {symbol}", *lines])
+            )
         except Exception as exc:
             self._log.warning(
-                "EmaAvwapPullback: failed to send open notification for %s: %s",
-                position.symbol,
+                "EmaAvwapPullback: failed to send %s notification for %s: %s",
+                event.lower(),
+                symbol,
                 exc,
             )
 
-    def _notify_trade_closed(
-        self, position: PositionRecord, *, reason: str, exit_price: Optional[float]
+    def _notify_entry_signal(self, candidate: _EntryCandidate) -> None:
+        target_band = candidate.entry_exit_mode.exit_band_number
+        reason = (
+            "closed candle vs AVWAP middle"
+            if candidate.entry_exit_mode.uses_closed_candle_entry
+            else "live price touched AVWAP middle"
+        )
+        target = self._target_band_level(
+            candidate.direction, candidate.avwap, candidate.entry_exit_mode
+        )
+        self._send_trade_notification(
+            symbol=candidate.symbol,
+            event="ENTRY SIGNAL",
+            lines=[
+                f"Mode: {candidate.entry_exit_mode.value}",
+                f"Timeframe: {self._cfg.timeframe}",
+                f"Side: {candidate.side.value}",
+                f"Trigger: {candidate.entry_trigger_mode}",
+                f"Reason: {reason}",
+                f"Entry: {candidate.order_price:.8g}",
+                f"Decision Price: {candidate.decision_price:.8g}"
+                if candidate.decision_price is not None
+                else "Decision Price: unavailable",
+                f"AVWAP Middle: {candidate.avwap.vwap:.8g}",
+                f"EMA: {candidate.ema_value:.8g}"
+                if candidate.ema_value is not None
+                else "EMA: unavailable",
+                f"Band 1: {candidate.avwap.upper1:.8g} / {candidate.avwap.lower1:.8g}",
+                f"Band 2: {candidate.avwap.upper2:.8g} / {candidate.avwap.lower2:.8g}",
+                f"Exit Band: {target_band} @ {target:.8g}",
+                f"Rigid Stop: {candidate.rigid_stop_at_entry:.8g}"
+                if candidate.rigid_stop_at_entry is not None
+                else "Rigid Stop: disabled",
+                f"Anchor: {candidate.anchor_time.isoformat()}",
+                f"Signal Time: {candidate.signal_time.isoformat()}",
+            ],
+        )
+
+    def _notify_exit_signal(
+        self,
+        position: PositionRecord,
+        *,
+        runtime: _PositionRuntime,
+        reason: str,
+        live_price: float,
+        target_price: float,
+        avwap: _AvwapSnapshot,
     ) -> None:
-        if not self._telegram:
-            return
-        try:
-            lines = [
-                f"[EMA AVWAP CLOSE] {position.symbol}",
+        self._send_trade_notification(
+            symbol=position.symbol,
+            event="EXIT SIGNAL",
+            lines=[
+                f"Mode: {runtime.entry_exit_mode.value}",
                 f"Timeframe: {self._cfg.timeframe}",
                 f"Side: {position.side.value}",
-                f"Entry: {position.entry_price:.8g}",
-                f"Exit: {exit_price:.8g}" if exit_price is not None else "Exit: n/a",
-                f"Qty: {position.quantity:.8g}",
-                f"PnL: {position.pnl:.8g}"
-                if position.pnl is not None
-                else "PnL: n/a",
                 f"Reason: {reason}",
+                f"Live Price: {live_price:.8g}",
+                f"Trigger Level: {target_price:.8g}",
+                f"AVWAP Middle: {avwap.vwap:.8g}",
+                f"EMA: {runtime.last_ema_value:.8g}"
+                if runtime.last_ema_value is not None
+                else "EMA: unavailable",
+                f"Band 1: {avwap.upper1:.8g} / {avwap.lower1:.8g}",
+                f"Band 2: {avwap.upper2:.8g} / {avwap.lower2:.8g}",
+                f"Rigid Stop: {runtime.rigid_stop_level:.8g}"
+                if runtime.rigid_stop_level is not None
+                else "Rigid Stop: disabled",
                 f"Time: {datetime.now(timezone.utc).isoformat()}",
-            ]
-            self._telegram.send_message("\n".join(lines))
-        except Exception as exc:
-            self._log.warning(
-                "EmaAvwapPullback: failed to send close notification for %s: %s",
-                position.symbol,
-                exc,
+            ],
+        )
+
+    def _notify_trade_opened(
+        self,
+        position: PositionRecord,
+        runtime: _PositionRuntime,
+        stop_price: float | None,
+    ) -> None:
+        avwap = runtime.last_avwap
+        target_band = runtime.entry_exit_mode.exit_band_number
+        lines = [
+            f"Mode: {runtime.entry_exit_mode.value}",
+            f"Timeframe: {self._cfg.timeframe}",
+            f"Side: {position.side.value}",
+            f"Entry: {position.entry_price:.8g}",
+            f"Qty: {position.quantity:.8g}",
+            f"Leverage: {position.leverage}x",
+            f"Rigid Stop: {stop_price:.8g}"
+            if stop_price is not None
+            else "Rigid Stop: disabled",
+            f"Anchor: {runtime.anchor_time.isoformat()}",
+            f"Trigger: {runtime.entry_trigger_mode}",
+            "Reason: entry order filled",
+            f"Time: {datetime.now(timezone.utc).isoformat()}",
+        ]
+        if avwap is not None:
+            lines.extend(
+                [
+                    f"AVWAP Middle: {avwap.vwap:.8g}",
+                    f"Band 1: {avwap.upper1:.8g} / {avwap.lower1:.8g}",
+                    f"Band 2: {avwap.upper2:.8g} / {avwap.lower2:.8g}",
+                    f"EMA: {runtime.last_ema_value:.8g}"
+                    if runtime.last_ema_value is not None
+                    else "EMA: unavailable",
+                    f"Exit Band: {target_band} @ "
+                    f"{self._target_band_level(runtime.direction, avwap, runtime.entry_exit_mode):.8g}",
+                ]
             )
+        self._send_trade_notification(
+            symbol=position.symbol, event="ENTRY EXECUTED", lines=lines
+        )
+
+    def _notify_trade_closed(
+        self,
+        position: PositionRecord,
+        *,
+        reason: str,
+        exit_price: Optional[float],
+        runtime: _PositionRuntime | None = None,
+    ) -> None:
+        mode = (
+            runtime.entry_exit_mode
+            if runtime is not None
+            else self._cfg.entry_exit_mode
+        )
+        lines = [
+            f"Mode: {mode.value}",
+            f"Timeframe: {self._cfg.timeframe}",
+            f"Side: {position.side.value}",
+            f"Entry: {position.entry_price:.8g}",
+            f"Exit: {exit_price:.8g}" if exit_price is not None else "Exit: n/a",
+            f"Qty: {position.quantity:.8g}",
+            f"PnL: {position.pnl:.8g}"
+            if position.pnl is not None
+            else "PnL: n/a",
+            f"Reason: {reason}",
+            f"Time: {datetime.now(timezone.utc).isoformat()}",
+        ]
+        if runtime is not None and runtime.last_avwap is not None:
+            avwap = runtime.last_avwap
+            lines.extend(
+                [
+                    f"AVWAP Middle: {avwap.vwap:.8g}",
+                    f"EMA: {runtime.last_ema_value:.8g}"
+                    if runtime.last_ema_value is not None
+                    else "EMA: unavailable",
+                    f"Band 1: {avwap.upper1:.8g} / {avwap.lower1:.8g}",
+                    f"Band 2: {avwap.upper2:.8g} / {avwap.lower2:.8g}",
+                    f"Rigid Stop: {runtime.rigid_stop_level:.8g}"
+                    if runtime.rigid_stop_level is not None
+                    else "Rigid Stop: disabled",
+                ]
+            )
+        self._send_trade_notification(
+            symbol=position.symbol, event="EXIT EXECUTED", lines=lines
+        )
