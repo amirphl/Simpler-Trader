@@ -71,9 +71,16 @@ class EmaAvwapPullbackLiveCoordinator(
     def run_forever(self) -> None:
         self._running = True
         self._log.info(
-            "EmaAvwapPullback started (symbols=%s timeframe=%s)",
+            "EmaAvwapPullback started (symbols=%s timeframe=%s "
+            "entry_exit_mode=%s entry=%s exit_band=%d rigid_stop_loss_pct=%.8f)",
             ",".join(self._cfg.symbols),
             self._cfg.timeframe,
+            self._cfg.entry_exit_mode.value,
+            "closed_candle_vs_middle"
+            if self._cfg.entry_exit_mode.uses_closed_candle_entry
+            else "live_middle_touch",
+            self._cfg.entry_exit_mode.exit_band_number,
+            self._cfg.rigid_stop_loss_pct,
         )
         while self._running:
             now: datetime = datetime.now(tz=timezone.utc)
@@ -175,6 +182,7 @@ class EmaAvwapPullbackLiveCoordinator(
         self._sync_positions(now)
         self._process_live_setup_crosses(now)
         self._activate_due_entries(now)
+        self._manage_live_position_exits(now)
         if (
             time.time() - self._last_tick_trailing_check_ts
         ) < self._cfg.trailing_check_interval_seconds:
