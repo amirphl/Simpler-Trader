@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime
-from typing import Literal, Optional
+from typing import Optional
 
 from candle_downloader.models import Candle
 
@@ -235,65 +235,87 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
         if snapshot.candle.close_time <= setup.detected_time:
             return False
 
-        setup = self._recover_setup_detected_avwap(setup, snapshot)
-        avwap = setup.detected_avwap
-        if avwap is None:
+        try:
+            live_snapshot, avwap = self._build_live_avwap_snapshot(snapshot, setup)
+        except Exception as exc:
             self._log.warning(
-                "EmaAvwapPullback: invalidating %s setup for %s because frozen "
-                "AVWAP is unavailable",
+                "EmaAvwapPullback: mode=%s cannot refresh forming-candle "
+                "indicators for %s %s: %s",
+                self._cfg.entry_exit_mode.value,
                 setup.direction,
                 setup.symbol,
+                exc,
             )
-            self._remove_setup(setup.symbol, setup.direction)
             return False
 
         self._log_avwap_levels(
-            context="active_setup_update",
+            context="forming_candle_entry_evaluation",
             setup=setup,
-            snapshot=snapshot,
+            snapshot=live_snapshot,
             avwap=avwap,
         )
 
-        expects_pullback = (
-            snapshot.candle.is_bearish()
-            if setup.direction == "long"
-            else snapshot.candle.is_bullish()
-        )
-        if not expects_pullback:
-            return False
-
-        cross_direction: Literal["up", "down"] = (
-            "down" if setup.direction == "long" else "up"
-        )
-        cross = self._detect_level_cross(
-            candle=snapshot.candle,
-            prev_close=snapshot.previous_candle.close,
-            level=avwap.vwap,
-            direction=cross_direction,
-        )
-        if not cross.crossed:
+        if not self._cfg.entry_exit_mode.uses_closed_candle_entry:
             self._active_setups[self._setup_key(setup.symbol, setup.direction)] = (
                 replace(setup, is_waiting_for_cross=True)
             )
             self._save_state()
             self._log.info(
-                "EmaAvwapPullback: %s setup for %s is waiting for AVWAP cross "
-                "(vwap=%.8f)",
-                setup.direction,
+                "EmaAvwapPullback: entry evaluation mode=%s symbol=%s "
+                "direction=%s trigger=live_middle_touch close=%.8f ema=%.8f "
+                "middle=%.8f result=waiting",
+                self._cfg.entry_exit_mode.value,
                 setup.symbol,
+                setup.direction,
+                snapshot.candle.close,
+                live_snapshot.ema_value,
                 avwap.vwap,
             )
             return False
 
+        closed_price = snapshot.candle.close
+        selected_direction: Direction | None
+        if closed_price > avwap.vwap:
+            selected_direction = "long"
+        elif closed_price < avwap.vwap:
+            selected_direction = "short"
+        else:
+            selected_direction = None
         self._log.info(
-            "EmaAvwapPullback: skipping %s setup for %s because AVWAP was crossed "
-            "on an already-closed candle (vwap=%.8f); waiting for next setup",
-            setup.direction,
+            "EmaAvwapPullback: entry evaluation mode=%s symbol=%s "
+            "setup_direction=%s closed_price=%.8f forming_ema=%.8f "
+            "forming_middle=%.8f selected_direction=%s",
+            self._cfg.entry_exit_mode.value,
             setup.symbol,
+            setup.direction,
+            closed_price,
+            live_snapshot.ema_value,
             avwap.vwap,
+            selected_direction or "none_equal_to_middle",
         )
-        self._remove_setup(setup.symbol, setup.direction)
-        return False
+        if selected_direction is None:
+            return False
+        current_price = self._safe_fetch_price(snapshot.symbol)
+        if current_price is None or current_price <= 0:
+            self._log.warning(
+                "EmaAvwapPullback: mode=%s entry skipped for %s because live "
+                "execution price is unavailable",
+                self._cfg.entry_exit_mode.value,
+                snapshot.symbol,
+            )
+            return False
+        candidate = self._build_entry_candidate(
+            setup=replace(setup, direction=selected_direction),
+            snapshot=live_snapshot,
+            avwap=avwap,
+            cross=_CrossDecision(True, "candle_close"),
+            signal_time=snapshot.candle.close_time,
+            current_price=current_price,
+            decision_price=closed_price,
+        )
+        if candidate is None:
+            return False
+        return self._queue_entry_candidate(candidate, now)
 
     def _log_avwap_levels(
         self,
@@ -304,10 +326,11 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
         avwap: _AvwapSnapshot,
     ) -> None:
         self._log.info(
-            "EmaAvwapPullback: AVWAP levels context=%s symbol=%s direction=%s "
+            "EmaAvwapPullback: AVWAP levels mode=%s context=%s symbol=%s direction=%s "
             "anchor=%s candle_close=%s vwap=%.8f stdev=%.8f "
             "lower1=%.8f upper1=%.8f lower2=%.8f upper2=%.8f "
             "lower3=%.8f upper3=%.8f",
+            self._cfg.entry_exit_mode.value,
             context,
             setup.symbol,
             setup.direction,
@@ -324,6 +347,8 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
         )
 
     def _process_live_setup_crosses(self, now: datetime) -> None:
+        if self._cfg.entry_exit_mode.uses_closed_candle_entry:
+            return
         for key, setup in list(self._active_setups.items()):
             symbol = setup.symbol
             if self._state.is_symbol_disabled(
@@ -338,18 +363,18 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             if snapshot is None:
                 continue
 
-            setup = self._recover_setup_detected_avwap(setup, snapshot)
-            avwap = setup.detected_avwap
-            if avwap is None:
+            try:
+                live_snapshot, avwap = self._build_live_avwap_snapshot(snapshot, setup)
+            except Exception as exc:
                 self._log.warning(
-                    "EmaAvwapPullback: invalidating %s setup for %s because frozen "
-                    "AVWAP is unavailable for live cross tracking",
+                    "EmaAvwapPullback: mode=%s live indicator refresh failed "
+                    "for %s %s: %s",
+                    self._cfg.entry_exit_mode.value,
                     setup.direction,
                     setup.symbol,
+                    exc,
                 )
-                self._remove_setup(setup.symbol, setup.direction)
                 continue
-            live_snapshot = snapshot
 
             current_price = self._safe_fetch_price(symbol)
             if current_price is None or current_price <= 0:
@@ -387,6 +412,25 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 self._last_price_by_setup_key[key] = current_price
                 self._save_state()
                 continue
+
+            self._log.info(
+                "EmaAvwapPullback: ENTRY SIGNAL mode=%s symbol=%s direction=%s "
+                "reason=live_price_touched_avwap_middle previous=%.8f live=%.8f "
+                "ema=%.8f middle=%.8f upper1=%.8f lower1=%.8f "
+                "upper2=%.8f lower2=%.8f forming_close=%s",
+                self._cfg.entry_exit_mode.value,
+                symbol,
+                setup.direction,
+                last_price,
+                current_price,
+                live_snapshot.ema_value,
+                avwap.vwap,
+                avwap.upper1,
+                avwap.lower1,
+                avwap.upper2,
+                avwap.lower2,
+                live_snapshot.candle.close_time.isoformat(),
+            )
 
             candidate = self._build_entry_candidate(
                 setup=setup,
@@ -430,7 +474,19 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
         cross: _CrossDecision,
         signal_time: datetime | None = None,
         current_price: float | None = None,
+        decision_price: float | None = None,
     ) -> _EntryCandidate | None:
+        if current_price is None:
+            current_price = self._safe_fetch_price(snapshot.symbol)
+        if current_price is None or current_price <= 0:
+            self._log.warning(
+                "EmaAvwapPullback: mode=%s entry skipped for %s because current "
+                "price is unavailable",
+                self._cfg.entry_exit_mode.value,
+                snapshot.symbol,
+            )
+            return None
+
         risk_amount = self._compute_risk_amount(snapshot.symbol)
         if risk_amount <= 0:
             self._log.warning(
@@ -441,22 +497,31 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             )
             return None
 
-        raw_entry_price = avwap.vwap
-        stop_level = avwap.lower1 if setup.direction == "long" else avwap.upper1
+        raw_entry_price = (
+            current_price
+            if self._cfg.entry_exit_mode.uses_closed_candle_entry
+            else avwap.vwap
+        )
+        rigid_stop_level = self._rigid_stop_level(
+            setup.direction, raw_entry_price
+        )
         sizing = self._build_sizing_decision(
             direction=setup.direction,
             raw_entry_price=raw_entry_price,
-            stop_level=stop_level,
+            stop_level=rigid_stop_level,
             risk_amount=risk_amount,
         )
         if sizing is None or sizing.qty <= 0:
             self._log.warning(
-                "EmaAvwapPullback: entry skipped for %s %s due to invalid stop "
-                "distance (entry=%.8f stop=%.8f qty=%s)",
+                "EmaAvwapPullback: mode=%s entry skipped for %s %s because "
+                "rigid-stop sizing is unavailable (entry=%.8f rigid_stop=%s "
+                "sizing_mode=%s qty=%s)",
+                self._cfg.entry_exit_mode.value,
                 snapshot.symbol,
                 setup.direction,
                 raw_entry_price,
-                stop_level,
+                f"{rigid_stop_level:.8f}" if rigid_stop_level is not None else "disabled",
+                self._cfg.position_sizing_mode,
                 sizing.qty if sizing is not None else "n/a",
             )
             return None
@@ -475,18 +540,13 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 self._cfg.max_entry_notional_usdt,
             )
 
-        if current_price is None:
-            current_price = self._safe_fetch_price(snapshot.symbol)
-        if current_price is None or current_price <= 0:
-            self._log.warning(
-                "EmaAvwapPullback: entry skipped for %s because current price is unavailable",
-                snapshot.symbol,
+        if (
+            not self._cfg.entry_exit_mode.uses_closed_candle_entry
+            and not self._entry_price_is_marketable(
+                direction=setup.direction,
+                current_price=current_price,
+                entry_price=raw_entry_price,
             )
-            return None
-        if not self._entry_price_is_marketable(
-            direction=setup.direction,
-            current_price=current_price,
-            entry_price=raw_entry_price,
         ):
             self._log.warning(
                 "EmaAvwapPullback: entry skipped for %s %s because the closed-bar "
@@ -498,17 +558,13 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             )
             return None
 
-        rigid_stop_level = self._rigid_stop_level(setup.direction, sizing.entry_price)
-        protective_stop = self._protective_stop_price(
-            direction=setup.direction,
-            dynamic_stop=stop_level,
-            rigid_stop=rigid_stop_level,
-            trailing_stop=None,
+        rigid_stop_level = self._rigid_stop_level(
+            setup.direction, sizing.entry_price
         )
-        if self._is_stop_breached_by_price(
+        if rigid_stop_level is not None and self._is_stop_breached_by_price(
             direction=setup.direction,
             price=current_price,
-            stop_price=protective_stop,
+            stop_price=rigid_stop_level,
         ):
             self._log.warning(
                 "EmaAvwapPullback: entry skipped for %s %s because price %.8f is "
@@ -516,11 +572,33 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 snapshot.symbol,
                 setup.direction,
                 current_price,
-                protective_stop,
+                rigid_stop_level,
             )
             return None
 
         side = self._side_from_direction(setup.direction)
+        target_level = self._target_band_level(setup.direction, avwap)
+        self._log.info(
+            "EmaAvwapPullback: ENTRY SIGNAL mode=%s symbol=%s side=%s "
+            "trigger=%s live_price=%.8f order_price=%.8f ema=%.8f "
+            "middle=%.8f target_band=%d target=%.8f rigid_stop=%s "
+            "upper1=%.8f lower1=%.8f upper2=%.8f lower2=%.8f",
+            self._cfg.entry_exit_mode.value,
+            snapshot.symbol,
+            side.value,
+            cross.mode or "intrabar",
+            current_price,
+            raw_entry_price,
+            snapshot.ema_value,
+            avwap.vwap,
+            self._target_band_number(),
+            target_level,
+            f"{rigid_stop_level:.8f}" if rigid_stop_level is not None else "disabled",
+            avwap.upper1,
+            avwap.lower1,
+            avwap.upper2,
+            avwap.lower2,
+        )
         return _EntryCandidate(
             symbol=snapshot.symbol,
             side=side,
@@ -531,8 +609,10 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             candle_index=snapshot.candle_index,
             raw_entry_price=raw_entry_price,
             order_price=raw_entry_price,
-            stop_for_risk=protective_stop,
-            dynamic_stop_at_entry=stop_level,
+            stop_for_risk=rigid_stop_level or 0.0,
+            dynamic_stop_at_entry=(
+                avwap.lower1 if setup.direction == "long" else avwap.upper1
+            ),
             rigid_stop_at_entry=rigid_stop_level,
             trailing_activation_at_entry=self._trailing_activation_level(
                 setup.direction, avwap
@@ -543,6 +623,11 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             entry_trigger_mode=cross.mode or "intrabar",
             sizing=sizing,
             avwap=avwap,
+            entry_exit_mode=self._cfg.entry_exit_mode,
+            ema_value=snapshot.ema_value,
+            decision_price=(
+                decision_price if decision_price is not None else current_price
+            ),
         )
 
     def _entry_price_is_marketable(
@@ -604,6 +689,7 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             status="PENDING",
             notes=(
                 f"EMA+AVWAP {candidate.direction} "
+                f"mode={candidate.entry_exit_mode.value} "
                 f"anchor={candidate.anchor_time.isoformat()} "
                 f"trigger={candidate.entry_trigger_mode}"
             ),
@@ -613,15 +699,18 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
         self._state.last_pinbar_signal_times[key] = pending.signal_time
         self._save_state()
         self._log.info(
-            "EmaAvwapPullback: queued limit entry %s %s @ %.8f qty=%.8f "
-            "stop=%.8f risk=%.8f",
+            "EmaAvwapPullback: ENTRY EXECUTION queued mode=%s %s %s @ %.8f "
+            "qty=%.8f rigid_stop=%s risk=%.8f trigger=%s",
+            candidate.entry_exit_mode.value,
             candidate.side.value,
             symbol,
             candidate.order_price,
             candidate.quantity,
-            candidate.stop_for_risk,
+            f"{candidate.stop_for_risk:.8f}" if candidate.stop_for_risk > 0 else "disabled",
             candidate.risk_amount,
+            candidate.entry_trigger_mode,
         )
+        self._notify_entry_signal(candidate)
         self._activate_due_entries(now)
         return True
 
@@ -658,10 +747,19 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             pending.status = "PLACED"
             self._save_state()
             self._log.info(
-                "EmaAvwapPullback: placed limit entry order %s for %s %s",
+                "EmaAvwapPullback: ENTRY EXECUTION placed mode=%s order=%s "
+                "symbol=%s side=%s price=%.8f qty=%.8f rigid_stop=%s",
+                self._pending_meta_by_key.get(
+                    pending.order_key
+                ).candidate.entry_exit_mode.value
+                if self._pending_meta_by_key.get(pending.order_key)
+                else self._cfg.entry_exit_mode.value,
                 order.order_id,
                 pending.symbol,
                 pending.side.value,
+                pending.entry_price,
+                pending.quantity,
+                f"{pending.stop_for_risk:.8f}" if pending.stop_for_risk > 0 else "disabled",
             )
 
     def _place_limit_entry(self, pending: PendingEntryRecord) -> Optional[OrderResult]:
@@ -699,7 +797,9 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                     leverage=pending.leverage,
                     margin_mode=pending.margin_mode,
                     take_profit=None,
-                    stop_loss=pending.stop_for_risk,
+                    stop_loss=(
+                        pending.stop_for_risk if pending.stop_for_risk > 0 else None
+                    ),
                 ),
                 f"open_limit_position {pending.symbol}",
             )
