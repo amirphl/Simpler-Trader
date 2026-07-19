@@ -16,6 +16,7 @@ from live_trading.coordinator import LiveTradingCoordinator
 from live_trading.ema_avwap_pullback_strategy import (
     EmaAvwapPullbackLiveConfig,
     EmaAvwapPullbackLiveCoordinator,
+    EntryExitMode,
 )
 from live_trading.exchange import ExchangeConfig, MarginMode
 from live_trading.pinbar_magic_coordinator_v3 import (
@@ -159,7 +160,6 @@ def _load_pinbar_magic_v3_env_config(read_env: Callable[..., str]) -> Dict[str, 
         "margin_mode": read_env("MARGIN_MODE"),
         "disable_symbol_hours": read_env("DISABLE_SYMBOL_HOURS"),
         "position_size_usdt": read_env("POSITION_SIZE_USDT"),
-        "max_entry_notional_usdt": read_env("MAX_ENTRY_NOTIONAL_USDT"),
         "max_concurrent_positions": read_env("MAX_CONCURRENT_POSITIONS"),
         "max_position_size_pct": read_env("MAX_POSITION_SIZE_PCT"),
         "state_file": read_env("STATE_FILE"),
@@ -284,6 +284,7 @@ def _load_ema_avwap_pullback_env_config(read_env: Callable[..., str]) -> Dict[st
         "position_sizing_mode": read_env(
             "POSITION_SIZING_MODE", "STRATEGY_POSITION_SIZING_MODE"
         ),
+        "entry_exit_mode": read_env("ENTRY_EXIT_MODE", "STRATEGY_ENTRY_EXIT_MODE"),
         "avwap_multiplier_1": read_env(
             "AVWAP_MULTIPLIER_1", "STRATEGY_AVWAP_MULTIPLIER_1"
         ),
@@ -317,9 +318,7 @@ def _load_ema_avwap_pullback_env_config(read_env: Callable[..., str]) -> Dict[st
         "minimum_balance_usdt": read_env("MINIMUM_BALANCE_USDT"),
         "api_retries": read_env("API_RETRIES"),
         "api_retry_delay_seconds": read_env("API_RETRY_DELAY_SECONDS"),
-        "emergency_close_on_stop_failure": read_env(
-            "EMERGENCY_CLOSE_ON_STOP_FAILURE"
-        ),
+        "emergency_close_on_stop_failure": read_env("EMERGENCY_CLOSE_ON_STOP_FAILURE"),
         "allow_dynamic_stop_widening": read_env("ALLOW_DYNAMIC_STOP_WIDENING"),
         "min_stop_update_pct": read_env("MIN_STOP_UPDATE_PCT"),
     }
@@ -788,11 +787,13 @@ def _apply_ema_avwap_pullback_env_defaults(
     if config.get("ema_validation_mode"):
         args.ema_validation_mode = config["ema_validation_mode"].strip().lower()
     if config.get("setup_waiting_replacement_mode"):
-        args.setup_waiting_replacement_mode = config[
-            "setup_waiting_replacement_mode"
-        ].strip().lower()
+        args.setup_waiting_replacement_mode = (
+            config["setup_waiting_replacement_mode"].strip().lower()
+        )
     if config.get("position_sizing_mode"):
         args.position_sizing_mode = config["position_sizing_mode"].strip().lower()
+    if config.get("entry_exit_mode"):
+        args.entry_exit_mode = config["entry_exit_mode"].strip().lower()
     if config.get("avwap_multiplier_1"):
         args.avwap_multiplier_1 = _parse_float(
             config["avwap_multiplier_1"], "AVWAP_MULTIPLIER_1"
@@ -1123,11 +1124,7 @@ def create_telegram_client(
 
 def _resolve_telegram_proxy(args: argparse.Namespace) -> Optional[str]:
     return (
-        args.telegram_proxy
-        or args.proxy
-        or args.https_proxy
-        or args.http_proxy
-        or None
+        args.telegram_proxy or args.proxy or args.https_proxy or args.http_proxy or None
     )
 
 
@@ -1200,6 +1197,15 @@ def build_ema_avwap_pullback_config(
             _arg(args, "setup_waiting_replacement_mode", "keep_waiting")
         ),
         position_sizing_mode=str(_arg(args, "position_sizing_mode", "risk_distance")),
+        entry_exit_mode=EntryExitMode(
+            str(
+                _arg(
+                    args,
+                    "entry_exit_mode",
+                    EntryExitMode.LIVE_MIDDLE_FIRST_BAND.value,
+                )
+            )
+        ),
         avwap_multiplier_1=float(_arg(args, "avwap_multiplier_1", 1.0)),
         avwap_multiplier_2=float(_arg(args, "avwap_multiplier_2", 2.0)),
         avwap_multiplier_3=float(_arg(args, "avwap_multiplier_3", 3.0)),
