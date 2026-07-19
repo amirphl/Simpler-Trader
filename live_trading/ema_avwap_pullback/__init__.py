@@ -5,6 +5,7 @@ from __future__ import annotations
 from .config import (
     Direction,
     EmaAvwapPullbackLiveConfig,
+    EntryExitMode,
     EmaValidationMode,
     PositionSizingMode,
     SetupWaitingReplacementMode,
@@ -25,6 +26,7 @@ from .state import (
 
 __all__ = [
     "Direction",
+    "EntryExitMode",
     "EmaValidationMode",
     "SetupWaitingReplacementMode",
     "PositionSizingMode",
