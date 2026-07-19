@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
+from live_trading.ema_avwap_pullback import EntryExitMode
+
 from . import _shared
 
 
@@ -81,6 +83,15 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["risk_distance", "risk_amount_per_price"],
         default="risk_distance",
     )
+    parser.add_argument(
+        "--entry-exit-mode",
+        choices=[mode.value for mode in EntryExitMode],
+        default=EntryExitMode.LIVE_MIDDLE_FIRST_BAND.value,
+        help=(
+            "Semantic entry/exit policy: live middle to first band, "
+            "closed-candle direction to first band, or live middle to second band"
+        ),
+    )
     parser.add_argument("--avwap-multiplier-1", type=float, default=1.0)
     parser.add_argument("--avwap-multiplier-2", type=float, default=2.0)
     parser.add_argument("--avwap-multiplier-3", type=float, default=3.0)
@@ -114,7 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-dynamic-stop-widening",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Allow AVWAP band stop updates to widen when the backtest model widens",
+        help="Deprecated compatibility option; AVWAP band stops are disabled",
     )
     parser.add_argument("--min-stop-update-pct", type=float, default=0.0)
 
