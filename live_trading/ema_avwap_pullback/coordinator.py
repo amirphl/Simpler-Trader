@@ -183,12 +183,16 @@ class EmaAvwapPullbackLiveCoordinator(
         self._process_live_setup_crosses(now)
         self._activate_due_entries(now)
         self._manage_live_position_exits(now)
-        if (
-            time.time() - self._last_tick_trailing_check_ts
-        ) < self._cfg.trailing_check_interval_seconds:
-            return
-        self._last_tick_trailing_check_ts: int | float = time.time()
-        self._manage_tick_trailing(now)
+
+        # Dynamic/trailing stop-loss management is intentionally disabled for now.
+        # Keep this block commented so it can be re-enabled later; until then the
+        # rigid stop attached to the opening order must remain unchanged.
+        # if (
+        #     time.time() - self._last_tick_trailing_check_ts
+        # ) < self._cfg.trailing_check_interval_seconds:
+        #     return
+        # self._last_tick_trailing_check_ts = time.time()
+        # self._manage_tick_trailing(now)
 
     # ------------------------------------------------------------------
     # Public fallback HTTP transport
