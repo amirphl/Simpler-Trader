@@ -201,7 +201,7 @@ class SignalNotifier:
     def _format_signal(self, signal: EngulfingSignal) -> str:
         lines = [
             f"Symbol: {signal.symbol} ({signal.timeframe})",
-            f"Direction: LONG",
+            "Direction: LONG",
             f"Entry Time: {signal.entry_time.isoformat()}",
             f"Entry: {signal.entry_price:.6g}",
             f"Window size: {self._detector._config.window_size}",
