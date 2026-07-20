@@ -52,7 +52,10 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
                 continue
 
             entry_price = ex_pos.entry_price or pending.entry_price
-            runtime = self._runtime_from_fill(meta.candidate, entry_price)
+            initial_rigid_stop = meta.candidate.rigid_stop_at_entry
+            if initial_rigid_stop is None and pending.stop_for_risk > 0:
+                initial_rigid_stop = pending.stop_for_risk
+            runtime = self._runtime_from_fill(meta.candidate, initial_rigid_stop)
             stop_price = runtime.rigid_stop_level
             record = PositionRecord(
                 position_id=ex_pos.position_id or pending.order_id or pending.order_key,
@@ -64,7 +67,9 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
                 leverage=pending.leverage,
                 margin_mode=pending.margin_mode,
                 take_profit=None,
-                stop_loss=None,
+                # The rigid stop was already attached to the opening order.
+                # Mirror it locally without submitting a second stop update.
+                stop_loss=stop_price,
                 risk_amount=pending.risk_amount,
                 strategy="ema_avwap_pullback",
                 status="OPEN",
@@ -79,39 +84,20 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
             self._state.pending_entries.pop(pending.order_key, None)
             self._pending_meta_by_key.pop(pending.order_key, None)
 
-            stop_ok = True
-            if stop_price is not None:
-                stop_ok = self._update_protective_stop(
-                    record,
-                    ex_pos,
-                    stop_price,
-                    now,
-                    reason="Rigid stop loss",
-                    allow_widen=False,
-                )
-            if not stop_ok and self._cfg.emergency_close_on_stop_failure:
-                self._log.critical(
-                    "EmaAvwapPullback: rigid stop failed for %s at %.8f; "
-                    "forcing emergency close",
-                    symbol,
-                    stop_price,
-                )
-                self._close_position(record, now, "Rigid stop placement failed")
-            else:
-                self._notify_trade_opened(record, runtime, stop_price)
-                self._log.info(
-                    "EmaAvwapPullback: ENTRY EXECUTION filled mode=%s symbol=%s "
-                    "side=%s entry=%.8f qty=%.8f rigid_stop=%s trigger=%s",
-                    runtime.entry_exit_mode.value,
-                    symbol,
-                    ex_pos.side.value,
-                    entry_price,
-                    record.quantity,
-                    f"{stop_price:.8f}" if stop_price is not None else "disabled",
-                    runtime.entry_trigger_mode,
-                )
-                self._save_position_to_db(record)
-                self._save_state()
+            self._notify_trade_opened(record, runtime, stop_price)
+            self._log.info(
+                "EmaAvwapPullback: ENTRY EXECUTION filled mode=%s symbol=%s "
+                "side=%s entry=%.8f qty=%.8f rigid_stop=%s trigger=%s",
+                runtime.entry_exit_mode.value,
+                symbol,
+                ex_pos.side.value,
+                entry_price,
+                record.quantity,
+                f"{stop_price:.8f}" if stop_price is not None else "disabled",
+                runtime.entry_trigger_mode,
+            )
+            self._save_position_to_db(record)
+            self._save_state()
 
         for symbol, pos in list(self._state.active_positions.items()):
             if symbol in by_symbol:
@@ -163,7 +149,8 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
             leverage=pending.leverage,
             margin_mode=pending.margin_mode,
             take_profit=None,
-            stop_loss=None,
+            # The pending entry already carried this rigid stop.
+            stop_loss=pending.stop_for_risk if pending.stop_for_risk > 0 else None,
             risk_amount=pending.risk_amount,
             strategy="ema_avwap_pullback",
             status="OPEN",
@@ -175,18 +162,6 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
         self._position_miss_count_by_symbol[pending.symbol] = 0
         self._state.pending_entries.pop(pending.order_key, None)
         self._pending_meta_by_key.pop(pending.order_key, None)
-        rigid_stop = self._rigid_stop_level(
-            self._direction_from_side(ex_pos.side), entry_price
-        )
-        if rigid_stop is not None:
-            self._update_protective_stop(
-                record,
-                ex_pos,
-                rigid_stop,
-                now,
-                reason="Recovered rigid stop",
-                allow_widen=False,
-            )
         self._save_position_to_db(record)
         self._save_state()
 
@@ -235,9 +210,8 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
         self._save_state()
 
     def _runtime_from_fill(
-        self, candidate: _EntryCandidate, actual_entry_price: float
+        self, candidate: _EntryCandidate, initial_rigid_stop: float | None
     ) -> _PositionRuntime:
-        rigid_stop = self._rigid_stop_level(candidate.direction, actual_entry_price)
         return _PositionRuntime(
             direction=candidate.direction,
             anchor_time=candidate.anchor_time,
@@ -245,7 +219,9 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
             entry_signal_time=candidate.signal_time,
             raw_entry_price=candidate.raw_entry_price,
             dynamic_stop_at_entry=candidate.dynamic_stop_at_entry,
-            rigid_stop_level=rigid_stop,
+            # Preserve the stop submitted with the opening order. A better limit
+            # fill must not cause the rigid stop to be recalculated or replaced.
+            rigid_stop_level=initial_rigid_stop,
             trailing_activation_at_entry=candidate.trailing_activation_at_entry,
             entry_trigger_mode=candidate.entry_trigger_mode,
             risk_amount_interpretation=candidate.risk_amount_interpretation,
