@@ -30,11 +30,14 @@ class EmaAvwapNotificationMixin(EmaAvwapMixinTyping):
 
     def _notify_entry_signal(self, candidate: _EntryCandidate) -> None:
         target_band = candidate.entry_exit_mode.exit_band_number
-        reason = (
-            "closed candle vs AVWAP middle"
-            if candidate.entry_exit_mode.uses_closed_candle_entry
-            else "live price touched AVWAP middle"
-        )
+        if candidate.entry_exit_mode.uses_closed_candle_entry:
+            reason = (
+                "bearish candle closed below AVWAP middle"
+                if candidate.direction == "long"
+                else "bullish candle closed above AVWAP middle"
+            )
+        else:
+            reason = "live price touched AVWAP middle"
         target = self._target_band_level(
             candidate.direction, candidate.avwap, candidate.entry_exit_mode
         )

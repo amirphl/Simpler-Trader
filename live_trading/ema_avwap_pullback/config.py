@@ -25,7 +25,10 @@ class EntryExitMode(str, Enum):
 
     @property
     def exit_band_number(self) -> int:
-        return 2 if self is EntryExitMode.LIVE_MIDDLE_SECOND_BAND else 1
+        """Return the live AVWAP band used as this mode's profit target."""
+        if self is EntryExitMode.LIVE_MIDDLE_FIRST_BAND:
+            return 1
+        return 2
 
 EmaValidationMode = Literal["body", "wick"]
 SetupWaitingReplacementMode = Literal["keep_waiting", "replace_waiting"]

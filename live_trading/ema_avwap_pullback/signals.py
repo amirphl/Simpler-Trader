@@ -235,6 +235,9 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
         if snapshot.candle.close_time <= setup.detected_time:
             return False
 
+        if self._cfg.entry_exit_mode.uses_closed_candle_entry:
+            return self._process_closed_candle_setup(setup, snapshot, now)
+
         try:
             live_snapshot, avwap = self._build_live_avwap_snapshot(snapshot, setup)
         except Exception as exc:
@@ -255,45 +258,99 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             avwap=avwap,
         )
 
-        if not self._cfg.entry_exit_mode.uses_closed_candle_entry:
-            self._active_setups[self._setup_key(setup.symbol, setup.direction)] = (
-                replace(setup, is_waiting_for_cross=True)
+        self._active_setups[self._setup_key(setup.symbol, setup.direction)] = (
+            replace(setup, is_waiting_for_cross=True)
+        )
+        self._save_state()
+        self._log.info(
+            "EmaAvwapPullback: entry evaluation mode=%s symbol=%s "
+            "direction=%s trigger=live_middle_touch close=%.8f ema=%.8f "
+            "middle=%.8f result=waiting",
+            self._cfg.entry_exit_mode.value,
+            setup.symbol,
+            setup.direction,
+            snapshot.candle.close,
+            live_snapshot.ema_value,
+            avwap.vwap,
+        )
+        return False
+
+    def _process_closed_candle_setup(
+        self, setup: _SetupState, snapshot: _SymbolSnapshot, now: datetime
+    ) -> bool:
+        """Evaluate mode-2 entry using only the candle that actually closed."""
+        try:
+            anchor_index = self._find_anchor_index(snapshot.candles, setup)
+            avwap = self._build_avwap_snapshot(
+                candles=snapshot.candles,
+                anchor_index=anchor_index,
+                candle_index=snapshot.candle_index,
+                tpv_prefix=snapshot.tpv_prefix,
+                vol_prefix=snapshot.vol_prefix,
+                tpv2_prefix=snapshot.tpv2_prefix,
             )
-            self._save_state()
+        except Exception as exc:
+            self._log.warning(
+                "EmaAvwapPullback: mode=%s cannot build closed-candle "
+                "indicators for %s %s: %s",
+                self._cfg.entry_exit_mode.value,
+                setup.direction,
+                setup.symbol,
+                exc,
+            )
+            return False
+
+        self._log_avwap_levels(
+            context="closed_candle_entry_evaluation",
+            setup=setup,
+            snapshot=snapshot,
+            avwap=avwap,
+        )
+
+        expects_pullback = (
+            snapshot.candle.is_bearish()
+            if setup.direction == "long"
+            else snapshot.candle.is_bullish()
+        )
+        if not expects_pullback:
             self._log.info(
                 "EmaAvwapPullback: entry evaluation mode=%s symbol=%s "
-                "direction=%s trigger=live_middle_touch close=%.8f ema=%.8f "
-                "middle=%.8f result=waiting",
+                "setup_direction=%s candle_open=%.8f candle_close=%.8f "
+                "closed_ema=%.8f closed_middle=%.8f result=waiting_for_pullback",
                 self._cfg.entry_exit_mode.value,
                 setup.symbol,
                 setup.direction,
+                snapshot.candle.open,
                 snapshot.candle.close,
-                live_snapshot.ema_value,
+                snapshot.ema_value,
                 avwap.vwap,
             )
             return False
 
         closed_price = snapshot.candle.close
-        selected_direction: Direction | None
-        if setup.direction == "long" and closed_price < avwap.vwap:
-            selected_direction = "long"
-        elif setup.direction == "short" and closed_price > avwap.vwap:
-            selected_direction = "short"
-        else:
-            selected_direction = None
+        crossed_middle = (
+            closed_price < avwap.vwap
+            if setup.direction == "long"
+            else closed_price > avwap.vwap
+        )
         self._log.info(
             "EmaAvwapPullback: entry evaluation mode=%s symbol=%s "
-            "setup_direction=%s closed_price=%.8f forming_ema=%.8f "
-            "forming_middle=%.8f selected_direction=%s",
+            "setup_direction=%s candle_open=%.8f closed_price=%.8f "
+            "closed_ema=%.8f closed_middle=%.8f result=%s",
             self._cfg.entry_exit_mode.value,
             setup.symbol,
             setup.direction,
+            snapshot.candle.open,
             closed_price,
-            live_snapshot.ema_value,
+            snapshot.ema_value,
             avwap.vwap,
-            selected_direction or "none_equal_to_middle",
+            "entry" if crossed_middle else "waiting_for_middle_cross",
         )
-        if selected_direction is None:
+        if not crossed_middle:
+            self._active_setups[self._setup_key(setup.symbol, setup.direction)] = (
+                replace(setup, is_waiting_for_cross=True)
+            )
+            self._save_state()
             return False
         current_price = self._safe_fetch_price(snapshot.symbol)
         if current_price is None or current_price <= 0:
@@ -306,7 +363,7 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             return False
         candidate = self._build_entry_candidate(
             setup=setup,
-            snapshot=live_snapshot,
+            snapshot=snapshot,
             avwap=avwap,
             cross=_CrossDecision(True, "candle_close"),
             signal_time=snapshot.candle.close_time,

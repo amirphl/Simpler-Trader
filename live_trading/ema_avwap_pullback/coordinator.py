@@ -131,9 +131,6 @@ class EmaAvwapPullbackLiveCoordinator(
                 symbol
             )
             if last_seen is None or latest_closed.close_time > last_seen:
-                self._last_closed_candle_time_by_symbol[symbol] = (
-                    latest_closed.close_time
-                )
                 new_symbols.append(symbol)
 
         if not new_symbols:
@@ -157,11 +154,29 @@ class EmaAvwapPullbackLiveCoordinator(
                     )
                     continue
                 if snapshot is not None:
+                    expected = latest_closed_by_symbol.get(symbol)
+                    if (
+                        expected is not None
+                        and snapshot.candle.close_time < expected.close_time
+                    ):
+                        self._log.warning(
+                            "EmaAvwapPullback: snapshot for %s is stale "
+                            "(snapshot_close=%s latest_close=%s); retrying without "
+                            "marking the latest candle as processed",
+                            symbol,
+                            snapshot.candle.close_time.isoformat(),
+                            expected.close_time.isoformat(),
+                        )
+                        continue
                     snapshots[symbol] = snapshot
 
         if not snapshots:
             return
 
+        for symbol, snapshot in snapshots.items():
+            self._last_closed_candle_time_by_symbol[symbol] = (
+                snapshot.candle.close_time
+            )
         self._last_snapshot_by_symbol.update(snapshots)
         self._log.info("New AVWAP candle processed for %d symbol(s)", len(snapshots))
         self._sync_positions(now)
