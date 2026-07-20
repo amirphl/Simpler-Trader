@@ -275,9 +275,9 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
 
         closed_price = snapshot.candle.close
         selected_direction: Direction | None
-        if closed_price > avwap.vwap:
+        if setup.direction == "long" and closed_price < avwap.vwap:
             selected_direction = "long"
-        elif closed_price < avwap.vwap:
+        elif setup.direction == "short" and closed_price > avwap.vwap:
             selected_direction = "short"
         else:
             selected_direction = None
@@ -305,7 +305,7 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             )
             return False
         candidate = self._build_entry_candidate(
-            setup=replace(setup, direction=selected_direction),
+            setup=setup,
             snapshot=live_snapshot,
             avwap=avwap,
             cross=_CrossDecision(True, "candle_close"),
