@@ -24,6 +24,10 @@ class EmaAvwapDataMixin(EmaAvwapMixinTyping):
         rows = self._fetch_strategy_klines(symbol, self._cfg.timeframe, 3)
         if rows is None or len(rows) < 2:
             return None
+        # The latest-candle poll already includes the forming candle. Reuse these
+        # rows during the immediately following live tick instead of issuing a
+        # second kline request for the same symbol and interval.
+        self._latest_kline_rows_by_symbol[symbol] = rows
         return Candle.from_binance(symbol, self._cfg.timeframe, rows[-2])
 
     def _build_snapshot(self, symbol: str) -> _SymbolSnapshot | None:
@@ -116,11 +120,26 @@ class EmaAvwapDataMixin(EmaAvwapMixinTyping):
             max(self._cfg.consecutive_count + 3, 10),
             self._cfg.max_history_bars,
         )
-        raw = self._fetch_strategy_klines(
-            symbol=snapshot.symbol,
-            interval=snapshot.timeframe,
-            limit=tail_limit,
+        raw = self._latest_kline_rows_by_symbol.get(snapshot.symbol)
+        expected_open_ms = (
+            snapshot.candle.open_time_ms
+            + interval_to_milliseconds(snapshot.timeframe)
         )
+        if raw is not None:
+            cached_tail = [
+                Candle.from_binance(snapshot.symbol, snapshot.timeframe, row)
+                for row in raw
+            ]
+            if not any(
+                candle.open_time_ms == expected_open_ms for candle in cached_tail
+            ):
+                raw = None
+        if raw is None:
+            raw = self._fetch_strategy_klines(
+                symbol=snapshot.symbol,
+                interval=snapshot.timeframe,
+                limit=tail_limit,
+            )
         if raw is None:
             return tuple(snapshot.candles)
 
@@ -134,7 +153,6 @@ class EmaAvwapDataMixin(EmaAvwapMixinTyping):
             return tuple(snapshot.candles)
 
         interval_ms = interval_to_milliseconds(snapshot.timeframe)
-        expected_open_ms = snapshot.candle.open_time_ms + interval_ms
         appended: list[Candle] = []
         for candle in sorted(newer, key=lambda item: item.open_time):
             if candle.open_time_ms < expected_open_ms:
