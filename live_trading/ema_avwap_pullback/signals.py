@@ -147,6 +147,7 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             )
 
         self._last_price_by_setup_key.pop(key, None)
+        self._last_middle_by_setup_key.pop(key, None)
         self._active_setups[key] = new_setup
         self._save_state()
         try:
@@ -238,26 +239,6 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
         if self._cfg.entry_exit_mode.uses_closed_candle_entry:
             return self._process_closed_candle_setup(setup, snapshot, now)
 
-        try:
-            live_snapshot, avwap = self._build_live_avwap_snapshot(snapshot, setup)
-        except Exception as exc:
-            self._log.warning(
-                "EmaAvwapPullback: mode=%s cannot refresh forming-candle "
-                "indicators for %s %s: %s",
-                self._cfg.entry_exit_mode.value,
-                setup.direction,
-                setup.symbol,
-                exc,
-            )
-            return False
-
-        self._log_avwap_levels(
-            context="forming_candle_entry_evaluation",
-            setup=setup,
-            snapshot=live_snapshot,
-            avwap=avwap,
-        )
-
         self._active_setups[self._setup_key(setup.symbol, setup.direction)] = (
             replace(setup, is_waiting_for_cross=True)
         )
@@ -265,13 +246,12 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
         self._log.info(
             "EmaAvwapPullback: entry evaluation mode=%s symbol=%s "
             "direction=%s trigger=live_middle_touch close=%.8f ema=%.8f "
-            "middle=%.8f result=waiting",
+            "result=waiting_for_live_tick",
             self._cfg.entry_exit_mode.value,
             setup.symbol,
             setup.direction,
             snapshot.candle.close,
-            live_snapshot.ema_value,
-            avwap.vwap,
+            snapshot.ema_value,
         )
         return False
 
@@ -438,35 +418,45 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 continue
 
             last_price = self._last_price_by_setup_key.get(key)
-            if last_price is None:
-                if self._price_is_past_entry_line(
+            last_middle = self._last_middle_by_setup_key.get(key)
+            first_observation = last_price is None or last_middle is None
+            if first_observation:
+                crossed = self._price_is_past_entry_line(
                     direction=setup.direction,
                     price=current_price,
                     entry_price=avwap.vwap,
-                ):
+                )
+                if crossed:
                     self._log.info(
-                        "EmaAvwapPullback: skipping %s setup for %s because live "
-                        "price is already past the AVWAP entry line at first "
-                        "observation (current=%.8f entry=%.8f); waiting for next setup",
+                        "EmaAvwapPullback: triggering %s setup for %s because live "
+                        "price is at or past the AVWAP entry line at first "
+                        "observation (current=%.8f entry=%.8f)",
                         setup.direction,
                         symbol,
                         current_price,
                         avwap.vwap,
                     )
-                    self._remove_setup(setup.symbol, setup.direction)
+                else:
+                    self._active_setups[key] = replace(
+                        setup, is_waiting_for_cross=True
+                    )
+                    self._last_price_by_setup_key[key] = current_price
+                    self._last_middle_by_setup_key[key] = avwap.vwap
+                    self._save_state()
                     continue
-                self._active_setups[key] = replace(setup, is_waiting_for_cross=True)
-                self._last_price_by_setup_key[key] = current_price
-                self._save_state()
-                continue
+            else:
+                assert last_price is not None and last_middle is not None
+                crossed = self._price_crossed_entry_line(
+                    direction=setup.direction,
+                    previous_price=last_price,
+                    previous_entry_price=last_middle,
+                    current_price=current_price,
+                    current_entry_price=avwap.vwap,
+                )
 
-            if not self._price_crossed_entry_line(
-                direction=setup.direction,
-                previous_price=last_price,
-                current_price=current_price,
-                entry_price=avwap.vwap,
-            ):
+            if not crossed:
                 self._last_price_by_setup_key[key] = current_price
+                self._last_middle_by_setup_key[key] = avwap.vwap
                 self._save_state()
                 continue
 
@@ -478,7 +468,7 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 self._cfg.entry_exit_mode.value,
                 symbol,
                 setup.direction,
-                last_price,
+                current_price if last_price is None else last_price,
                 current_price,
                 live_snapshot.ema_value,
                 avwap.vwap,
@@ -498,7 +488,12 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 current_price=current_price,
             )
             if candidate is None:
-                self._remove_setup(setup.symbol, setup.direction)
+                self._log.warning(
+                    "EmaAvwapPullback: preserving %s setup for %s after the live "
+                    "middle trigger because an entry candidate could not be built",
+                    setup.direction,
+                    setup.symbol,
+                )
                 continue
             if self._queue_entry_candidate(candidate, now):
                 self._clear_setups_for_symbol(symbol)
@@ -507,20 +502,23 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
         self, *, direction: Direction, price: float, entry_price: float
     ) -> bool:
         if direction == "long":
-            return price < entry_price
-        return price > entry_price
+            return price <= entry_price
+        return price >= entry_price
 
     def _price_crossed_entry_line(
         self,
         *,
         direction: Direction,
         previous_price: float,
+        previous_entry_price: float,
         current_price: float,
-        entry_price: float,
+        current_entry_price: float,
     ) -> bool:
+        previous_distance = previous_price - previous_entry_price
+        current_distance = current_price - current_entry_price
         if direction == "long":
-            return previous_price > entry_price >= current_price
-        return previous_price < entry_price <= current_price
+            return previous_distance > 0 and current_distance <= 0
+        return previous_distance < 0 and current_distance >= 0
 
     def _build_entry_candidate(
         self,
@@ -606,8 +604,9 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             )
         ):
             self._log.warning(
-                "EmaAvwapPullback: entry skipped for %s %s because the closed-bar "
-                "AVWAP cross is no longer marketable (current=%.8f entry=%.8f)",
+                "EmaAvwapPullback: entry skipped for %s %s because the live "
+                "AVWAP middle order is no longer marketable "
+                "(current=%.8f entry=%.8f)",
                 snapshot.symbol,
                 setup.direction,
                 current_price,
