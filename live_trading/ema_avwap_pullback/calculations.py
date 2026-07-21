@@ -470,6 +470,7 @@ class EmaAvwapCalculationMixin(EmaAvwapMixinTyping):
         key = self._setup_key(symbol, direction)
         self._active_setups.pop(key, None)
         self._last_price_by_setup_key.pop(key, None)
+        self._last_middle_by_setup_key.pop(key, None)
         saver = getattr(self, "_save_state", None)
         if callable(saver):
             saver()
