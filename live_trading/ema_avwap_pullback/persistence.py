@@ -111,6 +111,12 @@ class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
                 )
                 for item in data.get("last_price_by_setup", [])
             }
+            self._last_middle_by_setup_key = {
+                self._setup_key(item["symbol"], item["direction"]): float(
+                    item["middle"]
+                )
+                for item in data.get("last_middle_by_setup", [])
+            }
             self._pending_meta_by_key = {
                 key: self._pending_meta_from_dict(value)
                 for key, value in data.get("pending_meta", {}).items()
@@ -136,6 +142,7 @@ class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
             self._state = TradingState()
             self._active_setups = {}
             self._last_price_by_setup_key = {}
+            self._last_middle_by_setup_key = {}
             self._pending_meta_by_key = {}
             self._position_runtime_by_symbol = {}
             self._position_miss_count_by_symbol = {}
@@ -174,6 +181,10 @@ class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
                 "last_price_by_setup": [
                     {"symbol": key[0], "direction": key[1], "price": price}
                     for key, price in self._last_price_by_setup_key.items()
+                ],
+                "last_middle_by_setup": [
+                    {"symbol": key[0], "direction": key[1], "middle": middle}
+                    for key, middle in self._last_middle_by_setup_key.items()
                 ],
                 "pending_meta": {
                     key: self._pending_meta_to_dict(meta)
