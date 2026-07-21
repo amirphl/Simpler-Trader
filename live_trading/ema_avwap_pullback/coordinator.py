@@ -53,8 +53,10 @@ class EmaAvwapPullbackLiveCoordinator(
         self._running = False
         self._last_closed_candle_time_by_symbol: Dict[str, datetime] = {}
         self._last_snapshot_by_symbol: Dict[str, _SymbolSnapshot] = {}
+        self._latest_kline_rows_by_symbol: Dict[str, list[list]] = {}
         self._active_setups: Dict[tuple[str, Direction], _SetupState] = {}
         self._last_price_by_setup_key: Dict[tuple[str, Direction], float] = {}
+        self._last_middle_by_setup_key: Dict[tuple[str, Direction], float] = {}
         self._pending_meta_by_key: Dict[str, _PendingEntryMeta] = {}
         self._position_runtime_by_symbol: Dict[str, _PositionRuntime] = {}
         self._position_miss_count_by_symbol: Dict[str, int] = {}
