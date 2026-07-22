@@ -362,6 +362,9 @@ class PendingEntryRecord:
     order_id: Optional[str] = None
     status: str = "PENDING"  # PENDING, PLACED, FILLED, CANCELLED, ERROR
     notes: str = ""
+    # Stable exchange-side idempotency key.  It must survive process restarts so
+    # an ambiguous POST can be reconciled instead of submitted again.
+    client_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
