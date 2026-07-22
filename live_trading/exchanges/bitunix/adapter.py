@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -136,13 +137,56 @@ class BitunixExchange(Exchange):
             else:
                 adjusted = max(adjusted, mark_price + safety_offset)
 
-        rounding = ROUND_DOWN if side == PositionSide.LONG else ROUND_UP
+        # Never widen a protective stop during tick normalization: a long stop
+        # rounds up and a short stop rounds down.  If the market has already
+        # crossed the requested level, the safety-offset adjustment above will
+        # make verification fail and the strategy will emergency-close.
+        rounding = ROUND_UP if side == PositionSide.LONG else ROUND_DOWN
         normalized = self._quantize(adjusted, quote_precision, rounding_mode=rounding)
         if normalized <= 0:
             raise RuntimeError(
                 f"Normalized stop loss is invalid for {symbol}: raw={stop_price} normalized={normalized}"
             )
         return normalized
+
+    @staticmethod
+    def _parse_position_side(raw_side: Any) -> PositionSide:
+        """Translate the documented position payload without guessing."""
+        side = str(raw_side or "").strip().upper()
+        if side in {"SHORT", "SELL"}:
+            return PositionSide.SHORT
+        if side in {"LONG", "BUY"}:
+            return PositionSide.LONG
+        raise RuntimeError(f"Unknown Bitunix position side: {raw_side!r}")
+
+    def get_position_mode(self) -> str:
+        """Return the account's actual Bitunix position mode, or fail closed."""
+        try:
+            account = self._client.get_single_account(self._default_margin_coin)
+            mode = str(account.get("positionMode", "")).strip().upper()
+        except Exception as exc:
+            raise RuntimeError("Failed to fetch Bitunix position mode") from exc
+        if mode not in {"ONE_WAY", "HEDGE"}:
+            raise RuntimeError(f"Unknown Bitunix position mode: {mode!r}")
+        return mode
+
+    def validate_ema_avwap_execution(self) -> None:
+        """EMA/AVWAP owns one net position per symbol, never a hedge pair."""
+        mode = self.get_position_mode()
+        if mode != "ONE_WAY":
+            raise RuntimeError(
+                "EMA+AVWAP requires Bitunix ONE_WAY position mode; refusing to "
+                "trade a HEDGE account because the strategy tracks one net "
+                "position per symbol"
+            )
+
+    def _positions_for_symbol(self, symbol: str) -> List[Position]:
+        normalized = str(symbol).strip().upper()
+        return [
+            position
+            for position in self.get_current_positions()
+            if position.symbol.upper() == normalized
+        ]
 
     def fetch_price(self, symbol: str) -> Optional[float]:
         """Fetch last price for a symbol (public endpoint)."""
@@ -212,14 +256,19 @@ class BitunixExchange(Exchange):
                 size = float(pos.get("qty", 0) or 0)
                 if size == 0:
                     continue
-                side_str = str(pos.get("side", "")).upper()
-                side = PositionSide.SHORT if side_str == "SELL" else PositionSide.LONG
+                side = self._parse_position_side(pos.get("side"))
                 margin_mode_str = str(pos.get("marginMode", "")).upper()
-                margin_mode = (
-                    MarginMode.ISOLATED
-                    if margin_mode_str == "ISOLATION"
-                    else MarginMode.CROSS
-                )
+                if margin_mode_str == "ISOLATION":
+                    margin_mode = MarginMode.ISOLATED
+                elif margin_mode_str == "CROSS":
+                    margin_mode = MarginMode.CROSS
+                else:
+                    raise RuntimeError(
+                        f"Unknown Bitunix margin mode: {margin_mode_str!r}"
+                    )
+                symbol = str(pos.get("symbol") or "").strip().upper()
+                if not symbol:
+                    raise RuntimeError("Bitunix position payload is missing symbol")
                 entry_price = float(pos.get("avgOpenPrice", 0) or 0)
                 unrealized = float(pos.get("unrealizedPNL", 0) or 0)
                 liq_raw = pos.get("liqPrice", None)
@@ -233,7 +282,7 @@ class BitunixExchange(Exchange):
 
                 normalized.append(
                     Position(
-                        symbol=str(pos.get("symbol")),
+                        symbol=symbol,
                         side=side,
                         size=abs(size),
                         entry_price=entry_price,
@@ -244,16 +293,23 @@ class BitunixExchange(Exchange):
                         position_id=str(pos.get("positionId") or ""),
                     )
                 )
-            except Exception:
-                continue
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Invalid Bitunix position payload: {pos!r}"
+                ) from exc
 
         return normalized
 
     def get_position(self, symbol: str) -> Optional[Position]:
-        for pos in self.get_current_positions():
-            if pos.symbol == symbol:
-                return pos
-        return None
+        positions = self._positions_for_symbol(symbol)
+        if not positions:
+            return None
+        if len(positions) > 1:
+            raise RuntimeError(
+                f"Ambiguous Bitunix position lookup for {symbol}: "
+                "multiple hedge positions are open"
+            )
+        return positions[0]
 
     def set_leverage(self, symbol: str, leverage: int) -> None:
         margin_coin = infer_margin_coin_from_symbol(symbol)
@@ -336,6 +392,7 @@ class BitunixExchange(Exchange):
         margin_mode: MarginMode,
         take_profit: Optional[float] = None,
         stop_loss: Optional[float] = None,
+        client_id: Optional[str] = None,
     ) -> OrderResult:
         # self.set_leverage(symbol, leverage)
         normalized_qty = self._normalize_quantity(symbol, quantity)
@@ -352,10 +409,15 @@ class BitunixExchange(Exchange):
             order_type=OrderType.LIMIT.value,
             price=normalized_price,
             effect="GTC",
-            trade_side="OPEN",
+            # EMA+AVWAP validates ONE_WAY mode before running.  In that mode
+            # Bitunix expects normal buy/sell semantics, not hedge tradeSide.
+            trade_side=None,
             reduce_only=False,
             tp_price=take_profit,
             sl_price=normalized_stop_loss,
+            sl_stop_type="MARK_PRICE" if normalized_stop_loss is not None else None,
+            sl_order_type="MARKET" if normalized_stop_loss is not None else None,
+            client_id=client_id,
         )
         if not response or not response.get("orderId"):
             raise RuntimeError(
@@ -378,26 +440,52 @@ class BitunixExchange(Exchange):
         symbol: str,
         side: Optional[PositionSide] = None,
     ) -> OrderResult:
-        position = self.get_position(symbol)
-        if not position:
+        position_mode = self.get_position_mode()
+        positions = self._positions_for_symbol(symbol)
+        if position_mode == "HEDGE":
+            if side is None:
+                raise RuntimeError("Bitunix hedge close requires an explicit side")
+            positions = [position for position in positions if position.side == side]
+        elif len(positions) == 1 and side is not None and positions[0].side != side:
+            raise RuntimeError(
+                f"Bitunix position side changed for {symbol}: expected {side.value}, "
+                f"found {positions[0].side.value}"
+            )
+        if not positions:
             raise RuntimeError(
                 f"Bitunix close position failed: no open position found for {symbol}"
             )
+        if len(positions) != 1:
+            raise RuntimeError(
+                f"Bitunix close position is ambiguous for {symbol}; "
+                "specify/resolve the hedge side first"
+            )
+        position = positions[0]
 
         close_qty = position.size
-        side_to_send = (
-            PositionSide.SHORT
-            if position.side == PositionSide.LONG
-            else PositionSide.LONG
-        )
+        if position_mode == "HEDGE":
+            # Bitunix's hedge API uses the position direction together with
+            # tradeSide=CLOSE (BUY closes long, SELL closes short).
+            side_to_send = position.side
+            trade_side: Optional[str] = "CLOSE"
+            position_id: Optional[str] = position.position_id or None
+        else:
+            # In ONE_WAY mode use ordinary opposite-side reduce-only semantics.
+            side_to_send = (
+                PositionSide.SHORT
+                if position.side == PositionSide.LONG
+                else PositionSide.LONG
+            )
+            trade_side = None
+            position_id = None
 
         response = self._client.place_order(
             symbol=symbol,
             side="BUY" if side_to_send == PositionSide.LONG else "SELL",
             qty=close_qty,
             order_type=OrderType.MARKET.value,
-            trade_side="CLOSE",
-            position_id=position.position_id if position.position_id else None,
+            trade_side=trade_side,
+            position_id=position_id,
             reduce_only=True,
         )
         if not response or not response.get("orderId"):
@@ -413,6 +501,98 @@ class BitunixExchange(Exchange):
             status="FILLED",
             timestamp=datetime.now(timezone.utc),
         )
+
+    def get_order_status(
+        self,
+        *,
+        symbol: str,
+        order_id: Optional[str] = None,
+        client_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return the venue's authoritative state for one order."""
+        del symbol  # Bitunix's detail endpoint is keyed by order/client id.
+        payload = self._client.get_order_detail(
+            order_id=order_id,
+            client_id=client_id,
+        )
+        return payload or None
+
+    @staticmethod
+    def _is_at_least_as_protective(
+        side: PositionSide, actual_stop: float, required_stop: float
+    ) -> bool:
+        if side == PositionSide.LONG:
+            return actual_stop >= required_stop
+        return actual_stop <= required_stop
+
+    def _get_position_stop_loss(self, position: Position) -> Optional[float]:
+        if not position.position_id:
+            return None
+        orders = self._client.get_pending_tpsl_orders(
+            symbol=position.symbol,
+            position_id=position.position_id,
+            limit=100,
+        )
+        candidates: List[float] = []
+        for order in orders:
+            if str(order.get("positionId") or "") != position.position_id:
+                continue
+            try:
+                stop = float(order.get("slPrice"))
+            except (TypeError, ValueError):
+                continue
+            if stop > 0:
+                candidates.append(stop)
+        if not candidates:
+            return None
+        return max(candidates) if position.side == PositionSide.LONG else min(candidates)
+
+    def ensure_position_stop_loss(
+        self, position: Position, stop_price: float
+    ) -> Optional[float]:
+        """Install and read back a native stop; never report an assumed stop."""
+        if not position.position_id:
+            self._log.warning(
+                "Bitunix: cannot verify protective stop for %s without position_id",
+                position.symbol,
+            )
+            return None
+
+        normalized_stop = self._normalize_stop_loss_price(position, stop_price)
+        existing = self._get_position_stop_loss(position)
+        if existing is not None and self._is_at_least_as_protective(
+            position.side, existing, normalized_stop
+        ):
+            return existing
+
+        if existing is None:
+            result = self._client.place_position_tpsl_order(
+                symbol=position.symbol,
+                position_id=position.position_id,
+                sl_price=normalized_stop,
+                sl_stop_type="MARK_PRICE",
+            )
+        else:
+            result = self._client.modify_position_tpsl_order(
+                symbol=position.symbol,
+                position_id=position.position_id,
+                sl_price=normalized_stop,
+                sl_stop_type="MARK_PRICE",
+            )
+        if not result:
+            return None
+
+        # The acknowledgement is not enough: wait briefly for the order to be
+        # visible and verify the exact protection before claiming the fill.
+        for attempt in range(3):
+            actual = self._get_position_stop_loss(position)
+            if actual is not None and self._is_at_least_as_protective(
+                position.side, actual, normalized_stop
+            ):
+                return actual
+            if attempt < 2:
+                time.sleep(0.2)
+        return None
 
     def cancel_all_orders(self, symbol: str) -> None:
         try:
@@ -694,33 +874,20 @@ class BitunixExchange(Exchange):
             return False
 
     def update_position_stop_loss(self, position: Position, stop_price: float) -> bool:
-        """Update a position-level TP/SL using positionId (no orderId caching)."""
-        if not position.position_id:
-            self._log.warning(
-                "Bitunix: cannot update position stop loss for %s without position_id",
-                position.symbol,
-            )
-            return False
-
+        """Update and read back a position-level TP/SL using positionId."""
         try:
-            normalized_sl = self._normalize_stop_loss_price(position, stop_price)
-            result = self._client.modify_position_tpsl_order(
-                symbol=position.symbol,
-                position_id=position.position_id,
-                sl_price=normalized_sl,
-                sl_stop_type="MARK_PRICE",
-            )
-            if not result:
+            actual = self.ensure_position_stop_loss(position, stop_price)
+            if actual is None:
                 self._log.warning(
-                    "Bitunix: position stop loss update returned empty response for %s",
+                    "Bitunix: could not confirm position stop loss for %s",
                     position.symbol,
                 )
                 return False
             self._log.info(
-                "Bitunix: updated position stop loss for %s (position %s) to %.6f",
+                "Bitunix: confirmed position stop loss for %s (position %s) at %.6f",
                 position.symbol,
                 position.position_id,
-                stop_price,
+                actual,
             )
             return True
         except Exception as exc:
@@ -774,8 +941,16 @@ class BitunixExchange(Exchange):
                     if response_order_id == normalized_order_id:
                         return False
 
-            # If API accepted request but omitted per-order details, treat as submitted.
-            return True
+            # Acknowledging the request is not proof that this particular order
+            # was cancelled.  The caller must retain and reconcile it rather than
+            # lose track of a live GTC order.
+            self._log.warning(
+                "Bitunix: cancel_order response lacked a definitive result "
+                "symbol=%s order_id=%s",
+                symbol,
+                normalized_order_id,
+            )
+            return False
         except Exception as exc:
             self._log.warning(
                 "Bitunix: cancel_order error symbol=%s order_id=%s error=%s",
