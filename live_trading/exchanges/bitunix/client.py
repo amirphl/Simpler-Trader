@@ -154,7 +154,8 @@ class BitunixClient:
                 if attempts >= self._max_retries:
                     break
                 delay = min(2 ** (attempts - 1), 5)
-                self._log.warning(
+                retry_log = self._log.debug if attempts < 3 else self._log.warning
+                retry_log(
                     "Bitunix request retry %s/%s path=%s error=%s",
                     attempts,
                     self._max_retries,
@@ -1603,7 +1604,7 @@ class BitunixClient:
         qty: float,
         order_type: str,
         price: Optional[float] = None,
-        trade_side: str = "OPEN",
+        trade_side: Optional[str] = "OPEN",
         position_id: Optional[str] = None,
         reduce_only: bool = False,
         tp_price: Optional[float] = None,
@@ -1620,7 +1621,9 @@ class BitunixClient:
         normalized_symbol = str(symbol).strip().upper()
         normalized_side = str(side).strip().upper()
         normalized_order_type = str(order_type).strip().upper()
-        normalized_trade_side = str(trade_side).strip().upper()
+        normalized_trade_side = (
+            str(trade_side).strip().upper() if trade_side is not None else ""
+        )
         normalized_position_id = (
             str(position_id).strip() if position_id is not None else ""
         )
@@ -1637,7 +1640,7 @@ class BitunixClient:
                 "Bitunix: place_order rejected: invalid order_type=%s", order_type
             )
             return {}
-        if normalized_trade_side not in {"OPEN", "CLOSE"}:
+        if normalized_trade_side and normalized_trade_side not in {"OPEN", "CLOSE"}:
             self._log.warning(
                 "Bitunix: place_order rejected: invalid trade_side=%s", trade_side
             )
@@ -1722,9 +1725,10 @@ class BitunixClient:
             "side": normalized_side,
             "qty": str(qty),
             "orderType": normalized_order_type,
-            "tradeSide": normalized_trade_side,
             "reduceOnly": bool(reduce_only),
         }
+        if normalized_trade_side:
+            body["tradeSide"] = normalized_trade_side
         if normalized_position_id:
             body["positionId"] = normalized_position_id
         if price is not None:
