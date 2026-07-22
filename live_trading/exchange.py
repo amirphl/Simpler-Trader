@@ -219,6 +219,7 @@ class Exchange(ABC):
         margin_mode: MarginMode,
         take_profit: Optional[float] = None,
         stop_loss: Optional[float] = None,
+        client_id: Optional[str] = None,
     ) -> OrderResult:
         """Open a limit position with optional TP/SL."""
         raise NotImplementedError
