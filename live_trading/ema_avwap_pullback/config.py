@@ -137,8 +137,11 @@ class EmaAvwapPullbackLiveConfig:
             self.avwap_multiplier_3,
         ) <= 0:
             raise ValueError("AVWAP multipliers must be positive")
-        if self.rigid_stop_loss_pct < 0:
-            raise ValueError("rigid_stop_loss_pct must be non-negative")
+        if self.rigid_stop_loss_pct <= 0:
+            raise ValueError(
+                "rigid_stop_loss_pct must be positive; live EMA+AVWAP entries "
+                "require an exchange-confirmed protective stop"
+            )
         if self.trailing_activation_threshold_pct < 0:
             raise ValueError("trailing_activation_threshold_pct must be non-negative")
         if self.trailing_gap_pct < 0:
