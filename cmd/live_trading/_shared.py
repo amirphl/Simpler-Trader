@@ -1322,8 +1322,10 @@ def run_main(
     if not args.timeframe:
         parser.error("--timeframe is required")
 
-    # Warn about live trading
-    if args.live:
+    # Mainnet can be selected by config as well as --live.  Treat either path
+    # as real-money execution and require the same explicit confirmation.
+    is_mainnet = not args.testnet or args.live
+    if is_mainnet:
         logger.warning("=" * 80)
         logger.warning("LIVE TRADING MODE ENABLED - REAL MONEY WILL BE TRADED")
         logger.warning("=" * 80)
@@ -1351,7 +1353,7 @@ def run_main(
             exchange_name=args.exchange,
             api_key=args.api_key or "",
             api_secret=args.api_secret or "",
-            testnet=args.testnet and not args.live,
+            testnet=not is_mainnet,
             strategy_name=args.strategy_name,
             timeframe=args.timeframe,
             top_m_symbols=int(_arg(args, "top_m_symbols", 100)),
