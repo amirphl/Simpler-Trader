@@ -71,6 +71,12 @@ class EmaAvwapPullbackLiveCoordinator(
     # ------------------------------------------------------------------
 
     def run_forever(self) -> None:
+        validator = getattr(self._exchange, "validate_ema_avwap_execution", None)
+        if callable(validator):
+            # The strategy owns one net position per symbol.  Bitunix hedge mode
+            # violates that invariant, so reject it before polling or placing
+            # anything rather than attempting to infer a position to manage.
+            validator()
         self._running = True
         self._log.info(
             "EmaAvwapPullback started (symbols=%s timeframe=%s "
@@ -201,15 +207,18 @@ class EmaAvwapPullbackLiveCoordinator(
         self._activate_due_entries(now)
         self._manage_live_position_exits(now)
 
-        # Dynamic/trailing stop-loss management is intentionally disabled for now.
-        # Keep this block commented so it can be re-enabled later; until then the
-        # rigid stop attached to the opening order must remain unchanged.
-        # if (
-        #     time.time() - self._last_tick_trailing_check_ts
-        # ) < self._cfg.trailing_check_interval_seconds:
-        #     return
-        # self._last_tick_trailing_check_ts = time.time()
-        # self._manage_tick_trailing(now)
+        # Targets and rigid stops are evaluated first above.  Once a position
+        # remains open, update its trailing protection at the configured cadence.
+        # ``monotonic`` prevents wall-clock changes from delaying or flooding
+        # trailing checks.
+        trailing_check_ts = time.monotonic()
+        if (
+            trailing_check_ts - self._last_tick_trailing_check_ts
+            < self._cfg.trailing_check_interval_seconds
+        ):
+            return
+        self._last_tick_trailing_check_ts = trailing_check_ts
+        self._manage_tick_trailing(now)
 
     # ------------------------------------------------------------------
     # Public fallback HTTP transport
