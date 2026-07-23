@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from candle_downloader.models import Candle
 
@@ -31,10 +31,24 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
             )
             return
 
-        by_symbol = {position.symbol: position for position in exchange_positions}
+        by_symbol: dict[str, Position] = {}
+        for position in exchange_positions:
+            if position.symbol in by_symbol:
+                # This should be prevented at startup on Bitunix, but never
+                # silently discard one side if the account changes underneath us.
+                self._log.critical(
+                    "EmaAvwapPullback: multiple exchange positions found for %s; "
+                    "refusing to manage an ambiguous hedge state",
+                    position.symbol,
+                )
+                return
+            by_symbol[position.symbol] = position
 
         for symbol, ex_pos in by_symbol.items():
             if symbol in self._state.active_positions:
+                self._sync_active_exchange_position(
+                    self._state.active_positions[symbol], ex_pos, now
+                )
                 self._position_miss_count_by_symbol[symbol] = 0
                 continue
             pending = self._find_matching_pending(symbol, ex_pos.side)
@@ -55,8 +69,10 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
             initial_rigid_stop = meta.candidate.rigid_stop_at_entry
             if initial_rigid_stop is None and pending.stop_for_risk > 0:
                 initial_rigid_stop = pending.stop_for_risk
-            runtime = self._runtime_from_fill(meta.candidate, initial_rigid_stop)
-            stop_price = runtime.rigid_stop_level
+            required_stop = initial_rigid_stop
+            actual_stop = self._confirm_initial_stop(ex_pos, required_stop)
+            runtime = self._runtime_from_fill(meta.candidate, actual_stop)
+            stop_price = actual_stop
             record = PositionRecord(
                 position_id=ex_pos.position_id or pending.order_id or pending.order_key,
                 symbol=symbol,
@@ -67,8 +83,8 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
                 leverage=pending.leverage,
                 margin_mode=pending.margin_mode,
                 take_profit=None,
-                # The rigid stop was already attached to the opening order.
-                # Mirror it locally without submitting a second stop update.
+                # Never mirror the requested stop: retain only the native stop
+                # read back from the exchange after the fill.
                 stop_loss=stop_price,
                 risk_amount=pending.risk_amount,
                 strategy="ema_avwap_pullback",
@@ -81,8 +97,29 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
             self._state.active_positions[symbol] = record
             self._position_runtime_by_symbol[symbol] = runtime
             self._position_miss_count_by_symbol[symbol] = 0
-            self._state.pending_entries.pop(pending.order_key, None)
-            self._pending_meta_by_key.pop(pending.order_key, None)
+            order_status = self._reconcile_pending_order(pending)
+            if self._order_is_terminal(order_status):
+                self._remove_pending_entry(pending)
+
+            if actual_stop is None:
+                self._log.critical(
+                    "EmaAvwapPullback: exchange protective stop could not be "
+                    "confirmed for newly filled %s; cancelling any remainder and "
+                    "emergency-closing the filled exposure",
+                    symbol,
+                )
+                if pending.order_id:
+                    self._cancel_pending_entry(
+                        pending, "emergency stop-confirmation failure"
+                    )
+                self._save_position_to_db(record)
+                self._save_state()
+                self._close_position(
+                    record,
+                    now,
+                    "Emergency close: protective stop could not be confirmed",
+                )
+                continue
 
             self._notify_trade_opened(record, runtime, stop_price)
             self._log.info(
@@ -98,6 +135,8 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
             )
             self._save_position_to_db(record)
             self._save_state()
+
+        self._clear_terminal_unfilled_entries(by_symbol)
 
         for symbol, pos in list(self._state.active_positions.items()):
             if symbol in by_symbol:
@@ -135,10 +174,173 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
                 POSITION_MISS_THRESHOLD,
             )
 
+    def _sync_active_exchange_position(
+        self, record: PositionRecord, exchange_position: Position, now: datetime
+    ) -> None:
+        changed = False
+        if exchange_position.position_id and record.position_id != exchange_position.position_id:
+            record.position_id = exchange_position.position_id
+            changed = True
+        if exchange_position.size > 0 and record.quantity != exchange_position.size:
+            self._log.warning(
+                "EmaAvwapPullback: exchange position size changed for %s "
+                "(local=%.8f exchange=%.8f); retaining the entry order until its "
+                "authoritative terminal state is known",
+                record.symbol,
+                record.quantity,
+                exchange_position.size,
+            )
+            record.quantity = exchange_position.size
+            changed = True
+        if exchange_position.entry_price > 0 and record.entry_price != exchange_position.entry_price:
+            record.entry_price = exchange_position.entry_price
+            changed = True
+
+        pending = self._find_matching_pending(record.symbol, exchange_position.side)
+        if pending is not None:
+            status = self._reconcile_pending_order(pending)
+            if self._order_is_terminal(status):
+                self._remove_pending_entry(pending)
+                changed = True
+
+        runtime = self._position_runtime_by_symbol.get(record.symbol)
+        required_stop = runtime.rigid_stop_level if runtime is not None else None
+        if record.stop_loss is None and required_stop is not None:
+            actual_stop = self._confirm_initial_stop(exchange_position, required_stop)
+            if actual_stop is None:
+                self._log.critical(
+                    "EmaAvwapPullback: active %s has no confirmed native stop; "
+                    "emergency-closing it",
+                    record.symbol,
+                )
+                if pending is not None and pending.order_id:
+                    self._cancel_pending_entry(
+                        pending, "emergency stop-confirmation failure"
+                    )
+                if changed:
+                    self._save_position_to_db(record)
+                    self._save_state()
+                self._close_position(
+                    record,
+                    now,
+                    "Emergency close: protective stop could not be confirmed",
+                )
+                return
+            record.stop_loss = actual_stop
+            runtime.rigid_stop_level = actual_stop
+            changed = True
+
+        if changed:
+            self._save_position_to_db(record)
+            self._save_state()
+
+    @staticmethod
+    def _order_status_name(order: Optional[dict[str, Any]]) -> str:
+        if not order:
+            return ""
+        return str(order.get("status") or order.get("orderStatus") or "").upper()
+
+    @classmethod
+    def _order_is_live(cls, status: str) -> bool:
+        return status in {"INIT", "NEW", "OPEN", "PENDING", "PART_FILLED", "PARTIALLY_FILLED"}
+
+    @classmethod
+    def _order_is_terminal(cls, status: str) -> bool:
+        return status in {"FILLED", "CANCELLED", "CANCELED", "REJECTED", "EXPIRED"}
+
+    def _reconcile_pending_order(self, pending: PendingEntryRecord) -> str:
+        lookup = getattr(self._exchange, "get_order_status", None)
+        if not callable(lookup):
+            return ""
+        try:
+            order = lookup(
+                symbol=pending.symbol,
+                order_id=pending.order_id,
+                client_id=pending.client_id,
+            )
+        except Exception:
+            self._log.warning(
+                "EmaAvwapPullback: order reconciliation failed for %s",
+                pending.order_key,
+                exc_info=True,
+            )
+            return ""
+        if not isinstance(order, dict) or not order:
+            return ""
+        exchange_order_id = str(order.get("orderId") or order.get("id") or "").strip()
+        changed = False
+        if exchange_order_id and pending.order_id != exchange_order_id:
+            pending.order_id = exchange_order_id
+            changed = True
+        status = self._order_status_name(order)
+        if status and pending.status != "PLACED":
+            pending.status = "PLACED"
+            changed = True
+        if changed:
+            self._save_state()
+        return status
+
+    def _clear_terminal_unfilled_entries(
+        self, positions_by_symbol: dict[str, Position]
+    ) -> None:
+        for pending in list(self._state.pending_entries.values()):
+            if pending.symbol in positions_by_symbol:
+                continue
+            status = self._reconcile_pending_order(pending)
+            if status in {"CANCELLED", "CANCELED", "REJECTED", "EXPIRED"}:
+                self._log.info(
+                    "EmaAvwapPullback: removing terminal unfilled order %s (%s)",
+                    pending.order_key,
+                    status,
+                )
+                self._remove_pending_entry(pending)
+                self._save_state()
+
+    def _remove_pending_entry(self, pending: PendingEntryRecord) -> None:
+        self._state.pending_entries.pop(pending.order_key, None)
+        self._pending_meta_by_key.pop(pending.order_key, None)
+
+    def _confirm_initial_stop(
+        self, exchange_position: Position, required_stop: Optional[float]
+    ) -> Optional[float]:
+        if required_stop is None or required_stop <= 0:
+            return None
+        confirmer = getattr(self._exchange, "ensure_position_stop_loss", None)
+        if not callable(confirmer):
+            self._log.critical(
+                "EmaAvwapPullback: exchange cannot confirm a native position stop "
+                "for %s",
+                exchange_position.symbol,
+            )
+            return None
+        try:
+            actual = confirmer(exchange_position, required_stop)
+        except Exception:
+            self._log.critical(
+                "EmaAvwapPullback: native stop confirmation failed for %s",
+                exchange_position.symbol,
+                exc_info=True,
+            )
+            return None
+        try:
+            actual_value = float(actual) if actual is not None else 0.0
+        except (TypeError, ValueError):
+            actual_value = 0.0
+        if actual_value <= 0:
+            return None
+        if exchange_position.side == PositionSide.LONG and actual_value < required_stop:
+            return None
+        if exchange_position.side == PositionSide.SHORT and actual_value > required_stop:
+            return None
+        return actual_value
+
     def _claim_pending_without_runtime(
         self, pending: PendingEntryRecord, ex_pos: Position, now: datetime
     ) -> None:
         entry_price = ex_pos.entry_price or pending.entry_price
+        actual_stop = self._confirm_initial_stop(
+            ex_pos, pending.stop_for_risk if pending.stop_for_risk > 0 else None
+        )
         record = PositionRecord(
             position_id=ex_pos.position_id or pending.order_id or pending.order_key,
             symbol=pending.symbol,
@@ -149,8 +351,7 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
             leverage=pending.leverage,
             margin_mode=pending.margin_mode,
             take_profit=None,
-            # The pending entry already carried this rigid stop.
-            stop_loss=pending.stop_for_risk if pending.stop_for_risk > 0 else None,
+            stop_loss=actual_stop,
             risk_amount=pending.risk_amount,
             strategy="ema_avwap_pullback",
             status="OPEN",
@@ -160,10 +361,25 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
         )
         self._state.active_positions[pending.symbol] = record
         self._position_miss_count_by_symbol[pending.symbol] = 0
-        self._state.pending_entries.pop(pending.order_key, None)
-        self._pending_meta_by_key.pop(pending.order_key, None)
+        order_status = self._reconcile_pending_order(pending)
+        if self._order_is_terminal(order_status):
+            self._remove_pending_entry(pending)
         self._save_position_to_db(record)
         self._save_state()
+        if actual_stop is not None:
+            return
+        self._log.critical(
+            "EmaAvwapPullback: recovered %s without a confirmed native stop; "
+            "cancelling any remainder and emergency-closing it",
+            pending.symbol,
+        )
+        if pending.order_id:
+            self._cancel_pending_entry(pending, "emergency stop-confirmation failure")
+        self._close_position(
+            record,
+            now,
+            "Emergency close: protective stop could not be confirmed",
+        )
 
     def _claim_untracked_exchange_position(
         self, ex_pos: Position, now: datetime
@@ -658,9 +874,18 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
                 if change_pct < self._cfg.min_stop_update_pct / 100.0:
                     return True
 
-        ok = self._update_stop_loss_on_exchange(exchange_position, stop_price)
+        confirmer = getattr(self._exchange, "ensure_position_stop_loss", None)
+        actual_stop: Optional[float] = None
+        if callable(confirmer):
+            actual_stop = self._confirm_initial_stop(exchange_position, stop_price)
+            ok = actual_stop is not None
+        else:
+            ok = self._update_stop_loss_on_exchange(exchange_position, stop_price)
+            actual_stop = stop_price if ok else None
         if ok:
-            record.stop_loss = stop_price
+            # The venue may round to a tick.  Keep the read-back stop locally
+            # so local risk/exit logic never relies on a requested-only value.
+            record.stop_loss = actual_stop
             self._save_position_to_db(record)
             self._save_state()
             return True
@@ -820,6 +1045,10 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
         for key, pending in list(self._state.pending_entries.items()):
             if pending.symbol != snapshot.symbol:
                 continue
+            if pending.status == "ERROR" and not pending.order_id:
+                # A legacy ambiguous submission without a recoverable exchange
+                # identifier must remain visible for manual reconciliation.
+                continue
             reference = snapshot.candle.close_time
             bars_since = int(
                 max(0.0, (reference - pending.signal_time).total_seconds())
@@ -847,18 +1076,34 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
                     exc_info=True,
                 )
                 cancelled = False
+            status = self._reconcile_pending_order(pending)
+            if self._order_is_terminal(status):
+                self._remove_pending_entry(pending)
+                self._save_state()
+                return
             if not cancelled:
                 self._log.warning(
                     "EmaAvwapPullback: cancel by order id failed for %s order=%s "
-                    "(%s); skipping cancel_all_orders to avoid removing protective stops",
+                    "(%s); retaining it for reconciliation and avoiding cancel_all_orders "
+                    "so protective stops cannot be removed",
                     pending.symbol,
                     pending.order_id,
                     reason,
                 )
+                pending.status = "PLACED"
+                pending.notes = f"{pending.notes}; cancel failed: {reason}".strip("; ")
+                self._save_state()
+                return
+            # Even a successful cancel acknowledgement can race the order
+            # detail endpoint.  Do not forget a GTC order until its terminal
+            # state can be observed in a later reconciliation pass.
+            pending.status = "PLACED"
+            pending.notes = f"{pending.notes}; cancel submitted: {reason}".strip("; ")
+            self._save_state()
+            return
         pending.status = "CANCELLED"
         pending.notes = f"{pending.notes}; {reason}".strip("; ")
-        self._state.pending_entries.pop(pending.order_key, None)
-        self._pending_meta_by_key.pop(pending.order_key, None)
+        self._remove_pending_entry(pending)
         self._save_state()
 
     # ------------------------------------------------------------------
