@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 from typing import Optional
+from uuid import uuid4
 
 from candle_downloader.models import Candle
 
@@ -749,6 +750,9 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 f"anchor={candidate.anchor_time.isoformat()} "
                 f"trigger={candidate.entry_trigger_mode}"
             ),
+            # Keep this value stable through retries and restarts.  Bitunix uses
+            # ``clientId`` to identify an order independently of its server id.
+            client_id=f"emaavwap-{uuid4().hex}",
         )
         self._state.pending_entries[key] = pending
         self._pending_meta_by_key[key] = _PendingEntryMeta(candidate=candidate)
@@ -776,6 +780,42 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 continue
             if now < pending.activate_time:
                 continue
+            if not pending.client_id and not pending.order_id:
+                # A state created before client-id persistence cannot be safely
+                # retried: its last POST may have reached the venue with no
+                # identifier we can reconcile.  Leave it visible for manual
+                # review rather than risk a duplicate entry.
+                pending.status = "ERROR"
+                pending.notes = (
+                    f"{pending.notes}; manual review required: missing client id "
+                    "for an ambiguous legacy submission"
+                ).strip("; ")
+                self._log.critical(
+                    "EmaAvwapPullback: refusing to retry legacy pending entry %s "
+                    "without an order id or client id",
+                    pending.order_key,
+                )
+                self._save_state()
+                continue
+            # Recover an order accepted before a timeout/crash by its stable
+            # client id.  Never submit another entry while the venue can name
+            # the original order.
+            recovered_status = self._reconcile_pending_order(pending)
+            if pending.order_id:
+                if recovered_status in {"CANCELLED", "CANCELED", "REJECTED", "EXPIRED"}:
+                    self._remove_pending_entry(pending)
+                    self._save_state()
+                    continue
+                pending.status = "PLACED"
+                self._save_state()
+                self._log.info(
+                    "EmaAvwapPullback: recovered pending entry %s as exchange "
+                    "order %s status=%s",
+                    pending.order_key,
+                    pending.order_id,
+                    recovered_status or "unknown",
+                )
+                continue
             try:
                 order = self._place_limit_entry(pending)
             except _InsufficientBalanceError as exc:
@@ -793,6 +833,21 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 self._save_state()
                 continue
             if order is None:
+                # A POST can have reached the exchange even when the response
+                # was lost.  Reconcile before allowing any future attempt; the
+                # same client id also makes the exchange-side retry idempotent.
+                recovered_status = self._reconcile_pending_order(pending)
+                if pending.order_id:
+                    pending.status = "PLACED"
+                    self._save_state()
+                    self._log.warning(
+                        "EmaAvwapPullback: placement response was ambiguous for %s; "
+                        "recovered exchange order %s status=%s",
+                        pending.order_key,
+                        pending.order_id,
+                        recovered_status or "unknown",
+                    )
+                    continue
                 pending.status = "PENDING"
                 pending.notes = f"{pending.notes}; last placement attempt failed".strip(
                     "; "
@@ -820,6 +875,11 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
 
     def _place_limit_entry(self, pending: PendingEntryRecord) -> Optional[OrderResult]:
         try:
+            validator = getattr(self._exchange, "validate_ema_avwap_execution", None)
+            if callable(validator):
+                # Recheck immediately before a state-changing order in case the
+                # account mode changed after startup.
+                validator()
             self._retry(
                 lambda: self._exchange.set_margin_mode(
                     pending.symbol, pending.margin_mode
@@ -844,20 +904,21 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             return None
 
         try:
-            return self._retry(
-                lambda: self._exchange.open_limit_position(
-                    symbol=pending.symbol,
-                    side=pending.side,
-                    quantity=pending.quantity,
-                    price=pending.entry_price,
-                    leverage=pending.leverage,
-                    margin_mode=pending.margin_mode,
-                    take_profit=None,
-                    stop_loss=(
-                        pending.stop_for_risk if pending.stop_for_risk > 0 else None
-                    ),
+            # Do not wrap a state-changing POST in the generic retry helper.
+            # Bitunix receives the persisted client id and may retry its own
+            # request safely; an ambiguous result is reconciled above.
+            return self._exchange.open_limit_position(
+                symbol=pending.symbol,
+                side=pending.side,
+                quantity=pending.quantity,
+                price=pending.entry_price,
+                leverage=pending.leverage,
+                margin_mode=pending.margin_mode,
+                take_profit=None,
+                stop_loss=(
+                    pending.stop_for_risk if pending.stop_for_risk > 0 else None
                 ),
-                f"open_limit_position {pending.symbol}",
+                client_id=pending.client_id,
             )
         except Exception as exc:
             if self._is_insufficient_balance_error(exc):
