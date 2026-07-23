@@ -309,6 +309,7 @@ class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
             "order_id": pending.order_id,
             "status": pending.status,
             "notes": pending.notes,
+            "client_id": pending.client_id,
         }
 
     def _pending_from_dict(self, data: Mapping[str, Any]) -> PendingEntryRecord:
@@ -328,6 +329,7 @@ class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
             order_id=data.get("order_id"),
             status=str(data.get("status", "PENDING")),
             notes=str(data.get("notes", "")),
+            client_id=data.get("client_id"),
         )
 
     def _setup_to_dict(self, setup: _SetupState) -> Dict[str, Any]:
