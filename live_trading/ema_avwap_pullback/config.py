@@ -14,25 +14,30 @@ from ..exchange import MarginMode
 Direction = Literal["long", "short"]
 
 
-class EntryExitMode(str, Enum):
-    LIVE_MIDDLE_FIRST_BAND = "live_middle_first_band"
-    CANDLE_CLOSE_FIRST_BAND = "candle_close_first_band"
-    LIVE_MIDDLE_SECOND_BAND = "live_middle_second_band"
+class EntryMode(str, Enum):
+    CLOSE = "close"
+    LIVE = "live"
+
+
+class ExitMode(str, Enum):
+    CLOSE = "close"
+    LIVE = "live"
+
+
+class ExitBand(str, Enum):
+    BAND_1 = "band_1"
+    BAND_2 = "band_2"
 
     @property
-    def uses_closed_candle_entry(self) -> bool:
-        return self is EntryExitMode.CANDLE_CLOSE_FIRST_BAND
-
-    @property
-    def exit_band_number(self) -> int:
-        """Return the live AVWAP band used as this mode's profit target."""
-        if self is EntryExitMode.LIVE_MIDDLE_FIRST_BAND:
-            return 1
-        return 2
+    def number(self) -> int:
+        return 1 if self is ExitBand.BAND_1 else 2
 
 EmaValidationMode = Literal["body", "wick"]
 SetupWaitingReplacementMode = Literal["keep_waiting", "replace_waiting"]
-PositionSizingMode = Literal["risk_distance", "risk_amount_per_price"]
+# EMA/AVWAP sizing is deliberately a notional-budget calculation.  It is not
+# stop-loss risk sizing, even though the retained CLI setting has the historic
+# ``risk_amount_per_price`` name.
+PositionSizingMode = Literal["risk_amount_per_price"]
 
 @dataclass(frozen=True)
 class EmaAvwapPullbackLiveConfig:
@@ -47,14 +52,19 @@ class EmaAvwapPullbackLiveConfig:
     margin_mode: MarginMode = MarginMode.ISOLATED
     max_concurrent_positions: int = 1
     max_entry_notional_usdt: float = 15.0
-    equity_risk_pct: float = 1.0
+    max_position_size_pct: float = 10.0
+    position_notional_pct: float = 1.0
 
     ema_length: int = 55
     consecutive_count: int = 4
     ema_validation_mode: EmaValidationMode = "body"
     setup_waiting_replacement_mode: SetupWaitingReplacementMode = "keep_waiting"
-    position_sizing_mode: PositionSizingMode = "risk_distance"
-    entry_exit_mode: EntryExitMode = EntryExitMode.LIVE_MIDDLE_FIRST_BAND
+    max_setup_age_bars: int = 3
+    max_entry_deviation_pct: float = 1.0
+    position_sizing_mode: PositionSizingMode = "risk_amount_per_price"
+    entry_mode: EntryMode = EntryMode.LIVE
+    exit_mode: ExitMode = ExitMode.LIVE
+    exit_band: ExitBand = ExitBand.BAND_1
 
     avwap_multiplier_1: float = 1.0
     avwap_multiplier_2: float = 2.0
@@ -73,6 +83,8 @@ class EmaAvwapPullbackLiveConfig:
     entry_cancel_bars: int = 1
     max_history_bars: int = 512
     minimum_balance_usdt: float = 0.0
+    candle_ready_delay_seconds: float = 0.0
+    execution_interval_minutes: int = 5
     api_retries: int = 3
     api_retry_delay_seconds: float = 1.0
     emergency_close_on_stop_failure: bool = True
@@ -81,6 +93,7 @@ class EmaAvwapPullbackLiveConfig:
     disable_symbol_hours: float = 0.0
 
     state_file: Path = Path("./data/ema_avwap_pullback_live_trading_state.json")
+    account_lock_file: Path | None = None
     positions_db: Path = Path("./data/ema_avwap_pullback_live_trading_positions.db")
     klines_db: Path = Path("./configs/live_trading.ema_avwap_pullback.env")
     log_file: Path = Path("./logs/ema_avwap_pullback_live_trading.log")
@@ -105,12 +118,18 @@ class EmaAvwapPullbackLiveConfig:
             raise ValueError("max_concurrent_positions must be positive")
         if self.max_entry_notional_usdt <= 0:
             raise ValueError("max_entry_notional_usdt must be positive")
-        if self.equity_risk_pct <= 0:
-            raise ValueError("equity_risk_pct must be positive")
+        if not 0 < self.max_position_size_pct <= 100:
+            raise ValueError("max_position_size_pct must be in (0, 100]")
+        if not 0 < self.position_notional_pct <= 100:
+            raise ValueError("position_notional_pct must be in (0, 100]")
         if self.ema_length <= 0:
             raise ValueError("ema_length must be positive")
         if self.consecutive_count <= 0:
             raise ValueError("consecutive_count must be positive")
+        if self.max_setup_age_bars <= 0:
+            raise ValueError("max_setup_age_bars must be positive")
+        if self.max_entry_deviation_pct < 0:
+            raise ValueError("max_entry_deviation_pct must be non-negative")
         if self.ema_validation_mode not in {"body", "wick"}:
             raise ValueError("ema_validation_mode must be one of: body, wick")
         if self.setup_waiting_replacement_mode not in {
@@ -121,16 +140,26 @@ class EmaAvwapPullbackLiveConfig:
                 "setup_waiting_replacement_mode must be one of: "
                 "keep_waiting, replace_waiting"
             )
-        if self.position_sizing_mode not in {"risk_distance", "risk_amount_per_price"}:
+        if self.position_sizing_mode != "risk_amount_per_price":
             raise ValueError(
-                "position_sizing_mode must be one of: "
-                "risk_distance, risk_amount_per_price"
+                "position_sizing_mode must be risk_amount_per_price; EMA+AVWAP "
+                "uses a position-notional budget, not stop-loss risk sizing"
             )
         try:
-            entry_exit_mode = EntryExitMode(self.entry_exit_mode)
+            entry_mode = EntryMode(self.entry_mode)
         except ValueError as exc:
-            allowed = ", ".join(mode.value for mode in EntryExitMode)
-            raise ValueError(f"entry_exit_mode must be one of: {allowed}") from exc
+            allowed = ", ".join(mode.value for mode in EntryMode)
+            raise ValueError(f"entry_mode must be one of: {allowed}") from exc
+        try:
+            exit_mode = ExitMode(self.exit_mode)
+        except ValueError as exc:
+            allowed = ", ".join(mode.value for mode in ExitMode)
+            raise ValueError(f"exit_mode must be one of: {allowed}") from exc
+        try:
+            exit_band = ExitBand(self.exit_band)
+        except ValueError as exc:
+            allowed = ", ".join(band.value for band in ExitBand)
+            raise ValueError(f"exit_band must be one of: {allowed}") from exc
         if min(
             self.avwap_multiplier_1,
             self.avwap_multiplier_2,
@@ -159,6 +188,10 @@ class EmaAvwapPullbackLiveConfig:
             )
         if self.minimum_balance_usdt < 0:
             raise ValueError("minimum_balance_usdt must be non-negative")
+        if self.candle_ready_delay_seconds < 0:
+            raise ValueError("candle_ready_delay_seconds must be non-negative")
+        if self.execution_interval_minutes <= 0:
+            raise ValueError("execution_interval_minutes must be positive")
         if self.api_retries <= 0:
             raise ValueError("api_retries must be positive")
         if self.api_retry_delay_seconds < 0:
@@ -168,7 +201,9 @@ class EmaAvwapPullbackLiveConfig:
         if self.disable_symbol_hours < 0:
             raise ValueError("disable_symbol_hours must be non-negative")
         object.__setattr__(self, "symbols", symbols)
-        object.__setattr__(self, "entry_exit_mode", entry_exit_mode)
+        object.__setattr__(self, "entry_mode", entry_mode)
+        object.__setattr__(self, "exit_mode", exit_mode)
+        object.__setattr__(self, "exit_band", exit_band)
         object.__setattr__(self, "timeframe", self.timeframe.strip())
         object.__setattr__(
             self, "trailing_tick_timeframe", self.trailing_tick_timeframe.strip()
