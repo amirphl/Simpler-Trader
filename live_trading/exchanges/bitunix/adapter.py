@@ -24,6 +24,8 @@ from .utils import infer_margin_coin_from_symbol, interval_to_milliseconds
 class BitunixExchange(Exchange):
     """Bitunix futures exchange adapter."""
 
+    _KLINE_PAGE_SIZE = 200
+
     def __init__(
         self, config: ExchangeConfig, logger: Optional[logging.Logger] = None
     ) -> None:
@@ -732,14 +734,45 @@ class BitunixExchange(Exchange):
             except (AttributeError, TypeError, ValueError):
                 return 0
 
-        rows = self._client.get_kline_history(
-            symbol=symbol,
-            interval=interval,
-            limit=limit,
-            start_time=start_time,
-            end_time=end_time,
-            kline_type="LAST_PRICE",
-        )
+        requested_limit = max(int(limit), 1)
+        remaining = requested_limit
+        page_end_time = end_time
+        rows_by_time: Dict[int, Dict[str, Any]] = {}
+
+        # Bitunix limits each REST request to 200 klines.  Page backwards so
+        # strategy warm-up can safely request more history than one response.
+        while remaining > 0:
+            page_limit = min(remaining, self._KLINE_PAGE_SIZE)
+            page = self._client.get_kline_history(
+                symbol=symbol,
+                interval=interval,
+                limit=page_limit,
+                start_time=start_time,
+                end_time=page_end_time,
+                kline_type="LAST_PRICE",
+            )
+            if not page:
+                break
+
+            page_times = {row_time(row) for row in page if row_time(row) > 0}
+            new_times = page_times.difference(rows_by_time)
+            for row in page:
+                timestamp = row_time(row)
+                if timestamp > 0:
+                    rows_by_time[timestamp] = row
+            remaining = requested_limit - len(rows_by_time)
+            if remaining <= 0 or not new_times:
+                break
+
+            earliest = min(page_times, default=0)
+            if earliest <= 0 or (start_time is not None and earliest <= start_time):
+                break
+            next_page_end = earliest - 1
+            if page_end_time is not None and next_page_end >= page_end_time:
+                break
+            page_end_time = next_page_end
+
+        rows = list(rows_by_time.values())
         if not rows:
             return []
 
