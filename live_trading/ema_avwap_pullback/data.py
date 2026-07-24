@@ -2,19 +2,14 @@
 
 from __future__ import annotations
 
-import time
-from json import loads
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request
 
 from candle_downloader.binance import interval_to_milliseconds
 from candle_downloader.models import Candle
 
 from backtest.indicators import ema as calc_ema
 
-from .constants import KLINES_RETRIES, KLINES_RETRY_DELAY_SECONDS
 from ._mixin_typing import EmaAvwapMixinTyping
 from .state import _AvwapSnapshot, _PositionRuntime, _SetupState, _SymbolSnapshot
 
@@ -22,13 +17,14 @@ from .state import _AvwapSnapshot, _PositionRuntime, _SetupState, _SymbolSnapsho
 class EmaAvwapDataMixin(EmaAvwapMixinTyping):
     def _fetch_latest_closed_candle(self, symbol: str) -> Candle | None:
         rows = self._fetch_strategy_klines(symbol, self._cfg.timeframe, 3)
-        if rows is None or len(rows) < 2:
+        if rows is None:
             return None
         # The latest-candle poll already includes the forming candle. Reuse these
         # rows during the immediately following live tick instead of issuing a
         # second kline request for the same symbol and interval.
         self._latest_kline_rows_by_symbol[symbol] = rows
-        return Candle.from_binance(symbol, self._cfg.timeframe, rows[-2])
+        closed = self._ready_closed_candles(symbol, self._cfg.timeframe, rows)
+        return closed[-1] if closed else None
 
     def _build_snapshot(self, symbol: str) -> _SymbolSnapshot | None:
         min_history = max(self._cfg.ema_length, self._cfg.consecutive_count) + 2
@@ -39,18 +35,15 @@ class EmaAvwapDataMixin(EmaAvwapMixinTyping):
         )
         if raw is None:
             return None
-        if len(raw) < min_history:
+        closed = self._ready_closed_candles(symbol, self._cfg.timeframe, raw)
+        if len(closed) < min_history:
             self._log.debug(
-                "EmaAvwapPullback: insufficient klines for %s (%s < %s)",
+                "EmaAvwapPullback: insufficient ready closed klines for %s "
+                "(%s < %s)",
                 symbol,
-                len(raw),
+                len(closed),
                 min_history,
             )
-            return None
-
-        candles = [Candle.from_binance(symbol, self._cfg.timeframe, row) for row in raw]
-        closed = candles[:-1]
-        if len(closed) < min_history:
             return None
         closes = [candle.close for candle in closed]
         ema_values = calc_ema(closes, self._cfg.ema_length)
@@ -116,10 +109,6 @@ class EmaAvwapDataMixin(EmaAvwapMixinTyping):
         return live_snapshot, avwap
 
     def _live_avwap_candles(self, snapshot: _SymbolSnapshot) -> Tuple[Candle, ...]:
-        tail_limit = min(
-            max(self._cfg.consecutive_count + 3, 10),
-            self._cfg.max_history_bars,
-        )
         raw = self._latest_kline_rows_by_symbol.get(snapshot.symbol)
         expected_open_ms = (
             snapshot.candle.open_time_ms
@@ -135,12 +124,9 @@ class EmaAvwapDataMixin(EmaAvwapMixinTyping):
             ):
                 raw = None
         if raw is None:
-            raw = self._fetch_strategy_klines(
-                symbol=snapshot.symbol,
-                interval=snapshot.timeframe,
-                limit=tail_limit,
-            )
-        if raw is None:
+            # Kline polling is deliberately asynchronous.  Do not turn a live
+            # signal or exit check into a blocking network request when the
+            # latest Bitunix poll did not include the next forming bar.
             return tuple(snapshot.candles)
 
         tail = [
@@ -175,114 +161,66 @@ class EmaAvwapDataMixin(EmaAvwapMixinTyping):
     def _fetch_strategy_klines(
         self, symbol: str, interval: str, limit: int
     ) -> Optional[List[List]]:
-        last_exc: Optional[Exception] = None
-        retries = max(int(getattr(self._cfg, "api_retries", KLINES_RETRIES)), 1)
-        retry_delay = max(
-            float(
-                getattr(
-                    self._cfg,
-                    "api_retry_delay_seconds",
-                    KLINES_RETRY_DELAY_SECONDS,
-                )
-            ),
-            0.0,
-        )
-        for attempt in range(1, retries + 1):
-            try:
-                rows = self._exchange.get_klines(
-                    symbol=symbol,
-                    interval=interval,
-                    limit=limit,
-                )
-                if rows:
-                    return rows
-                self._log.warning(
-                    "EmaAvwapPullback: exchange.get_klines returned no data for "
-                    "%s (%s) (attempt %d/%d)",
-                    symbol,
-                    interval,
-                    attempt,
-                    retries,
-                )
-            except Exception as exc:
-                last_exc = exc
-                self._log.warning(
-                    "EmaAvwapPullback: exchange.get_klines raised for %s (%s) "
-                    "(attempt %d/%d): %s",
-                    symbol,
-                    interval,
-                    attempt,
-                    retries,
-                    exc,
-                )
-            if attempt < retries and retry_delay > 0:
-                time.sleep(retry_delay)
-
-        self._log.info(
-            "EmaAvwapPullback: falling back to Binance klines for %s (%s)",
-            symbol,
-            interval,
-        )
         try:
-            rows = self._fetch_binance_klines(symbol, interval, limit)
+            rows = self._exchange.get_klines(
+                symbol=symbol,
+                interval=interval,
+                limit=limit,
+            )
             if rows:
                 return rows
+            self._log.warning(
+                "EmaAvwapPullback: Bitunix get_klines returned no data for %s (%s)",
+                symbol,
+                interval,
+            )
         except Exception as exc:
             self._log.warning(
-                "EmaAvwapPullback: Binance fallback failed for %s (%s): %s",
+                "EmaAvwapPullback: Bitunix get_klines failed for %s (%s): %s",
                 symbol,
                 interval,
                 exc,
             )
-
-        self._log.error(
-            "EmaAvwapPullback: all klines fetch attempts failed for %s (%s). "
-            "Last primary error: %s",
-            symbol,
-            interval,
-            last_exc,
-        )
         return None
 
-    def _fetch_binance_klines(
-        self, symbol: str, interval: str, limit: int
-    ) -> List[list]:
-        params = urlencode({"symbol": symbol, "interval": interval, "limit": limit})
-        base_urls = (
-            "https://api.binance.com",
-            "https://api1.binance.com",
-            "https://api-gcp.binance.com",
-            "https://api2.binance.com",
-        )
-        for base in base_urls:
-            url = f"{base}/api/v3/klines?{params}"
-            delay = 1.0
-            for attempt in range(1, 4):
-                try:
-                    opener = self._get_binance_opener()
-                    with opener.open(Request(url), timeout=10) as resp:
-                        rows = loads(resp.read())
-                        return rows
-                except (HTTPError, URLError) as exc:
-                    self._log.warning(
-                        "Binance klines attempt %s host=%s symbol=%s failed: %s",
-                        attempt,
-                        base,
-                        symbol,
-                        exc,
-                    )
-                    if attempt < 3:
-                        time.sleep(delay)
-                        delay = min(delay * 2, 8.0)
-                except Exception as exc:
-                    self._log.warning(
-                        "Error parsing Binance klines host=%s symbol=%s: %s",
-                        base,
-                        symbol,
-                        exc,
-                    )
-                    break
-        return []
+    def _ready_closed_candles(
+        self,
+        symbol: str,
+        interval: str,
+        rows: List[List],
+        *,
+        now: datetime | None = None,
+    ) -> list[Candle]:
+        """Return only bars whose close and configured readiness delay passed.
+
+        Bitunix can return an already-closed last row, or a still-forming last
+        row.  Selecting by time instead of by position avoids assuming that
+        ``rows[-2]`` is always the most recent stable bar.
+        """
+        current_time = now or datetime.now(tz=timezone.utc)
+        if current_time.tzinfo is None:
+            current_time = current_time.replace(tzinfo=timezone.utc)
+        else:
+            current_time = current_time.astimezone(timezone.utc)
+        interval_ms = interval_to_milliseconds(interval)
+        ready_delay = timedelta(seconds=self._cfg.candle_ready_delay_seconds)
+        closed: list[Candle] = []
+        for row in rows:
+            try:
+                candle = Candle.from_binance(symbol, interval, row)
+            except (IndexError, TypeError, ValueError) as exc:
+                self._log.warning(
+                    "EmaAvwapPullback: skipping malformed Bitunix kline for %s "
+                    "(%s): %s",
+                    symbol,
+                    interval,
+                    exc,
+                )
+                continue
+            close_boundary = candle.open_time + timedelta(milliseconds=interval_ms)
+            if current_time >= close_boundary + ready_delay:
+                closed.append(candle)
+        return sorted(closed, key=lambda candle: candle.open_time)
 
     # ------------------------------------------------------------------
     # Setup / entry signal state machine
