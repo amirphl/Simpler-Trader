@@ -9,7 +9,7 @@ from typing import Sequence
 from candle_downloader.models import Candle
 
 from ..exchange import PositionSide
-from .config import Direction, EntryExitMode, PositionSizingMode
+from .config import Direction, EntryMode, ExitBand, ExitMode
 
 class _InsufficientBalanceError(RuntimeError):
     """Raised when the exchange rejects an action due to balance or margin."""
@@ -47,7 +47,7 @@ class _SizingDecision:
     distance: float
     entry_price: float
     estimated_exit_price: float
-    risk_amount_interpretation: str
+    position_notional_budget: float
     base_qty_before_costs: float
     qty_reduction_from_costs: float
     sizing_reference_price: float
@@ -104,12 +104,13 @@ class _EntryCandidate:
     rigid_stop_at_entry: float | None
     trailing_activation_at_entry: float
     quantity: float
-    risk_amount: float
-    risk_amount_interpretation: str
+    position_notional_budget: float
     entry_trigger_mode: str
     sizing: _SizingDecision
     avwap: _AvwapSnapshot
-    entry_exit_mode: EntryExitMode = EntryExitMode.LIVE_MIDDLE_FIRST_BAND
+    entry_mode: EntryMode = EntryMode.LIVE
+    exit_mode: ExitMode = ExitMode.LIVE
+    exit_band: ExitBand = ExitBand.BAND_1
     ema_value: float | None = None
     decision_price: float | None = None
 
@@ -125,13 +126,13 @@ class _PositionRuntime:
     rigid_stop_level: float | None
     trailing_activation_at_entry: float
     entry_trigger_mode: str
-    risk_amount_interpretation: str
-    position_sizing_mode: PositionSizingMode
     last_avwap: _AvwapSnapshot | None = None
     trailing_active: bool = False
     trailing_stop: float | None = None
     extreme_price: float | None = None
-    entry_exit_mode: EntryExitMode = EntryExitMode.LIVE_MIDDLE_FIRST_BAND
+    entry_mode: EntryMode = EntryMode.LIVE
+    exit_mode: ExitMode = ExitMode.LIVE
+    exit_band: ExitBand = ExitBand.BAND_1
     last_ema_value: float | None = None
 
 
