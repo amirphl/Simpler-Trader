@@ -12,7 +12,7 @@ from candle_downloader.models import Candle
 
 from ..exchange import Position, PositionSide
 from ..models import PendingEntryRecord, PositionRecord
-from .config import Direction, EntryExitMode
+from .config import Direction, ExitBand
 from ._mixin_typing import EmaAvwapMixinTyping
 from .state import _AvwapSnapshot, _CrossDecision, _PositionRuntime, _SetupState, _SizingDecision
 
@@ -98,19 +98,17 @@ class EmaAvwapCalculationMixin(EmaAvwapMixinTyping):
             return avwap.upper1 * (1.0 + threshold)
         return avwap.lower1 * (1.0 - threshold)
 
-    def _target_band_number(
-        self, entry_exit_mode: EntryExitMode | None = None
-    ) -> int:
-        mode = self._cfg.entry_exit_mode if entry_exit_mode is None else entry_exit_mode
-        return mode.exit_band_number
+    def _target_band_number(self, exit_band: ExitBand | None = None) -> int:
+        band = self._cfg.exit_band if exit_band is None else exit_band
+        return band.number
 
     def _target_band_level(
         self,
         direction: Direction,
         avwap: _AvwapSnapshot,
-        entry_exit_mode: EntryExitMode | None = None,
+        exit_band: ExitBand | None = None,
     ) -> float:
-        if self._target_band_number(entry_exit_mode) == 2:
+        if self._target_band_number(exit_band) == 2:
             return avwap.upper2 if direction == "long" else avwap.lower2
         return avwap.upper1 if direction == "long" else avwap.lower1
 
@@ -136,25 +134,18 @@ class EmaAvwapCalculationMixin(EmaAvwapMixinTyping):
         *,
         direction: Direction,
         raw_entry_price: float,
-        stop_level: float | None,
-        risk_amount: float,
+        position_notional_budget: float,
     ) -> _SizingDecision | None:
-        if raw_entry_price <= 0:
-            return None
-        distance = 0.0
-        if stop_level is not None:
-            distance = (
-                raw_entry_price - stop_level
-                if direction == "long"
-                else stop_level - raw_entry_price
-            )
-        if self._cfg.position_sizing_mode == "risk_distance" and distance <= 0:
+        if raw_entry_price <= 0 or position_notional_budget <= 0:
             return None
         entry_price = self._apply_entry_slippage(direction, raw_entry_price)
         estimated_exit_price = self._apply_exit_slippage(direction, raw_entry_price)
         entry_slippage_per_unit = abs(entry_price - raw_entry_price)
         exit_slippage_per_unit = abs(estimated_exit_price - raw_entry_price)
-        entry_fee_per_unit = entry_price * self._cfg.maker_fee_pct
+        # Every entry submitted by this strategy is deliberately marketable:
+        # buy limits are at/above the offer and sell limits at/below the bid.
+        # Treat it as taker liquidity for sizing instead of assuming a maker fill.
+        entry_fee_per_unit = entry_price * self._cfg.taker_fee_pct
         exit_fee_per_unit = estimated_exit_price * self._cfg.taker_fee_pct
         total_cost_per_unit = (
             entry_slippage_per_unit
@@ -162,22 +153,15 @@ class EmaAvwapCalculationMixin(EmaAvwapMixinTyping):
             + entry_fee_per_unit
             + exit_fee_per_unit
         )
-        if self._cfg.position_sizing_mode == "risk_amount_per_price":
-            base_qty_before_costs = risk_amount / raw_entry_price
-            effective_price_for_sizing = raw_entry_price + total_cost_per_unit
-            qty = risk_amount / effective_price_for_sizing
-            risk_amount_interpretation = "position_notional_budget"
-        else:
-            qty = risk_amount / distance
-            base_qty_before_costs = qty
-            effective_price_for_sizing = distance
-            risk_amount_interpretation = "stop_loss_risk"
+        base_qty_before_costs = position_notional_budget / entry_price
+        effective_price_for_sizing = raw_entry_price + total_cost_per_unit
+        qty = position_notional_budget / effective_price_for_sizing
         return _SizingDecision(
             qty=qty,
-            distance=distance,
+            distance=0.0,
             entry_price=entry_price,
             estimated_exit_price=estimated_exit_price,
-            risk_amount_interpretation=risk_amount_interpretation,
+            position_notional_budget=position_notional_budget,
             base_qty_before_costs=base_qty_before_costs,
             qty_reduction_from_costs=max(base_qty_before_costs - qty, 0.0),
             sizing_reference_price=raw_entry_price,
@@ -371,7 +355,7 @@ class EmaAvwapCalculationMixin(EmaAvwapMixinTyping):
     # Utility helpers
     # ------------------------------------------------------------------
 
-    def _compute_risk_amount(self, symbol: str) -> float:
+    def _compute_position_notional_budget(self, symbol: str) -> float:
         balance = self._safe_get_balance()
         if balance is None:
             return 0.0
@@ -384,7 +368,25 @@ class EmaAvwapCalculationMixin(EmaAvwapMixinTyping):
                 symbol,
             )
             return 0.0
-        return balance * (self._cfg.equity_risk_pct / 100.0)
+        requested_budget = balance * (self._cfg.position_notional_pct / 100.0)
+        percentage_cap = balance * (self._cfg.max_position_size_pct / 100.0)
+        budget = min(
+            requested_budget,
+            percentage_cap,
+            self._cfg.max_entry_notional_usdt,
+        )
+        if budget < requested_budget:
+            self._log.info(
+                "EmaAvwapPullback: capped %s entry notional budget from %.8f "
+                "to %.8f USDT (max_position_size_pct=%.4f, "
+                "max_entry_notional_usdt=%.8f)",
+                symbol,
+                requested_budget,
+                budget,
+                self._cfg.max_position_size_pct,
+                self._cfg.max_entry_notional_usdt,
+            )
+        return budget
 
     def _safe_get_balance(self) -> Optional[float]:
         try:
