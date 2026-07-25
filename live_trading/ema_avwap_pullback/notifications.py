@@ -7,6 +7,7 @@ from typing import Optional
 
 from ..models import PositionRecord
 from ._mixin_typing import EmaAvwapMixinTyping
+from .config import EntryMode
 from .state import _AvwapSnapshot, _EntryCandidate, _PositionRuntime
 
 
@@ -29,8 +30,8 @@ class EmaAvwapNotificationMixin(EmaAvwapMixinTyping):
             )
 
     def _notify_entry_signal(self, candidate: _EntryCandidate) -> None:
-        target_band = candidate.entry_exit_mode.exit_band_number
-        if candidate.entry_exit_mode.uses_closed_candle_entry:
+        target_band = candidate.exit_band.number
+        if candidate.entry_mode is EntryMode.CLOSE:
             reason = (
                 "bearish candle closed below AVWAP middle"
                 if candidate.direction == "long"
@@ -39,13 +40,14 @@ class EmaAvwapNotificationMixin(EmaAvwapMixinTyping):
         else:
             reason = "live price touched AVWAP middle"
         target = self._target_band_level(
-            candidate.direction, candidate.avwap, candidate.entry_exit_mode
+            candidate.direction, candidate.avwap, candidate.exit_band
         )
         self._send_trade_notification(
             symbol=candidate.symbol,
             event="ENTRY SIGNAL",
             lines=[
-                f"Mode: {candidate.entry_exit_mode.value}",
+                f"Entry Mode: {candidate.entry_mode.value}",
+                f"Exit Mode: {candidate.exit_mode.value}",
                 f"Timeframe: {self._cfg.timeframe}",
                 f"Side: {candidate.side.value}",
                 f"Trigger: {candidate.entry_trigger_mode}",
@@ -83,11 +85,13 @@ class EmaAvwapNotificationMixin(EmaAvwapMixinTyping):
             symbol=position.symbol,
             event="EXIT SIGNAL",
             lines=[
-                f"Mode: {runtime.entry_exit_mode.value}",
+                f"Entry Mode: {runtime.entry_mode.value}",
+                f"Exit Mode: {runtime.exit_mode.value}",
+                f"Exit Band: {runtime.exit_band.value}",
                 f"Timeframe: {self._cfg.timeframe}",
                 f"Side: {position.side.value}",
                 f"Reason: {reason}",
-                f"Live Price: {live_price:.8g}",
+                f"Observed Price: {live_price:.8g}",
                 f"Trigger Level: {target_price:.8g}",
                 f"AVWAP Middle: {avwap.vwap:.8g}",
                 f"EMA: {runtime.last_ema_value:.8g}"
@@ -109,9 +113,10 @@ class EmaAvwapNotificationMixin(EmaAvwapMixinTyping):
         stop_price: float | None,
     ) -> None:
         avwap = runtime.last_avwap
-        target_band = runtime.entry_exit_mode.exit_band_number
+        target_band = runtime.exit_band.number
         lines = [
-            f"Mode: {runtime.entry_exit_mode.value}",
+            f"Entry Mode: {runtime.entry_mode.value}",
+            f"Exit Mode: {runtime.exit_mode.value}",
             f"Timeframe: {self._cfg.timeframe}",
             f"Side: {position.side.value}",
             f"Entry: {position.entry_price:.8g}",
@@ -135,7 +140,7 @@ class EmaAvwapNotificationMixin(EmaAvwapMixinTyping):
                     if runtime.last_ema_value is not None
                     else "EMA: unavailable",
                     f"Exit Band: {target_band} @ "
-                    f"{self._target_band_level(runtime.direction, avwap, runtime.entry_exit_mode):.8g}",
+                    f"{self._target_band_level(runtime.direction, avwap, runtime.exit_band):.8g}",
                 ]
             )
         self._send_trade_notification(
@@ -150,13 +155,13 @@ class EmaAvwapNotificationMixin(EmaAvwapMixinTyping):
         exit_price: Optional[float],
         runtime: _PositionRuntime | None = None,
     ) -> None:
-        mode = (
-            runtime.entry_exit_mode
-            if runtime is not None
-            else self._cfg.entry_exit_mode
-        )
+        entry_mode = runtime.entry_mode if runtime is not None else self._cfg.entry_mode
+        exit_mode = runtime.exit_mode if runtime is not None else self._cfg.exit_mode
+        exit_band = runtime.exit_band if runtime is not None else self._cfg.exit_band
         lines = [
-            f"Mode: {mode.value}",
+            f"Entry Mode: {entry_mode.value}",
+            f"Exit Mode: {exit_mode.value}",
+            f"Exit Band: {exit_band.value}",
             f"Timeframe: {self._cfg.timeframe}",
             f"Side: {position.side.value}",
             f"Entry: {position.entry_price:.8g}",
