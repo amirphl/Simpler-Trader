@@ -11,6 +11,7 @@ from ..exchange import Position, PositionSide
 from ..models import PendingEntryRecord, PositionRecord
 from .constants import POSITION_MISS_THRESHOLD
 from ._mixin_typing import EmaAvwapMixinTyping
+from .config import ExitMode
 from .state import (
     _EntryCandidate,
     _ExitDecision,
@@ -24,9 +25,10 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
         try:
             exchange_positions = self._exchange.get_current_positions()
         except Exception as exc:
+            self._position_sync_healthy = False
             self._log.warning(
                 "EmaAvwapPullback: get_current_positions failed; local state "
-                "left unchanged: %s",
+                "left unchanged and new entries are blocked: %s",
                 exc,
             )
             return
@@ -41,6 +43,7 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
                     "refusing to manage an ambiguous hedge state",
                     position.symbol,
                 )
+                self._position_sync_healthy = False
                 return
             by_symbol[position.symbol] = position
 
@@ -91,7 +94,9 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
                 status="OPEN",
                 notes=(
                     f"Filled from pending {pending.order_key}; "
-                    f"entry_exit_mode={runtime.entry_exit_mode.value}"
+                    f"entry_mode={runtime.entry_mode.value}; "
+                    f"exit_mode={runtime.exit_mode.value}; "
+                    f"exit_band={runtime.exit_band.value}"
                 ),
             )
             self._state.active_positions[symbol] = record
@@ -123,9 +128,9 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
 
             self._notify_trade_opened(record, runtime, stop_price)
             self._log.info(
-                "EmaAvwapPullback: ENTRY EXECUTION filled mode=%s symbol=%s "
+                "EmaAvwapPullback: ENTRY EXECUTION filled entry_mode=%s symbol=%s "
                 "side=%s entry=%.8f qty=%.8f rigid_stop=%s trigger=%s",
-                runtime.entry_exit_mode.value,
+                runtime.entry_mode.value,
                 symbol,
                 ex_pos.side.value,
                 entry_price,
@@ -173,6 +178,7 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
                 symbol,
                 POSITION_MISS_THRESHOLD,
             )
+        self._position_sync_healthy = True
 
     def _sync_active_exchange_position(
         self, record: PositionRecord, exchange_position: Position, now: datetime
@@ -384,8 +390,8 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
     def _claim_untracked_exchange_position(
         self, ex_pos: Position, now: datetime
     ) -> None:
-        if ex_pos.symbol not in self._cfg.symbols:
-            return
+        # Account-wide concurrency limits must include manual/other-bot
+        # positions, even when their symbol is outside this strategy's scan.
         entry_price = ex_pos.entry_price or self._safe_fetch_price(ex_pos.symbol) or 0.0
         if entry_price <= 0:
             self._log.warning(
@@ -440,10 +446,10 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
             rigid_stop_level=initial_rigid_stop,
             trailing_activation_at_entry=candidate.trailing_activation_at_entry,
             entry_trigger_mode=candidate.entry_trigger_mode,
-            risk_amount_interpretation=candidate.risk_amount_interpretation,
-            position_sizing_mode=self._cfg.position_sizing_mode,
             last_avwap=candidate.avwap,
-            entry_exit_mode=candidate.entry_exit_mode,
+            entry_mode=candidate.entry_mode,
+            exit_mode=candidate.exit_mode,
+            exit_band=candidate.exit_band,
             last_ema_value=candidate.ema_value,
         )
 
@@ -477,23 +483,24 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
             )
         except Exception as exc:
             self._log.warning(
-                "EmaAvwapPullback: mode=%s could not refresh closed-bar "
+                "EmaAvwapPullback: exit_mode=%s could not refresh closed-bar "
                 "AVWAP for trailing management on %s: %s",
-                runtime.entry_exit_mode.value,
+                runtime.exit_mode.value,
                 snapshot.symbol,
                 exc,
             )
             return
 
         runtime.last_avwap = avwap
+        runtime.last_ema_value = snapshot.ema_value
         self._sync_runtime_to_record(record, runtime)
         self._save_state()
         self._log.info(
-            "EmaAvwapPullback: trailing AVWAP refresh mode=%s symbol=%s "
+            "EmaAvwapPullback: trailing AVWAP refresh exit_mode=%s symbol=%s "
             "closed_candle=%s middle=%.8f stdev=%.8f "
             "upper1=%.8f lower1=%.8f upper2=%.8f lower2=%.8f "
             "target_band=%d target=%.8f rigid_stop=%s",
-            runtime.entry_exit_mode.value,
+            runtime.exit_mode.value,
             snapshot.symbol,
             snapshot.candle.close_time.isoformat(),
             avwap.vwap,
@@ -502,14 +509,48 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
             avwap.lower1,
             avwap.upper2,
             avwap.lower2,
-            runtime.entry_exit_mode.exit_band_number,
+            runtime.exit_band.number,
             self._target_band_level(
-                runtime.direction, avwap, runtime.entry_exit_mode
+                runtime.direction, avwap, runtime.exit_band
             ),
             f"{runtime.rigid_stop_level:.8f}"
             if runtime.rigid_stop_level is not None
             else "disabled",
         )
+        if runtime.exit_mode is not ExitMode.CLOSE:
+            return
+
+        target_band = runtime.exit_band.number
+        target = self._target_band_level(runtime.direction, avwap, runtime.exit_band)
+        closed_price = snapshot.candle.close
+        if not self._target_is_touched(
+            direction=runtime.direction,
+            price=closed_price,
+            target=target,
+        ):
+            return
+
+        reason = f"AVWAP band {target_band} target on candle close"
+        self._log.info(
+            "EmaAvwapPullback: EXIT SIGNAL exit_mode=%s symbol=%s reason=%s "
+            "closed_price=%.8f target=%.8f middle=%.8f candle=%s",
+            runtime.exit_mode.value,
+            snapshot.symbol,
+            reason,
+            closed_price,
+            target,
+            avwap.vwap,
+            snapshot.candle.close_time.isoformat(),
+        )
+        self._notify_exit_signal(
+            record,
+            runtime=runtime,
+            reason=reason,
+            live_price=closed_price,
+            target_price=target,
+            avwap=avwap,
+        )
+        self._close_position(record, now, reason)
 
     def _manage_live_position_exits(self, now: datetime) -> None:
         for symbol, record in list(self._state.active_positions.items()):
@@ -517,6 +558,33 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
                 continue
             runtime = self._position_runtime_by_symbol.get(symbol)
             if runtime is None:
+                continue
+            if runtime.exit_mode is ExitMode.CLOSE:
+                # CLOSE governs only the AVWAP profit target. Protective stops
+                # remain live; check the confirmed rigid stop without building
+                # an on-the-fly AVWAP snapshot.
+                price = self._safe_fetch_price(symbol)
+                if (
+                    price is not None
+                    and price > 0
+                    and runtime.rigid_stop_level is not None
+                    and self._is_stop_breached_by_price(
+                        direction=runtime.direction,
+                        price=price,
+                        stop_price=runtime.rigid_stop_level,
+                    )
+                ):
+                    reason = "Rigid stop loss"
+                    if runtime.last_avwap is not None:
+                        self._notify_exit_signal(
+                            record,
+                            runtime=runtime,
+                            reason=reason,
+                            live_price=price,
+                            target_price=runtime.rigid_stop_level,
+                            avwap=runtime.last_avwap,
+                        )
+                    self._close_position(record, now, reason)
                 continue
             snapshot = self._last_snapshot_by_symbol.get(symbol)
             if snapshot is None:
@@ -527,9 +595,9 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
                 )
             except Exception as exc:
                 self._log.warning(
-                    "EmaAvwapPullback: mode=%s live exit indicator refresh "
+                    "EmaAvwapPullback: exit_mode=%s live exit indicator refresh "
                     "failed for %s: %s",
-                    runtime.entry_exit_mode.value,
+                    runtime.exit_mode.value,
                     symbol,
                     exc,
                 )
@@ -538,16 +606,16 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
             price = self._safe_fetch_price(symbol)
             if price is None or price <= 0:
                 continue
-            target_band = runtime.entry_exit_mode.exit_band_number
+            target_band = runtime.exit_band.number
             target = self._target_band_level(
-                runtime.direction, avwap, runtime.entry_exit_mode
+                runtime.direction, avwap, runtime.exit_band
             )
             self._log.info(
-                "EmaAvwapPullback: live exit evaluation mode=%s symbol=%s "
+                "EmaAvwapPullback: live exit evaluation exit_mode=%s symbol=%s "
                 "direction=%s live=%.8f forming_close=%s ema=%.8f "
                 "middle=%.8f target_band=%d target=%.8f upper1=%.8f "
                 "lower1=%.8f upper2=%.8f lower2=%.8f rigid_stop=%s",
-                runtime.entry_exit_mode.value,
+                runtime.exit_mode.value,
                 symbol,
                 runtime.direction,
                 price,
@@ -565,14 +633,14 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
                 else "disabled",
             )
             self._save_state()
-            if self._target_is_touched(
+            if runtime.exit_mode is ExitMode.LIVE and self._target_is_touched(
                 direction=runtime.direction, price=price, target=target
             ):
                 reason = f"AVWAP band {target_band} target"
                 self._log.info(
-                    "EmaAvwapPullback: EXIT SIGNAL mode=%s symbol=%s "
+                    "EmaAvwapPullback: EXIT SIGNAL exit_mode=%s symbol=%s "
                     "reason=%s live=%.8f target=%.8f middle=%.8f",
-                    runtime.entry_exit_mode.value,
+                    runtime.exit_mode.value,
                     symbol,
                     reason,
                     price,
@@ -596,9 +664,9 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
             ):
                 reason = "Rigid stop loss"
                 self._log.warning(
-                    "EmaAvwapPullback: EXIT SIGNAL mode=%s symbol=%s "
+                    "EmaAvwapPullback: EXIT SIGNAL exit_mode=%s symbol=%s "
                     "reason=%s live=%.8f rigid_stop=%.8f",
-                    runtime.entry_exit_mode.value,
+                    runtime.exit_mode.value,
                     symbol,
                     reason,
                     price,
@@ -972,11 +1040,11 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
         self, position: PositionRecord, now: datetime, reason: str
     ) -> None:
         runtime = self._position_runtime_by_symbol.get(position.symbol)
-        mode = runtime.entry_exit_mode if runtime is not None else self._cfg.entry_exit_mode
+        exit_mode = runtime.exit_mode if runtime is not None else self._cfg.exit_mode
         self._log.info(
-            "EmaAvwapPullback: EXIT EXECUTION requested mode=%s symbol=%s "
+            "EmaAvwapPullback: EXIT EXECUTION requested exit_mode=%s symbol=%s "
             "side=%s reason=%s",
-            mode.value,
+            exit_mode.value,
             position.symbol,
             position.side.value,
             reason,
@@ -1025,9 +1093,9 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
         self._save_position_to_db(position)
         self._save_state()
         self._log.info(
-            "EmaAvwapPullback: EXIT EXECUTION filled mode=%s symbol=%s "
+            "EmaAvwapPullback: EXIT EXECUTION filled exit_mode=%s symbol=%s "
             "side=%s exit=%s qty=%.8f pnl=%s reason=%s",
-            mode.value,
+            exit_mode.value,
             position.symbol,
             position.side.value,
             f"{exit_price:.8f}" if exit_price is not None else "unavailable",
@@ -1054,7 +1122,7 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
                 max(0.0, (reference - pending.signal_time).total_seconds())
                 // tf_seconds
             )
-            if bars_since > self._cfg.entry_cancel_bars:
+            if bars_since >= self._cfg.entry_cancel_bars:
                 self._cancel_pending_entry(
                     pending, f"entry timeout after {bars_since} bars"
                 )
