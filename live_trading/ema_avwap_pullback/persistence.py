@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
 import sqlite3
+import tempfile
 from datetime import datetime
-from typing import Any, Dict, Mapping
+from pathlib import Path
+from typing import Any, Dict, Mapping, TextIO
 
 from ..exchange import MarginMode, PositionSide
 from ..models import PendingEntryRecord, PositionRecord, TradingState
-from .config import EntryExitMode
+from .config import EntryMode, ExitBand, ExitMode
 from ._mixin_typing import EmaAvwapMixinTyping
 from .state import (
     _AvwapSnapshot,
@@ -22,11 +26,67 @@ from .state import (
 
 
 class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
+    _STATE_SCHEMA_VERSION = 3
+    _STATE_ENVIRONMENT = "mainnet"
+
     def _init_persistence(self) -> None:
         self._cfg.state_file.parent.mkdir(parents=True, exist_ok=True)
-        self._cfg.positions_db.parent.mkdir(parents=True, exist_ok=True)
-        self._init_positions_db()
-        self._load_state()
+        self._acquire_state_lock()
+        try:
+            self._cfg.positions_db.parent.mkdir(parents=True, exist_ok=True)
+            self._init_positions_db()
+            self._load_state()
+        except Exception:
+            self._release_state_lock()
+            raise
+
+    def _acquire_state_lock(self) -> None:
+        state_lock_path = self._cfg.state_file.with_name(
+            f"{self._cfg.state_file.name}.lock"
+        )
+        lock_paths = [state_lock_path]
+        if self._cfg.account_lock_file is not None:
+            self._cfg.account_lock_file.parent.mkdir(parents=True, exist_ok=True)
+            lock_paths.insert(0, self._cfg.account_lock_file)
+
+        handles: list[TextIO] = []
+        try:
+            for lock_path in lock_paths:
+                handle = lock_path.open("a+", encoding="utf-8")
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except Exception:
+                    handle.close()
+                    raise
+                handles.append(handle)
+        except BlockingIOError as exc:
+            for handle in reversed(handles):
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                handle.close()
+            raise RuntimeError(
+                "EMA+AVWAP state/account lock is already held by another process. "
+                "Stop the other process before starting this bot."
+            ) from exc
+        except Exception:
+            for handle in reversed(handles):
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                handle.close()
+            raise
+        self._state_lock_handles = handles
+
+    def _release_state_lock(self) -> None:
+        handles: list[TextIO] = getattr(self, "_state_lock_handles", [])
+        if not handles:
+            return
+        self._state_lock_handles = []
+        for handle in reversed(handles):
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+
+    def _close_persistence(self) -> None:
+        self._release_state_lock()
 
     def _init_positions_db(self) -> None:
         conn = sqlite3.connect(str(self._cfg.positions_db))
@@ -75,6 +135,15 @@ class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
         try:
             with self._cfg.state_file.open("r", encoding="utf-8") as handle:
                 data = json.load(handle)
+            if (
+                data.get("schema_version") != self._STATE_SCHEMA_VERSION
+                or data.get("environment") != self._STATE_ENVIRONMENT
+            ):
+                raise RuntimeError(
+                    "state is not a mainnet-only EMA+AVWAP state file; refusing "
+                    "to load it. Reconcile and remove/rename the old state file "
+                    "before starting the mainnet bot."
+                )
             self._state = TradingState(
                 disabled_symbols={
                     symbol: self._parse_dt(value)
@@ -138,18 +207,20 @@ class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
                 len(self._active_setups),
             )
         except Exception as exc:
-            self._log.error("EmaAvwapPullback: failed to load state: %s", exc)
-            self._state = TradingState()
-            self._active_setups = {}
-            self._last_price_by_setup_key = {}
-            self._last_middle_by_setup_key = {}
-            self._pending_meta_by_key = {}
-            self._position_runtime_by_symbol = {}
-            self._position_miss_count_by_symbol = {}
+            self._log.critical(
+                "EmaAvwapPullback: failed to load state; refusing to start so "
+                "pending orders and positions cannot be forgotten: %s",
+                exc,
+            )
+            raise RuntimeError(
+                f"EMA+AVWAP state load failed for {self._cfg.state_file}"
+            ) from exc
 
     def _save_state(self) -> None:
         try:
             data = {
+                "schema_version": self._STATE_SCHEMA_VERSION,
+                "environment": self._STATE_ENVIRONMENT,
                 "disabled_symbols": {
                     symbol: value.isoformat()
                     for symbol, value in self._state.disabled_symbols.items()
@@ -196,10 +267,42 @@ class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
                 },
                 "position_miss_counts": self._position_miss_count_by_symbol,
             }
-            with self._cfg.state_file.open("w", encoding="utf-8") as handle:
-                json.dump(data, handle, indent=2)
+            temp_fd, temp_name = tempfile.mkstemp(
+                prefix=f".{self._cfg.state_file.name}.",
+                suffix=".tmp",
+                dir=str(self._cfg.state_file.parent),
+            )
+            temp_path = Path(temp_name)
+            try:
+                with os.fdopen(temp_fd, "w", encoding="utf-8") as handle:
+                    temp_fd = -1
+                    json.dump(data, handle, indent=2)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temp_path, self._cfg.state_file)
+                self._fsync_state_directory()
+            finally:
+                if temp_fd >= 0:
+                    os.close(temp_fd)
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
         except Exception as exc:
             self._log.error("EmaAvwapPullback: failed to save state: %s", exc)
+
+    def _fsync_state_directory(self) -> None:
+        """Persist the rename itself where the platform supports directory fsync."""
+        try:
+            directory_fd = os.open(self._cfg.state_file.parent, os.O_RDONLY)
+        except OSError:
+            return
+        try:
+            os.fsync(directory_fd)
+        except OSError:
+            pass
+        finally:
+            os.close(directory_fd)
 
     def _save_position_to_db(self, position: PositionRecord) -> None:
         try:
@@ -380,10 +483,11 @@ class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
             "rigid_stop_at_entry": candidate.rigid_stop_at_entry,
             "trailing_activation_at_entry": candidate.trailing_activation_at_entry,
             "quantity": candidate.quantity,
-            "risk_amount": candidate.risk_amount,
-            "risk_amount_interpretation": candidate.risk_amount_interpretation,
+            "position_notional_budget": candidate.position_notional_budget,
             "entry_trigger_mode": candidate.entry_trigger_mode,
-            "entry_exit_mode": candidate.entry_exit_mode.value,
+            "entry_mode": candidate.entry_mode.value,
+            "exit_mode": candidate.exit_mode.value,
+            "exit_band": candidate.exit_band.value,
             "ema_value": candidate.ema_value,
             "decision_price": candidate.decision_price,
             "sizing": self._sizing_to_dict(candidate.sizing),
@@ -406,19 +510,13 @@ class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
             rigid_stop_at_entry=data.get("rigid_stop_at_entry"),
             trailing_activation_at_entry=float(data["trailing_activation_at_entry"]),
             quantity=float(data["quantity"]),
-            risk_amount=float(data["risk_amount"]),
-            risk_amount_interpretation=str(data["risk_amount_interpretation"]),
+            position_notional_budget=float(data["position_notional_budget"]),
             entry_trigger_mode=str(data["entry_trigger_mode"]),
             sizing=self._sizing_from_dict(data["sizing"]),
             avwap=self._avwap_from_dict(data["avwap"]),
-            entry_exit_mode=EntryExitMode(
-                str(
-                    data.get(
-                        "entry_exit_mode",
-                        EntryExitMode.LIVE_MIDDLE_FIRST_BAND.value,
-                    )
-                )
-            ),
+            entry_mode=EntryMode(str(data["entry_mode"])),
+            exit_mode=ExitMode(str(data["exit_mode"])),
+            exit_band=ExitBand(str(data["exit_band"])),
             ema_value=(
                 float(data["ema_value"]) if data.get("ema_value") is not None else None
             ),
@@ -435,7 +533,7 @@ class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
             "distance": sizing.distance,
             "entry_price": sizing.entry_price,
             "estimated_exit_price": sizing.estimated_exit_price,
-            "risk_amount_interpretation": sizing.risk_amount_interpretation,
+            "position_notional_budget": sizing.position_notional_budget,
             "base_qty_before_costs": sizing.base_qty_before_costs,
             "qty_reduction_from_costs": sizing.qty_reduction_from_costs,
             "sizing_reference_price": sizing.sizing_reference_price,
@@ -453,7 +551,7 @@ class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
             distance=float(data["distance"]),
             entry_price=float(data["entry_price"]),
             estimated_exit_price=float(data["estimated_exit_price"]),
-            risk_amount_interpretation=str(data["risk_amount_interpretation"]),
+            position_notional_budget=float(data["position_notional_budget"]),
             base_qty_before_costs=float(data["base_qty_before_costs"]),
             qty_reduction_from_costs=float(data["qty_reduction_from_costs"]),
             sizing_reference_price=float(data["sizing_reference_price"]),
@@ -476,9 +574,9 @@ class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
             "rigid_stop_level": runtime.rigid_stop_level,
             "trailing_activation_at_entry": runtime.trailing_activation_at_entry,
             "entry_trigger_mode": runtime.entry_trigger_mode,
-            "risk_amount_interpretation": runtime.risk_amount_interpretation,
-            "position_sizing_mode": runtime.position_sizing_mode,
-            "entry_exit_mode": runtime.entry_exit_mode.value,
+            "entry_mode": runtime.entry_mode.value,
+            "exit_mode": runtime.exit_mode.value,
+            "exit_band": runtime.exit_band.value,
             "last_ema_value": runtime.last_ema_value,
             "last_avwap": self._avwap_to_dict(runtime.last_avwap)
             if runtime.last_avwap
@@ -499,22 +597,15 @@ class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
             rigid_stop_level=data.get("rigid_stop_level"),
             trailing_activation_at_entry=float(data["trailing_activation_at_entry"]),
             entry_trigger_mode=str(data["entry_trigger_mode"]),
-            risk_amount_interpretation=str(data["risk_amount_interpretation"]),
-            position_sizing_mode=str(data["position_sizing_mode"]),
             last_avwap=self._avwap_from_dict(data["last_avwap"])
             if data.get("last_avwap")
             else None,
             trailing_active=bool(data.get("trailing_active", False)),
             trailing_stop=data.get("trailing_stop"),
             extreme_price=data.get("extreme_price"),
-            entry_exit_mode=EntryExitMode(
-                str(
-                    data.get(
-                        "entry_exit_mode",
-                        EntryExitMode.LIVE_MIDDLE_FIRST_BAND.value,
-                    )
-                )
-            ),
+            entry_mode=EntryMode(str(data["entry_mode"])),
+            exit_mode=ExitMode(str(data["exit_mode"])),
+            exit_band=ExitBand(str(data["exit_band"])),
             last_ema_value=(
                 float(data["last_ema_value"])
                 if data.get("last_ema_value") is not None
