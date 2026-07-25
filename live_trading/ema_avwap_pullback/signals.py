@@ -9,9 +9,9 @@ from uuid import uuid4
 
 from candle_downloader.models import Candle
 
-from ..exchange import OrderResult
+from ..exchange import OrderResult, PositionSide
 from ..models import PendingEntryRecord
-from .config import Direction
+from .config import Direction, EntryMode
 from ._mixin_typing import EmaAvwapMixinTyping
 from .state import (
     _AvwapSnapshot,
@@ -22,6 +22,10 @@ from .state import (
     _SetupState,
     _SymbolSnapshot,
 )
+
+
+class _EntryNoLongerMarketableError(RuntimeError):
+    """Raised when a marketable entry would become a resting limit order."""
 
 
 class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
@@ -234,10 +238,20 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
         setup = self._active_setups.get(self._setup_key(snapshot.symbol, direction))
         if setup is None:
             return False
+        if self._setup_is_expired(setup, snapshot):
+            self._discard_setup(setup, "maximum setup age exceeded")
+            return False
         if snapshot.candle.close_time <= setup.detected_time:
             return False
+        if not self._price_respects_ema(
+            direction=setup.direction,
+            price=snapshot.candle.close,
+            ema_value=snapshot.ema_value,
+        ):
+            self._discard_setup(setup, "closed price crossed the EMA")
+            return False
 
-        if self._cfg.entry_exit_mode.uses_closed_candle_entry:
+        if self._cfg.entry_mode is EntryMode.CLOSE:
             return self._process_closed_candle_setup(setup, snapshot, now)
 
         self._active_setups[self._setup_key(setup.symbol, setup.direction)] = (
@@ -248,7 +262,7 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             "EmaAvwapPullback: entry evaluation mode=%s symbol=%s "
             "direction=%s trigger=live_middle_touch close=%.8f ema=%.8f "
             "result=waiting_for_live_tick",
-            self._cfg.entry_exit_mode.value,
+            self._cfg.entry_mode.value,
             setup.symbol,
             setup.direction,
             snapshot.candle.close,
@@ -274,7 +288,7 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             self._log.warning(
                 "EmaAvwapPullback: mode=%s cannot build closed-candle "
                 "indicators for %s %s: %s",
-                self._cfg.entry_exit_mode.value,
+                self._cfg.entry_mode.value,
                 setup.direction,
                 setup.symbol,
                 exc,
@@ -298,7 +312,7 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 "EmaAvwapPullback: entry evaluation mode=%s symbol=%s "
                 "setup_direction=%s candle_open=%.8f candle_close=%.8f "
                 "closed_ema=%.8f closed_middle=%.8f result=waiting_for_pullback",
-                self._cfg.entry_exit_mode.value,
+                self._cfg.entry_mode.value,
                 setup.symbol,
                 setup.direction,
                 snapshot.candle.open,
@@ -318,7 +332,7 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             "EmaAvwapPullback: entry evaluation mode=%s symbol=%s "
             "setup_direction=%s candle_open=%.8f closed_price=%.8f "
             "closed_ema=%.8f closed_middle=%.8f result=%s",
-            self._cfg.entry_exit_mode.value,
+            self._cfg.entry_mode.value,
             setup.symbol,
             setup.direction,
             snapshot.candle.open,
@@ -336,9 +350,9 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
         current_price = self._safe_fetch_price(snapshot.symbol)
         if current_price is None or current_price <= 0:
             self._log.warning(
-                "EmaAvwapPullback: mode=%s entry skipped for %s because live "
+                "EmaAvwapPullback: entry_mode=%s entry skipped for %s because live "
                 "execution price is unavailable",
-                self._cfg.entry_exit_mode.value,
+                self._cfg.entry_mode.value,
                 snapshot.symbol,
             )
             return False
@@ -368,7 +382,7 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             "anchor=%s candle_close=%s vwap=%.8f stdev=%.8f "
             "lower1=%.8f upper1=%.8f lower2=%.8f upper2=%.8f "
             "lower3=%.8f upper3=%.8f",
-            self._cfg.entry_exit_mode.value,
+            self._cfg.entry_mode.value,
             context,
             setup.symbol,
             setup.direction,
@@ -385,7 +399,7 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
         )
 
     def _process_live_setup_crosses(self, now: datetime) -> None:
-        if self._cfg.entry_exit_mode.uses_closed_candle_entry:
+        if self._cfg.entry_mode is EntryMode.CLOSE:
             return
         for key, setup in list(self._active_setups.items()):
             symbol = setup.symbol
@@ -407,7 +421,7 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 self._log.warning(
                     "EmaAvwapPullback: mode=%s live indicator refresh failed "
                     "for %s %s: %s",
-                    self._cfg.entry_exit_mode.value,
+                    self._cfg.entry_mode.value,
                     setup.direction,
                     setup.symbol,
                     exc,
@@ -417,7 +431,9 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             current_price = self._safe_fetch_price(symbol)
             if current_price is None or current_price <= 0:
                 continue
-
+            if self._setup_is_expired(setup, live_snapshot):
+                self._discard_setup(setup, "maximum setup age exceeded")
+                continue
             last_price = self._last_price_by_setup_key.get(key)
             last_middle = self._last_middle_by_setup_key.get(key)
             first_observation = last_price is None or last_middle is None
@@ -438,12 +454,10 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                         avwap.vwap,
                     )
                 else:
-                    self._active_setups[key] = replace(
-                        setup, is_waiting_for_cross=True
+                    self._discard_setup(
+                        setup,
+                        "first live observation was not at a favorable AVWAP cross",
                     )
-                    self._last_price_by_setup_key[key] = current_price
-                    self._last_middle_by_setup_key[key] = avwap.vwap
-                    self._save_state()
                     continue
             else:
                 assert last_price is not None and last_middle is not None
@@ -466,7 +480,7 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 "reason=live_price_touched_avwap_middle previous=%.8f live=%.8f "
                 "ema=%.8f middle=%.8f upper1=%.8f lower1=%.8f "
                 "upper2=%.8f lower2=%.8f forming_close=%s",
-                self._cfg.entry_exit_mode.value,
+                self._cfg.entry_mode.value,
                 symbol,
                 setup.direction,
                 current_price if last_price is None else last_price,
@@ -538,16 +552,18 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             self._log.warning(
                 "EmaAvwapPullback: mode=%s entry skipped for %s because current "
                 "price is unavailable",
-                self._cfg.entry_exit_mode.value,
+                self._cfg.entry_mode.value,
                 snapshot.symbol,
             )
             return None
 
-        risk_amount = self._compute_risk_amount(snapshot.symbol)
-        if risk_amount <= 0:
+        position_notional_budget = self._compute_position_notional_budget(
+            snapshot.symbol
+        )
+        if position_notional_budget <= 0:
             self._log.warning(
-                "EmaAvwapPullback: entry skipped for %s %s due to non-positive "
-                "risk amount",
+                "EmaAvwapPullback: entry skipped for %s %s due to a non-positive "
+                "position-notional budget",
                 snapshot.symbol,
                 setup.direction,
             )
@@ -555,53 +571,42 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
 
         raw_entry_price = (
             current_price
-            if self._cfg.entry_exit_mode.uses_closed_candle_entry
+            if self._cfg.entry_mode is EntryMode.CLOSE
             else avwap.vwap
         )
-        rigid_stop_level = self._rigid_stop_level(
+        worst_case_entry_price = self._apply_entry_slippage(
             setup.direction, raw_entry_price
+        )
+        rigid_stop_level = self._rigid_stop_level(
+            setup.direction, worst_case_entry_price
         )
         sizing = self._build_sizing_decision(
             direction=setup.direction,
             raw_entry_price=raw_entry_price,
-            stop_level=rigid_stop_level,
-            risk_amount=risk_amount,
+            position_notional_budget=position_notional_budget,
         )
         if sizing is None or sizing.qty <= 0:
             self._log.warning(
                 "EmaAvwapPullback: mode=%s entry skipped for %s %s because "
-                "rigid-stop sizing is unavailable (entry=%.8f rigid_stop=%s "
-                "sizing_mode=%s qty=%s)",
-                self._cfg.entry_exit_mode.value,
+                "notional-budget sizing is unavailable (entry=%.8f rigid_stop=%s "
+                "qty=%s)",
+                self._cfg.entry_mode.value,
                 snapshot.symbol,
                 setup.direction,
                 raw_entry_price,
                 f"{rigid_stop_level:.8f}" if rigid_stop_level is not None else "disabled",
-                self._cfg.position_sizing_mode,
                 sizing.qty if sizing is not None else "n/a",
             )
             return None
 
         qty = sizing.qty
-        entry_notional = raw_entry_price * qty
-        if entry_notional > self._cfg.max_entry_notional_usdt:
-            qty = self._cfg.max_entry_notional_usdt / raw_entry_price
-            if qty <= 0:
-                return None
-            self._log.info(
-                "EmaAvwapPullback: clamped %s %s notional from %.8f to %.8f USDT",
-                snapshot.symbol,
-                setup.direction,
-                entry_notional,
-                self._cfg.max_entry_notional_usdt,
-            )
 
         if (
-            not self._cfg.entry_exit_mode.uses_closed_candle_entry
+            self._cfg.entry_mode is EntryMode.LIVE
             and not self._entry_price_is_marketable(
                 direction=setup.direction,
                 current_price=current_price,
-                entry_price=raw_entry_price,
+                entry_price=sizing.entry_price,
             )
         ):
             self._log.warning(
@@ -611,13 +616,10 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 snapshot.symbol,
                 setup.direction,
                 current_price,
-                raw_entry_price,
+                sizing.entry_price,
             )
             return None
 
-        rigid_stop_level = self._rigid_stop_level(
-            setup.direction, sizing.entry_price
-        )
         if rigid_stop_level is not None and self._is_stop_breached_by_price(
             direction=setup.direction,
             price=current_price,
@@ -633,6 +635,18 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             )
             return None
 
+        deviation_pct = self._entry_deviation_pct(current_price, avwap.vwap)
+        if deviation_pct > self._cfg.max_entry_deviation_pct:
+            self._log.warning(
+                "EmaAvwapPullback: entry skipped for %s %s because live price "
+                "is %.4f%% from AVWAP (maximum %.4f%%)",
+                snapshot.symbol,
+                setup.direction,
+                deviation_pct,
+                self._cfg.max_entry_deviation_pct,
+            )
+            return None
+
         side = self._side_from_direction(setup.direction)
         target_level = self._target_band_level(setup.direction, avwap)
         self._log.info(
@@ -640,12 +654,12 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             "trigger=%s live_price=%.8f order_price=%.8f ema=%.8f "
             "middle=%.8f target_band=%d target=%.8f rigid_stop=%s "
             "upper1=%.8f lower1=%.8f upper2=%.8f lower2=%.8f",
-            self._cfg.entry_exit_mode.value,
+            self._cfg.entry_mode.value,
             snapshot.symbol,
             side.value,
             cross.mode or "intrabar",
             current_price,
-            raw_entry_price,
+            sizing.entry_price,
             snapshot.ema_value,
             avwap.vwap,
             self._target_band_number(),
@@ -665,7 +679,7 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             setup_detected_time=setup.detected_time,
             candle_index=snapshot.candle_index,
             raw_entry_price=raw_entry_price,
-            order_price=raw_entry_price,
+            order_price=sizing.entry_price,
             stop_for_risk=rigid_stop_level or 0.0,
             dynamic_stop_at_entry=(
                 avwap.lower1 if setup.direction == "long" else avwap.upper1
@@ -675,12 +689,13 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 setup.direction, avwap
             ),
             quantity=qty,
-            risk_amount=risk_amount,
-            risk_amount_interpretation=sizing.risk_amount_interpretation,
+            position_notional_budget=position_notional_budget,
             entry_trigger_mode=cross.mode or "intrabar",
             sizing=sizing,
             avwap=avwap,
-            entry_exit_mode=self._cfg.entry_exit_mode,
+            entry_mode=self._cfg.entry_mode,
+            exit_mode=self._cfg.exit_mode,
+            exit_band=self._cfg.exit_band,
             ema_value=snapshot.ema_value,
             decision_price=(
                 decision_price if decision_price is not None else current_price
@@ -694,6 +709,34 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             return current_price <= entry_price
         return current_price >= entry_price
 
+    def _setup_is_expired(
+        self, setup: _SetupState, snapshot: _SymbolSnapshot
+    ) -> bool:
+        age_seconds = (snapshot.candle.close_time - setup.detected_time).total_seconds()
+        age_bars = max(0, int(age_seconds // (snapshot.timeframe_minutes * 60)))
+        return age_bars > self._cfg.max_setup_age_bars
+
+    def _price_respects_ema(
+        self, *, direction: Direction, price: float, ema_value: float
+    ) -> bool:
+        if direction == "long":
+            return price > ema_value
+        return price < ema_value
+
+    def _entry_deviation_pct(self, price: float, avwap: float) -> float:
+        if avwap <= 0:
+            return float("inf")
+        return abs(price - avwap) / avwap * 100.0
+
+    def _discard_setup(self, setup: _SetupState, reason: str) -> None:
+        self._log.info(
+            "EmaAvwapPullback: discarded %s setup for %s: %s",
+            setup.direction,
+            setup.symbol,
+            reason,
+        )
+        self._remove_setup(setup.symbol, setup.direction)
+
     # ------------------------------------------------------------------
     # Entry queue / activation
     # ------------------------------------------------------------------
@@ -701,6 +744,14 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
     def _queue_entry_candidate(
         self, candidate: _EntryCandidate, now: datetime
     ) -> bool:
+        if not self._position_sync_healthy:
+            self._log.warning(
+                "EmaAvwapPullback: rejected %s %s entry because the last "
+                "exchange-position sync was unhealthy",
+                candidate.symbol,
+                candidate.side.value,
+            )
+            return False
         symbol = candidate.symbol
         if symbol in self._state.active_positions:
             self._log.warning(
@@ -718,12 +769,14 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 candidate.side.value,
             )
             return False
-        if len(self._state.active_positions) >= self._cfg.max_concurrent_positions:
+        occupied_slots = self._occupied_position_slots()
+        if occupied_slots >= self._cfg.max_concurrent_positions:
             self._log.warning(
                 "EmaAvwapPullback: rejected %s %s entry because max concurrent "
-                "positions is reached (%d)",
+                "positions is reached (%d occupied, limit=%d)",
                 symbol,
                 candidate.side.value,
+                occupied_slots,
                 self._cfg.max_concurrent_positions,
             )
             return False
@@ -737,7 +790,9 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             quantity=candidate.quantity,
             leverage=self._cfg.leverage,
             margin_mode=self._cfg.margin_mode,
-            risk_amount=candidate.risk_amount,
+            # PendingEntryRecord is shared with older strategies.  Its legacy
+            # ``risk_amount`` column stores this EMA strategy's notional budget.
+            risk_amount=candidate.position_notional_budget,
             stop_for_risk=candidate.stop_for_risk,
             created_time=now,
             signal_time=self._ensure_aware(candidate.signal_time),
@@ -746,7 +801,9 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             status="PENDING",
             notes=(
                 f"EMA+AVWAP {candidate.direction} "
-                f"mode={candidate.entry_exit_mode.value} "
+                f"entry_mode={candidate.entry_mode.value} "
+                f"exit_mode={candidate.exit_mode.value} "
+                f"exit_band={candidate.exit_band.value} "
                 f"anchor={candidate.anchor_time.isoformat()} "
                 f"trigger={candidate.entry_trigger_mode}"
             ),
@@ -760,21 +817,37 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
         self._save_state()
         self._log.info(
             "EmaAvwapPullback: ENTRY EXECUTION queued mode=%s %s %s @ %.8f "
-            "qty=%.8f rigid_stop=%s risk=%.8f trigger=%s",
-            candidate.entry_exit_mode.value,
+            "qty=%.8f rigid_stop=%s notional_budget=%.8f trigger=%s",
+            candidate.entry_mode.value,
             candidate.side.value,
             symbol,
             candidate.order_price,
             candidate.quantity,
             f"{candidate.stop_for_risk:.8f}" if candidate.stop_for_risk > 0 else "disabled",
-            candidate.risk_amount,
+            candidate.position_notional_budget,
             candidate.entry_trigger_mode,
         )
         self._notify_entry_signal(candidate)
         self._activate_due_entries(now)
         return True
 
+    def _occupied_position_slots(self) -> int:
+        """Count exchange positions and all unresolved entry orders once each."""
+        occupied_symbols = set(self._state.active_positions)
+        occupied_symbols.update(
+            pending.symbol
+            for pending in self._state.pending_entries.values()
+            if pending.status not in {"CANCELLED", "FILLED", "REJECTED", "EXPIRED"}
+        )
+        return len(occupied_symbols)
+
     def _activate_due_entries(self, now: datetime) -> None:
+        if not self._position_sync_healthy:
+            self._log.warning(
+                "EmaAvwapPullback: pending entry activation paused because the "
+                "last exchange-position sync was unhealthy"
+            )
+            return
         for pending in list(self._state.pending_entries.values()):
             if pending.status not in {"PENDING"}:
                 continue
@@ -832,6 +905,16 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 )
                 self._save_state()
                 continue
+            except _EntryNoLongerMarketableError as exc:
+                self._log.warning(
+                    "EmaAvwapPullback: dropped %s because it would no longer be "
+                    "a marketable limit: %s",
+                    pending.order_key,
+                    exc,
+                )
+                self._remove_pending_entry(pending)
+                self._save_state()
+                continue
             if order is None:
                 # A POST can have reached the exchange even when the response
                 # was lost.  Reconcile before allowing any future attempt; the
@@ -862,9 +945,9 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 "symbol=%s side=%s price=%.8f qty=%.8f rigid_stop=%s",
                 self._pending_meta_by_key.get(
                     pending.order_key
-                ).candidate.entry_exit_mode.value
+                ).candidate.entry_mode.value
                 if self._pending_meta_by_key.get(pending.order_key)
-                else self._cfg.entry_exit_mode.value,
+                else self._cfg.entry_mode.value,
                 order.order_id,
                 pending.symbol,
                 pending.side.value,
@@ -874,6 +957,7 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             )
 
     def _place_limit_entry(self, pending: PendingEntryRecord) -> Optional[OrderResult]:
+        self._ensure_pending_limit_is_marketable(pending)
         try:
             validator = getattr(self._exchange, "validate_ema_avwap_execution", None)
             if callable(validator):
@@ -903,6 +987,10 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
             )
             return None
 
+        # Margin and leverage updates may take long enough for the market to
+        # move.  Validate again immediately before the GTC submission so it
+        # cannot become an unintended resting maker order.
+        self._ensure_pending_limit_is_marketable(pending)
         try:
             # Do not wrap a state-changing POST in the generic retry helper.
             # Bitunix receives the persisted client id and may retry its own
@@ -928,4 +1016,18 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 pending.symbol,
                 pending.side.value,
                 exc,
+            )
+
+    def _ensure_pending_limit_is_marketable(self, pending: PendingEntryRecord) -> None:
+        current_price = self._safe_fetch_price(pending.symbol)
+        if current_price is None or current_price <= 0:
+            raise _EntryNoLongerMarketableError("current Bitunix price is unavailable")
+        direction: Direction = "long" if pending.side is PositionSide.LONG else "short"
+        if not self._entry_price_is_marketable(
+            direction=direction,
+            current_price=current_price,
+            entry_price=pending.entry_price,
+        ):
+            raise _EntryNoLongerMarketableError(
+                f"current={current_price:.8f} limit={pending.entry_price:.8f}"
             )
