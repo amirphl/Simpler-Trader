@@ -3,13 +3,10 @@
 from __future__ import annotations
 
 import logging
-import os
-import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from concurrent.futures import Future, ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional
-from urllib.request import OpenerDirector, ProxyHandler, build_opener
 
 from candle_downloader.models import Candle
 from signal_notifier import TelegramClient
@@ -60,11 +57,33 @@ class EmaAvwapPullbackLiveCoordinator(
         self._pending_meta_by_key: Dict[str, _PendingEntryMeta] = {}
         self._position_runtime_by_symbol: Dict[str, _PositionRuntime] = {}
         self._position_miss_count_by_symbol: Dict[str, int] = {}
+        # A failed position sync must never be treated as evidence that the
+        # account is flat.  This flag is cleared by the position mixin before
+        # any new entry can be submitted again.
+        self._position_sync_healthy = True
+        self._state_lock_handles = []
         self._last_tick_trailing_check_ts = 0.0
-        self._thread_local = threading.local()
-        self._binance_proxies = self._resolve_proxy_map()
-        self._binance_opener: OpenerDirector = self._build_binance_opener()
+        self._market_data_executor = ThreadPoolExecutor(
+            max_workers=min(8, max(1, len(self._cfg.symbols))),
+            thread_name_prefix="ema-avwap-market-data",
+        )
+        self._candle_fetch_futures: Dict[
+            str, tuple[int, Future[Candle | None]]
+        ] = {}
+        self._snapshot_futures: Dict[
+            str, tuple[Candle, Future[_SymbolSnapshot | None]]
+        ] = {}
+        self._last_market_data_poll_slot_by_symbol: Dict[str, int] = {}
         self._init_persistence()
+
+    def __del__(self) -> None:
+        # ``stop`` is the normal lifecycle path.  This small backstop prevents
+        # a failed construction or an abandoned coordinator from retaining an
+        # advisory process lock until interpreter shutdown.
+        try:
+            self._close_persistence()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -80,14 +99,12 @@ class EmaAvwapPullbackLiveCoordinator(
         self._running = True
         self._log.info(
             "EmaAvwapPullback started (symbols=%s timeframe=%s "
-            "entry_exit_mode=%s entry=%s exit_band=%d rigid_stop_loss_pct=%.8f)",
+            "entry_mode=%s exit_mode=%s exit_band=%s rigid_stop_loss_pct=%.8f)",
             ",".join(self._cfg.symbols),
             self._cfg.timeframe,
-            self._cfg.entry_exit_mode.value,
-            "closed_candle_vs_middle"
-            if self._cfg.entry_exit_mode.uses_closed_candle_entry
-            else "live_middle_touch",
-            self._cfg.entry_exit_mode.exit_band_number,
+            self._cfg.entry_mode.value,
+            self._cfg.exit_mode.value,
+            self._cfg.exit_band.value,
             self._cfg.rigid_stop_loss_pct,
         )
         while self._running:
@@ -101,89 +118,157 @@ class EmaAvwapPullbackLiveCoordinator(
 
     def stop(self) -> None:
         self._running = False
+        self._market_data_executor.shutdown(wait=False, cancel_futures=True)
         try:
             self._exchange.close()
         except Exception:
             self._log.debug("Exchange close failed during stop", exc_info=True)
+        finally:
+            self._close_persistence()
 
     # ------------------------------------------------------------------
     # Main candle-close processing path
     # ------------------------------------------------------------------
 
     def _maybe_process_new_candles(self, now: datetime) -> None:
-        latest_closed_by_symbol: Dict[str, Candle | None] = {}
-        max_workers: int = min(8, max(1, len(self._cfg.symbols)))
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            candle_futures: dict[Future[Candle | None], str] = {
-                executor.submit(self._fetch_latest_closed_candle, symbol): symbol
-                for symbol in self._cfg.symbols
-            }
-            for future in as_completed(fs=candle_futures):
-                symbol: str = candle_futures[future]
-                try:
-                    latest_closed_by_symbol[symbol] = future.result()
-                except Exception as exc:
-                    self._log.warning(
-                        "EmaAvwapPullback: latest candle fetch failed for %s: %s",
-                        symbol,
-                        exc,
-                    )
-                    latest_closed_by_symbol[symbol] = None
-
-        new_symbols: list[str] = []
-        for symbol in self._cfg.symbols:
-            latest_closed: Candle | None = latest_closed_by_symbol.get(symbol)
-            if latest_closed is None:
-                continue
-            last_seen: datetime | None = self._last_closed_candle_time_by_symbol.get(
-                symbol
-            )
-            if last_seen is None or latest_closed.close_time > last_seen:
-                new_symbols.append(symbol)
-
-        if not new_symbols:
-            return
-
         snapshots: Dict[str, _SymbolSnapshot] = {}
-        with ThreadPoolExecutor(max_workers=min(8, len(new_symbols))) as executor:
-            snapshot_futures: dict[Future[_SymbolSnapshot | None], str] = {
-                executor.submit(self._build_snapshot, symbol): symbol
-                for symbol in new_symbols
-            }
-            for future in as_completed(fs=snapshot_futures):
-                symbol: str = snapshot_futures[future]
-                try:
-                    snapshot: _SymbolSnapshot | None = future.result()
-                except Exception as exc:
-                    self._log.warning(
-                        "EmaAvwapPullback: snapshot build failed for %s: %s",
-                        symbol,
-                        exc,
-                    )
-                    continue
-                if snapshot is not None:
-                    expected = latest_closed_by_symbol.get(symbol)
-                    if (
-                        expected is not None
-                        and snapshot.candle.close_time < expected.close_time
-                    ):
-                        self._log.warning(
-                            "EmaAvwapPullback: snapshot for %s is stale "
-                            "(snapshot_close=%s latest_close=%s); retrying without "
-                            "marking the latest candle as processed",
-                            symbol,
-                            snapshot.candle.close_time.isoformat(),
-                            expected.close_time.isoformat(),
-                        )
-                        continue
-                    snapshots[symbol] = snapshot
+        self._collect_completed_candle_fetches()
+        self._collect_completed_snapshots(snapshots)
 
-        if not snapshots:
-            return
+        if snapshots:
+            self._process_new_snapshots(snapshots, now)
+        self._schedule_market_data_fetches(now)
+
+    def _collect_completed_candle_fetches(self) -> None:
+        """Schedule snapshot construction only after completed venue-data polls.
+
+        Results are consumed only when their futures are done.  A Bitunix
+        timeout therefore cannot hold up position management in ``_on_tick``.
+        """
+        for symbol, (poll_slot, future) in list(
+            self._candle_fetch_futures.items()
+        ):
+            if not future.done():
+                continue
+            del self._candle_fetch_futures[symbol]
+            try:
+                latest_closed = future.result()
+            except Exception as exc:
+                self._log.warning(
+                    "EmaAvwapPullback: latest Bitunix candle fetch failed for %s: %s",
+                    symbol,
+                    exc,
+                )
+                continue
+            if latest_closed is None or symbol in self._snapshot_futures:
+                continue
+            last_seen = self._last_closed_candle_time_by_symbol.get(symbol)
+            if last_seen is not None and latest_closed.close_time <= last_seen:
+                if self._latest_closed_covers_poll_slot(latest_closed, poll_slot):
+                    self._last_market_data_poll_slot_by_symbol[symbol] = poll_slot
+                continue
+            self._snapshot_futures[symbol] = (
+                latest_closed,
+                self._market_data_executor.submit(self._build_snapshot, symbol),
+            )
+
+    def _collect_completed_snapshots(
+        self, snapshots: Dict[str, _SymbolSnapshot]
+    ) -> None:
+        for symbol, (expected, future) in list(self._snapshot_futures.items()):
+            if not future.done():
+                continue
+            del self._snapshot_futures[symbol]
+            try:
+                snapshot = future.result()
+            except Exception as exc:
+                self._log.warning(
+                    "EmaAvwapPullback: Bitunix snapshot build failed for %s: %s",
+                    symbol,
+                    exc,
+                )
+                continue
+            if snapshot is None:
+                continue
+            if snapshot.candle.close_time < expected.close_time:
+                self._log.warning(
+                    "EmaAvwapPullback: snapshot for %s is stale "
+                    "(snapshot_close=%s latest_close=%s); leaving the candle "
+                    "unprocessed",
+                    symbol,
+                    snapshot.candle.close_time.isoformat(),
+                    expected.close_time.isoformat(),
+                )
+                continue
+            snapshots[symbol] = snapshot
+
+    def _schedule_market_data_fetches(self, now: datetime) -> None:
+        for symbol in self._cfg.symbols:
+            if not self._market_data_poll_is_due(now, symbol):
+                continue
+            if symbol in self._candle_fetch_futures or symbol in self._snapshot_futures:
+                continue
+            poll_slot = self._market_data_poll_slot(now)
+            self._candle_fetch_futures[symbol] = (
+                poll_slot,
+                self._market_data_executor.submit(
+                    self._fetch_latest_closed_candle, symbol
+                ),
+            )
+
+    def _market_data_poll_slot(self, now: datetime) -> int:
+        interval_seconds = min(
+            self._cfg.execution_interval_minutes * 60,
+            self._timeframe_seconds(self._cfg.timeframe),
+        )
+        delayed_timestamp = now.timestamp() - self._cfg.candle_ready_delay_seconds
+        return int(delayed_timestamp // interval_seconds)
+
+    def _latest_closed_covers_poll_slot(
+        self, latest_closed: Candle, poll_slot: int
+    ) -> bool:
+        """Return whether the latest closed bar covers this scheduled poll.
+
+        Bitunix reports kline ``closeTime`` as one millisecond before the next
+        bar's open.  Compare the bar's canonical end boundary instead of that
+        inclusive timestamp so a valid bar does not make every later poll in
+        the slot look stale.
+        """
+        poll_interval_seconds = min(
+            self._cfg.execution_interval_minutes * 60,
+            self._timeframe_seconds(self._cfg.timeframe),
+        )
+        timeframe_seconds = self._timeframe_seconds(self._cfg.timeframe)
+        delayed_poll_timestamp = poll_slot * poll_interval_seconds
+        expected_close_time = datetime.fromtimestamp(
+            int(delayed_poll_timestamp // timeframe_seconds) * timeframe_seconds,
+            tz=timezone.utc,
+        )
+        candle_end_boundary = latest_closed.open_time + timedelta(
+            seconds=timeframe_seconds
+        )
+        return candle_end_boundary >= expected_close_time
+
+    def _market_data_poll_is_due(
+        self, now: datetime, symbol: str | None = None
+    ) -> bool:
+        slot = self._market_data_poll_slot(now)
+        if symbol is not None:
+            return self._last_market_data_poll_slot_by_symbol.get(symbol) != slot
+        return any(
+            self._last_market_data_poll_slot_by_symbol.get(item) != slot
+            for item in self._cfg.symbols
+        )
+
+    def _process_new_snapshots(
+        self, snapshots: Dict[str, _SymbolSnapshot], now: datetime) -> None:
 
         for symbol, snapshot in snapshots.items():
             self._last_closed_candle_time_by_symbol[symbol] = (
                 snapshot.candle.close_time
+            )
+            self._last_market_data_poll_slot_by_symbol[symbol] = (
+                self._market_data_poll_slot(now)
             )
         self._last_snapshot_by_symbol.update(snapshots)
         self._log.info("New AVWAP candle processed for %d symbol(s)", len(snapshots))
@@ -219,51 +304,5 @@ class EmaAvwapPullbackLiveCoordinator(
             return
         self._last_tick_trailing_check_ts = trailing_check_ts
         self._manage_tick_trailing(now)
-
-    # ------------------------------------------------------------------
-    # Public fallback HTTP transport
-    # ------------------------------------------------------------------
-
-    def _resolve_proxy_map(self) -> dict[str, str]:
-        exchange_config = getattr(self._exchange, "_config", None)
-        configured = getattr(exchange_config, "proxies", None)
-        if configured:
-            proxies = {
-                str(key): str(value)
-                for key, value in dict(configured).items()
-                if str(value).strip()
-            }
-            if "http" in proxies and "https" not in proxies:
-                proxies["https"] = proxies["http"]
-            return proxies
-
-        all_proxy = os.getenv("ALL_PROXY") or os.getenv("all_proxy")
-        http_proxy = os.getenv("HTTP_PROXY") or os.getenv("http_proxy")
-        https_proxy = os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")
-
-        proxies: dict[str, str] = {}
-        if all_proxy:
-            proxies["http"] = all_proxy
-            proxies["https"] = all_proxy
-        else:
-            if http_proxy:
-                proxies["http"] = http_proxy
-            if https_proxy:
-                proxies["https"] = https_proxy
-            elif http_proxy:
-                proxies["https"] = http_proxy
-        return proxies
-
-    def _build_binance_opener(self) -> OpenerDirector:
-        if self._binance_proxies:
-            return build_opener(ProxyHandler(self._binance_proxies))
-        return build_opener()
-
-    def _get_binance_opener(self) -> OpenerDirector:
-        opener = getattr(self._thread_local, "binance_opener", None)
-        if opener is None:
-            opener = self._build_binance_opener()
-            self._thread_local.binance_opener = opener
-        return opener
 
     # ------------------------------------------------------------------
