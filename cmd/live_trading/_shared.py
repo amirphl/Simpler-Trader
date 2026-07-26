@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import logging
 import os
 import sys
@@ -16,7 +17,9 @@ from live_trading.coordinator import LiveTradingCoordinator
 from live_trading.ema_avwap_pullback_strategy import (
     EmaAvwapPullbackLiveConfig,
     EmaAvwapPullbackLiveCoordinator,
-    EntryExitMode,
+    EntryMode,
+    ExitBand,
+    ExitMode,
 )
 from live_trading.exchange import ExchangeConfig, MarginMode
 from live_trading.pinbar_magic_coordinator_v3 import (
@@ -237,7 +240,7 @@ def _load_ema_avwap_pullback_env_config(read_env: Callable[..., str]) -> Dict[st
         "api_key": read_env("API_KEY"),
         "api_secret": read_env("API_SECRET"),
         "api_passphrase": read_env("API_PASSPHRASE", "PASS_PHRASE"),
-        "testnet": read_env("TESTNET"),
+        "deprecated_testnet": read_env("TESTNET"),
         "timeframe": read_env("TIMEFRAME"),
         "strategy_name": read_env("STRATEGY_NAME", "LIVE_STRATEGY_NAME"),
         "leverage": read_env("LEVERAGE"),
@@ -256,7 +259,7 @@ def _load_ema_avwap_pullback_env_config(read_env: Callable[..., str]) -> Dict[st
         "execution_interval_minutes": read_env("EXECUTION_INTERVAL_MINUTES"),
         "poll_interval_seconds": read_env("POLL_INTERVAL_SECONDS"),
         "trailing_check_interval_seconds": read_env("TRAILING_CHECK_INTERVAL_SECONDS"),
-        "exchange_base_url": read_env("EXCHANGE_BASE_URL"),
+        "deprecated_exchange_base_url": read_env("EXCHANGE_BASE_URL"),
         "http_proxy": read_env("HTTP_PROXY"),
         "https_proxy": read_env("HTTPS_PROXY"),
         "proxy": read_env("PROXY"),
@@ -269,7 +272,12 @@ def _load_ema_avwap_pullback_env_config(read_env: Callable[..., str]) -> Dict[st
         "symbols": read_env("SYMBOLS", "EMA_AVWAP_SYMBOLS", "PINBAR_SYMBOLS"),
         "trailing_tick_timeframe": read_env("TRAILING_TICK_TIMEFRAME"),
         "use_trailing_tick_emulation": read_env("USE_TRAILING_TICK_EMULATION"),
-        "equity_risk_pct": read_env("EQUITY_RISK_PCT", "STRATEGY_EQUITY_RISK_PCT"),
+        "deprecated_equity_risk_pct": read_env(
+            "EQUITY_RISK_PCT", "STRATEGY_EQUITY_RISK_PCT"
+        ),
+        "position_notional_pct": read_env(
+            "POSITION_NOTIONAL_PCT", "STRATEGY_POSITION_NOTIONAL_PCT"
+        ),
         "ema_length": read_env("EMA_LENGTH", "STRATEGY_EMA_LENGTH"),
         "consecutive_count": read_env(
             "CONSECUTIVE_COUNT", "STRATEGY_CONSECUTIVE_COUNT"
@@ -281,10 +289,21 @@ def _load_ema_avwap_pullback_env_config(read_env: Callable[..., str]) -> Dict[st
             "SETUP_WAITING_REPLACEMENT_MODE",
             "STRATEGY_SETUP_WAITING_REPLACEMENT_MODE",
         ),
+        "max_setup_age_bars": read_env(
+            "MAX_SETUP_AGE_BARS", "STRATEGY_MAX_SETUP_AGE_BARS"
+        ),
+        "max_entry_deviation_pct": read_env(
+            "MAX_ENTRY_DEVIATION_PCT", "STRATEGY_MAX_ENTRY_DEVIATION_PCT"
+        ),
         "position_sizing_mode": read_env(
             "POSITION_SIZING_MODE", "STRATEGY_POSITION_SIZING_MODE"
         ),
-        "entry_exit_mode": read_env("ENTRY_EXIT_MODE", "STRATEGY_ENTRY_EXIT_MODE"),
+        "removed_entry_exit_mode": read_env(
+            "ENTRY_EXIT_MODE", "STRATEGY_ENTRY_EXIT_MODE"
+        ),
+        "entry_mode": read_env("ENTRY_MODE", "STRATEGY_ENTRY_MODE"),
+        "exit_mode": read_env("EXIT_MODE", "STRATEGY_EXIT_MODE"),
+        "exit_band": read_env("EXIT_BAND", "STRATEGY_EXIT_BAND"),
         "avwap_multiplier_1": read_env(
             "AVWAP_MULTIPLIER_1", "STRATEGY_AVWAP_MULTIPLIER_1"
         ),
@@ -685,8 +704,16 @@ def _apply_ema_avwap_pullback_env_defaults(
         args.api_secret = config["api_secret"]
     if config["api_passphrase"]:
         args.api_passphrase = config["api_passphrase"]
-    if config["testnet"]:
-        args.testnet = _parse_bool(config["testnet"])
+    if config["deprecated_testnet"]:
+        raise ValueError(
+            "TESTNET is not supported for EMA+AVWAP. This strategy is mainnet-only; "
+            "remove TESTNET from its config."
+        )
+    if config["deprecated_exchange_base_url"]:
+        raise ValueError(
+            "EXCHANGE_BASE_URL is not supported for EMA+AVWAP. This strategy uses "
+            "the Bitunix mainnet endpoint only; remove EXCHANGE_BASE_URL from its config."
+        )
     if config["timeframe"]:
         args.timeframe = config["timeframe"].strip().lower()
     if config["strategy_name"]:
@@ -744,8 +771,6 @@ def _apply_ema_avwap_pullback_env_defaults(
             config["trailing_check_interval_seconds"],
             "TRAILING_CHECK_INTERVAL_SECONDS",
         )
-    if config["exchange_base_url"]:
-        args.exchange_base_url = config["exchange_base_url"]
     if config["http_proxy"]:
         args.http_proxy = config["http_proxy"]
     if config["https_proxy"]:
@@ -774,9 +799,14 @@ def _apply_ema_avwap_pullback_env_defaults(
         args.use_trailing_tick_emulation = _parse_bool(
             config["use_trailing_tick_emulation"]
         )
-    if config.get("equity_risk_pct"):
-        args.equity_risk_pct = _parse_float(
-            config["equity_risk_pct"], "EQUITY_RISK_PCT"
+    if config.get("deprecated_equity_risk_pct"):
+        raise ValueError(
+            "EQUITY_RISK_PCT is not supported for EMA+AVWAP because it is a "
+            "notional budget, not stop-loss risk. Use POSITION_NOTIONAL_PCT."
+        )
+    if config.get("position_notional_pct"):
+        args.position_notional_pct = _parse_float(
+            config["position_notional_pct"], "POSITION_NOTIONAL_PCT"
         )
     if config.get("ema_length"):
         args.ema_length = _parse_int(config["ema_length"], "EMA_LENGTH")
@@ -790,10 +820,27 @@ def _apply_ema_avwap_pullback_env_defaults(
         args.setup_waiting_replacement_mode = (
             config["setup_waiting_replacement_mode"].strip().lower()
         )
+    if config.get("max_setup_age_bars"):
+        args.max_setup_age_bars = _parse_int(
+            config["max_setup_age_bars"], "MAX_SETUP_AGE_BARS"
+        )
+    if config.get("max_entry_deviation_pct"):
+        args.max_entry_deviation_pct = _parse_float(
+            config["max_entry_deviation_pct"], "MAX_ENTRY_DEVIATION_PCT"
+        )
     if config.get("position_sizing_mode"):
         args.position_sizing_mode = config["position_sizing_mode"].strip().lower()
-    if config.get("entry_exit_mode"):
-        args.entry_exit_mode = config["entry_exit_mode"].strip().lower()
+    if config.get("removed_entry_exit_mode"):
+        raise ValueError(
+            "ENTRY_EXIT_MODE has been removed for EMA+AVWAP live trading. "
+            "Set ENTRY_MODE, EXIT_MODE, and EXIT_BAND explicitly."
+        )
+    if config.get("entry_mode"):
+        args.entry_mode = config["entry_mode"].strip().lower()
+    if config.get("exit_mode"):
+        args.exit_mode = config["exit_mode"].strip().lower()
+    if config.get("exit_band"):
+        args.exit_band = config["exit_band"].strip().lower()
     if config.get("avwap_multiplier_1"):
         args.avwap_multiplier_1 = _parse_float(
             config["avwap_multiplier_1"], "AVWAP_MULTIPLIER_1"
@@ -1056,8 +1103,9 @@ def create_exchange(args: argparse.Namespace, logger: logging.Logger):
     if not api_secret:
         raise ValueError("API secret is required (--api-secret or API_SECRET env var)")
 
-    # Determine testnet mode
-    testnet = args.testnet and not args.live
+    # EMA/AVWAP is mainnet-only. Other strategies retain their explicit
+    # testnet option for now.
+    testnet = bool(getattr(args, "testnet", False)) and not args.live
 
     # Build proxy configuration
     proxies: Optional[Dict[str, str]] = None
@@ -1078,7 +1126,7 @@ def create_exchange(args: argparse.Namespace, logger: logging.Logger):
         testnet=testnet,
         proxies=proxies,
         passphrase=api_passphrase or None,
-        base_url=args.exchange_base_url or None,
+        base_url=getattr(args, "exchange_base_url", "") or None,
     )
 
     # Import and instantiate exchange client
@@ -1174,6 +1222,7 @@ def build_ema_avwap_pullback_config(
     args: argparse.Namespace, config: LiveTradingConfig
 ) -> EmaAvwapPullbackLiveConfig:
     symbols = _parse_symbols_csv(str(_arg(args, "symbols", ""))) or ("ETHUSDT",)
+    account_lock_file = _arg(args, "ema_avwap_account_lock_file", None)
     return EmaAvwapPullbackLiveConfig(
         symbols=symbols,
         timeframe=config.timeframe,
@@ -1189,23 +1238,22 @@ def build_ema_avwap_pullback_config(
         margin_mode=config.margin_mode,
         max_concurrent_positions=config.max_concurrent_positions,
         max_entry_notional_usdt=config.max_entry_notional_usdt,
-        equity_risk_pct=float(_arg(args, "equity_risk_pct", 1.0)),
+        max_position_size_pct=config.max_position_size_pct,
+        position_notional_pct=float(_arg(args, "position_notional_pct", 1.0)),
         ema_length=int(_arg(args, "ema_length", 55)),
         consecutive_count=int(_arg(args, "consecutive_count", 4)),
         ema_validation_mode=str(_arg(args, "ema_validation_mode", "body")),
         setup_waiting_replacement_mode=str(
             _arg(args, "setup_waiting_replacement_mode", "keep_waiting")
         ),
-        position_sizing_mode=str(_arg(args, "position_sizing_mode", "risk_distance")),
-        entry_exit_mode=EntryExitMode(
-            str(
-                _arg(
-                    args,
-                    "entry_exit_mode",
-                    EntryExitMode.LIVE_MIDDLE_FIRST_BAND.value,
-                )
-            )
+        max_setup_age_bars=int(_arg(args, "max_setup_age_bars", 3)),
+        max_entry_deviation_pct=float(_arg(args, "max_entry_deviation_pct", 1.0)),
+        position_sizing_mode=str(
+            _arg(args, "position_sizing_mode", "risk_amount_per_price")
         ),
+        entry_mode=EntryMode(str(_arg(args, "entry_mode", EntryMode.LIVE.value))),
+        exit_mode=ExitMode(str(_arg(args, "exit_mode", ExitMode.LIVE.value))),
+        exit_band=ExitBand(str(_arg(args, "exit_band", ExitBand.BAND_1.value))),
         avwap_multiplier_1=float(_arg(args, "avwap_multiplier_1", 1.0)),
         avwap_multiplier_2=float(_arg(args, "avwap_multiplier_2", 2.0)),
         avwap_multiplier_3=float(_arg(args, "avwap_multiplier_3", 3.0)),
@@ -1222,6 +1270,10 @@ def build_ema_avwap_pullback_config(
         entry_cancel_bars=int(_arg(args, "entry_cancel_bars", 1)),
         max_history_bars=int(_arg(args, "max_history_bars", 512)),
         minimum_balance_usdt=float(_arg(args, "minimum_balance_usdt", 0.0)),
+        candle_ready_delay_seconds=float(
+            _arg(args, "candle_ready_delay_seconds", 0.0)
+        ),
+        execution_interval_minutes=int(_arg(args, "execution_interval_minutes", 5)),
         api_retries=int(_arg(args, "api_retries", 3)),
         api_retry_delay_seconds=float(_arg(args, "api_retry_delay_seconds", 1.0)),
         emergency_close_on_stop_failure=bool(
@@ -1233,6 +1285,9 @@ def build_ema_avwap_pullback_config(
         min_stop_update_pct=float(_arg(args, "min_stop_update_pct", 0.0)),
         disable_symbol_hours=config.disable_symbol_hours,
         state_file=config.state_file,
+        account_lock_file=(
+            Path(account_lock_file) if account_lock_file is not None else None
+        ),
         positions_db=config.positions_db,
         klines_db=config.klines_db,
         log_file=config.log_file,
@@ -1267,6 +1322,14 @@ def build_strong_trend_stair_config(
 
 def _arg(args: argparse.Namespace, name: str, default: object) -> object:
     return getattr(args, name, default)
+
+
+def _ema_avwap_account_lock_file(exchange: str, api_key: str) -> Path:
+    """Return an account-specific local lock without exposing credentials on disk."""
+    fingerprint = hashlib.sha256(
+        f"{exchange.strip().lower()}:{api_key}".encode("utf-8")
+    ).hexdigest()
+    return Path("/tmp") / f"ema_avwap_pullback_{fingerprint}.lock"
 
 
 def run_main(
@@ -1322,9 +1385,13 @@ def run_main(
     if not args.timeframe:
         parser.error("--timeframe is required")
 
-    # Mainnet can be selected by config as well as --live.  Treat either path
-    # as real-money execution and require the same explicit confirmation.
-    is_mainnet = not args.testnet or args.live
+    # EMA/AVWAP has no testnet execution path. Other strategies retain their
+    # existing mode selection while this one always requires live confirmation.
+    is_mainnet = (
+        selected_strategy == "ema_avwap_pullback"
+        or not bool(getattr(args, "testnet", False))
+        or args.live
+    )
     if is_mainnet:
         logger.warning("=" * 80)
         logger.warning("LIVE TRADING MODE ENABLED - REAL MONEY WILL BE TRADED")
@@ -1353,7 +1420,7 @@ def run_main(
             exchange_name=args.exchange,
             api_key=args.api_key or "",
             api_secret=args.api_secret or "",
-            testnet=not is_mainnet,
+            testnet=False if selected_strategy == "ema_avwap_pullback" else not is_mainnet,
             strategy_name=args.strategy_name,
             timeframe=args.timeframe,
             top_m_symbols=int(_arg(args, "top_m_symbols", 100)),
@@ -1427,6 +1494,9 @@ def run_main(
             )
             coordinator.run_forever()
         elif config.strategy_name == "ema_avwap_pullback":
+            args.ema_avwap_account_lock_file = _ema_avwap_account_lock_file(
+                args.exchange, args.api_key or ""
+            )
             ema_avwap_cfg = build_ema_avwap_pullback_config(args, config)
             coordinator = EmaAvwapPullbackLiveCoordinator(
                 exchange=exchange,
