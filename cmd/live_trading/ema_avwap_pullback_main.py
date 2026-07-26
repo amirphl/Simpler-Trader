@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import List, Optional
 
-from live_trading.ema_avwap_pullback import EntryExitMode
+from live_trading.ema_avwap_pullback import EntryMode, ExitBand, ExitMode
 
 from . import _shared
 
@@ -32,12 +32,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--api-secret")
     parser.add_argument("--api-passphrase")
     parser.add_argument(
-        "--testnet",
-        action=argparse.BooleanOptionalAction,
-        default=True,
-        help="Use testnet for testing",
-    )
-    parser.add_argument(
         "--live",
         action="store_true",
         help="Use live trading mode (WARNING: trades real money)",
@@ -61,13 +55,23 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--margin-mode", choices=["isolated", "cross"], default="isolated"
     )
-    parser.add_argument("--position-size-usdt", type=float, default=100.0)
+    parser.add_argument(
+        "--position-size-usdt",
+        type=float,
+        default=100.0,
+        help="Accepted for shared-config compatibility; ignored by EMA + AVWAP",
+    )
     parser.add_argument("--max-entry-notional-usdt", type=float, default=15.0)
     parser.add_argument("--max-concurrent-positions", type=int, default=1)
     parser.add_argument("--max-position-size-pct", type=float, default=10.0)
     parser.add_argument("--disable-symbol-hours", type=float, default=0.0)
 
-    parser.add_argument("--equity-risk-pct", type=float, default=1.0)
+    parser.add_argument(
+        "--position-notional-pct",
+        type=float,
+        default=1.0,
+        help="Entry notional budget as a percentage of available account balance",
+    )
     parser.add_argument("--ema-length", type=int, default=55)
     parser.add_argument("--consecutive-count", type=int, default=4)
     parser.add_argument(
@@ -78,19 +82,31 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["keep_waiting", "replace_waiting"],
         default="keep_waiting",
     )
+    parser.add_argument("--max-setup-age-bars", type=int, default=3)
+    parser.add_argument("--max-entry-deviation-pct", type=float, default=1.0)
     parser.add_argument(
         "--position-sizing-mode",
-        choices=["risk_distance", "risk_amount_per_price"],
-        default="risk_distance",
+        choices=["risk_amount_per_price"],
+        default="risk_amount_per_price",
+        help="Only supported mode; its amount is a position-notional budget",
     )
     parser.add_argument(
-        "--entry-exit-mode",
-        choices=[mode.value for mode in EntryExitMode],
-        default=EntryExitMode.LIVE_MIDDLE_FIRST_BAND.value,
-        help=(
-            "Semantic entry/exit policy: live middle to first band, "
-            "closed-candle direction to first band, or live middle to second band"
-        ),
+        "--entry-mode",
+        choices=[mode.value for mode in EntryMode],
+        default=EntryMode.LIVE.value,
+        help="Evaluate AVWAP-middle entries on candle close or live ticks",
+    )
+    parser.add_argument(
+        "--exit-mode",
+        choices=[mode.value for mode in ExitMode],
+        default=ExitMode.LIVE.value,
+        help="Evaluate AVWAP-band targets on candle close or live ticks",
+    )
+    parser.add_argument(
+        "--exit-band",
+        choices=[band.value for band in ExitBand],
+        default=ExitBand.BAND_1.value,
+        help="AVWAP profit-target band",
     )
     parser.add_argument("--avwap-multiplier-1", type=float, default=1.0)
     parser.add_argument("--avwap-multiplier-2", type=float, default=2.0)
@@ -157,9 +173,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path("./logs/ema_avwap_pullback_live_trading.log"),
     )
-    parser.add_argument("--candle-ready-delay-seconds", type=int, default=30)
+    parser.add_argument("--candle-ready-delay-seconds", type=int, default=0)
     parser.add_argument("--execution-interval-minutes", type=int, default=5)
-    parser.add_argument("--exchange-base-url", default="")
     parser.add_argument("--http-proxy")
     parser.add_argument("--https-proxy")
     parser.add_argument("--proxy")
