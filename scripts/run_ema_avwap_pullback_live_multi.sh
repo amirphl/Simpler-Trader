@@ -205,6 +205,13 @@ if [ "${#SYMBOLS_TO_RUN[@]}" -eq 0 ]; then
   exit 1
 fi
 
+if [ "${#SYMBOLS_TO_RUN[@]}" -gt 1 ]; then
+  echo "Error: the EMA+AVWAP multi-process launcher is disabled for account safety." >&2
+  echo "Run one coordinator with all symbols instead:" >&2
+  echo "  scripts/run_ema_avwap_pullback_live.sh --symbols SYMBOL1,SYMBOL2" >&2
+  exit 2
+fi
+
 mkdir -p "${DATA_ROOT}" "${LOG_ROOT}" "${PID_ROOT}"
 
 WORKER_PIDS=()
