@@ -10,9 +10,11 @@ from __future__ import annotations
 from .ema_avwap_pullback import (
     Direction,
     EmaAvwapPullbackLiveConfig,
-    EntryExitMode,
+    EntryMode,
     EmaAvwapPullbackLiveCoordinator,
     EmaValidationMode,
+    ExitBand,
+    ExitMode,
     PositionSizingMode,
     SetupWaitingReplacementMode,
     _AvwapSnapshot,
@@ -29,7 +31,9 @@ from .ema_avwap_pullback import (
 
 __all__ = [
     "Direction",
-    "EntryExitMode",
+    "EntryMode",
+    "ExitMode",
+    "ExitBand",
     "EmaValidationMode",
     "SetupWaitingReplacementMode",
     "PositionSizingMode",
