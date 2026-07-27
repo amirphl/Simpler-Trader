@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from candle_downloader.models import Candle
+from candle_downloader.binance import interval_to_milliseconds
 from signal_notifier import TelegramClient
 
-from ..exchange import Exchange
+from ..exchange import Exchange, KlineUpdate
 from ..models import TradingState
 from .calculations import EmaAvwapCalculationMixin
 from .config import Direction, EmaAvwapPullbackLiveConfig
@@ -50,7 +52,9 @@ class EmaAvwapPullbackLiveCoordinator(
         self._running = False
         self._last_closed_candle_time_by_symbol: Dict[str, datetime] = {}
         self._last_snapshot_by_symbol: Dict[str, _SymbolSnapshot] = {}
-        self._latest_kline_rows_by_symbol: Dict[str, list[list]] = {}
+        self._forming_kline_by_symbol: Dict[str, tuple[Candle, float]] = {}
+        self._forming_kline_lock = threading.Lock()
+        self._live_kline_stream: Any | None = None
         self._active_setups: Dict[tuple[str, Direction], _SetupState] = {}
         self._last_price_by_setup_key: Dict[tuple[str, Direction], float] = {}
         self._last_middle_by_setup_key: Dict[tuple[str, Direction], float] = {}
@@ -97,6 +101,7 @@ class EmaAvwapPullbackLiveCoordinator(
             # anything rather than attempting to infer a position to manage.
             validator()
         self._running = True
+        self._start_live_kline_stream()
         self._log.info(
             "EmaAvwapPullback started (symbols=%s timeframe=%s "
             "entry_mode=%s exit_mode=%s exit_band=%s rigid_stop_loss_pct=%.8f)",
@@ -118,6 +123,13 @@ class EmaAvwapPullbackLiveCoordinator(
 
     def stop(self) -> None:
         self._running = False
+        stream = self._live_kline_stream
+        self._live_kline_stream = None
+        if stream is not None:
+            try:
+                stream.stop()
+            except Exception:
+                self._log.debug("EMA+AVWAP live kline stream stop failed", exc_info=True)
         self._market_data_executor.shutdown(wait=False, cancel_futures=True)
         try:
             self._exchange.close()
@@ -125,6 +137,78 @@ class EmaAvwapPullbackLiveCoordinator(
             self._log.debug("Exchange close failed during stop", exc_info=True)
         finally:
             self._close_persistence()
+
+    def _start_live_kline_stream(self) -> None:
+        """Start Bitunix's forming-candle stream when live indicators need it.
+
+        REST kline history is deliberately excluded from this path: Bitunix can
+        return only closed candles from its REST endpoint.  A failure to start
+        or refresh this stream therefore leaves live decisions fail-closed.
+        """
+        if (
+            self._cfg.entry_mode.value != "live"
+            and self._cfg.exit_mode.value != "live"
+        ):
+            return
+        start_stream = getattr(self._exchange, "start_kline_stream", None)
+        if not callable(start_stream):
+            self._log.error(
+                "EmaAvwapPullback: exchange does not provide a forming-candle "
+                "stream; live entry and exit indicator evaluation is disabled"
+            )
+            return
+        try:
+            self._live_kline_stream = start_stream(
+                symbols=self._cfg.symbols,
+                interval=self._cfg.timeframe,
+                on_kline=self._cache_forming_kline,
+            )
+        except Exception:
+            self._log.error(
+                "EmaAvwapPullback: failed to start Bitunix forming-candle stream; "
+                "live indicator evaluation will fail closed",
+                exc_info=True,
+            )
+
+    def _cache_forming_kline(self, update: KlineUpdate) -> None:
+        """Store a current Bitunix WebSocket candle for the next live check."""
+        if (
+            update.interval != self._cfg.timeframe
+            or update.symbol not in self._cfg.symbols
+        ):
+            return
+        interval_ms = interval_to_milliseconds(self._cfg.timeframe)
+        open_time_ms = (update.event_time_ms // interval_ms) * interval_ms
+        row = [
+            open_time_ms,
+            str(update.open),
+            str(update.high),
+            str(update.low),
+            str(update.close),
+            str(update.base_volume),
+            open_time_ms + interval_ms - 1,
+            str(update.quote_volume),
+        ]
+        try:
+            candle = Candle.from_binance(update.symbol, self._cfg.timeframe, row)
+        except (IndexError, TypeError, ValueError):
+            self._log.warning(
+                "EmaAvwapPullback: rejected malformed Bitunix forming kline for %s",
+                update.symbol,
+            )
+            return
+        with self._forming_kline_lock:
+            self._forming_kline_by_symbol[update.symbol] = (candle, time.monotonic())
+
+    def _fresh_forming_kline(self, symbol: str) -> Candle | None:
+        with self._forming_kline_lock:
+            cached = self._forming_kline_by_symbol.get(symbol)
+        if cached is None:
+            return None
+        candle, received_at = cached
+        if time.monotonic() - received_at > self._cfg.live_kline_stale_seconds:
+            return None
+        return candle
 
     # ------------------------------------------------------------------
     # Main candle-close processing path
