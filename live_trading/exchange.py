@@ -56,6 +56,26 @@ class ExchangeConfig:
 
 
 @dataclass(frozen=True)
+class KlineUpdate:
+    """A current, in-progress OHLCV update supplied by an exchange stream.
+
+    ``event_time_ms`` is the venue timestamp for the update, not a candle close
+    time. Consumers derive the candle's open boundary from it and the requested
+    interval. REST history must never be used as a substitute for this update.
+    """
+
+    symbol: str
+    interval: str
+    event_time_ms: int
+    open: float
+    high: float
+    low: float
+    close: float
+    base_volume: float
+    quote_volume: float
+
+
+@dataclass(frozen=True)
 class Position:
     """Represents an open position on the exchange."""
 
