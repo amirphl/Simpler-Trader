@@ -47,6 +47,7 @@ class EmaAvwapPullbackLiveConfig:
     use_trailing_tick_emulation: bool = False
     poll_interval_seconds: float = 5.0
     trailing_check_interval_seconds: float = 5.0
+    live_kline_stale_seconds: float = 10.0
 
     leverage: int = 10
     margin_mode: MarginMode = MarginMode.ISOLATED
@@ -112,6 +113,8 @@ class EmaAvwapPullbackLiveConfig:
             raise ValueError("poll_interval_seconds must be positive")
         if self.trailing_check_interval_seconds <= 0:
             raise ValueError("trailing_check_interval_seconds must be positive")
+        if self.live_kline_stale_seconds <= 0:
+            raise ValueError("live_kline_stale_seconds must be positive")
         if self.leverage <= 0:
             raise ValueError("leverage must be positive")
         if self.max_concurrent_positions <= 0:
