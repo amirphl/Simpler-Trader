@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -11,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from ...exchange import (
     Exchange,
     ExchangeConfig,
+    KlineUpdate,
     MarginMode,
     OrderResult,
     OrderType,
@@ -18,6 +20,7 @@ from ...exchange import (
     PositionSide,
 )
 from .client import BitunixClient
+from .kline_stream import BitunixKlineStream
 from .utils import infer_margin_coin_from_symbol, interval_to_milliseconds
 
 
@@ -193,6 +196,24 @@ class BitunixExchange(Exchange):
     def fetch_price(self, symbol: str) -> Optional[float]:
         """Fetch last price for a symbol (public endpoint)."""
         return self._client.fetch_price(symbol)
+
+    def start_kline_stream(
+        self,
+        *,
+        symbols: tuple[str, ...],
+        interval: str,
+        on_kline: Callable[[KlineUpdate], None],
+    ) -> BitunixKlineStream:
+        """Start a public stream of forming candles for live indicator updates."""
+        stream = BitunixKlineStream(
+            symbols=symbols,
+            interval=interval,
+            on_kline=on_kline,
+            logger=self._log,
+            proxies=self._config.proxies,
+        )
+        stream.start()
+        return stream
 
     def get_account_balance(self) -> float:
         margin_coin = self._default_margin_coin
