@@ -426,11 +426,12 @@ class EmaAvwapCalculationMixin(EmaAvwapMixinTyping):
                     interval=self._cfg.trailing_tick_timeframe,
                     limit=2,
                 )
-                if rows and len(rows) >= 2:
-                    candle = Candle.from_binance(
-                        symbol, self._cfg.trailing_tick_timeframe, rows[-2]
+                if rows:
+                    closed = self._ready_closed_candles(
+                        symbol, self._cfg.trailing_tick_timeframe, rows
                     )
-                    return float(candle.close)
+                    if closed:
+                        return float(closed[-1].close)
             except Exception:
                 pass
         return self._safe_fetch_price(symbol)
