@@ -11,6 +11,16 @@ if not test -x "$python_bin"
     exit 1
 end
 
+# Live entry/exit evaluation uses Bitunix's forming-candle WebSocket stream.
+# Keep this check before confirmation/backgrounding: a stale virtualenv used to
+# let all accounts start and then silently fail closed for every live signal.
+if not "$python_bin" -c "import websocket" >/dev/null 2>&1
+    echo "Error: websocket-client is missing from $python_bin" >&2
+    echo "Install this checkout's dependencies, then start again:" >&2
+    echo "  $python_bin -m pip install -r requirements.txt" >&2
+    exit 1
+end
+
 # nohup disconnects stdin, so obtain explicit confirmation before backgrounding.
 if test "$LIVE_TRADING_CONFIRM" != YES
     read -l -P "LIVE TRADING: type YES to start all three accounts: " response

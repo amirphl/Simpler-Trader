@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections.abc import Callable
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
@@ -28,6 +29,12 @@ class BitunixExchange(Exchange):
     """Bitunix futures exchange adapter."""
 
     _KLINE_PAGE_SIZE = 200
+    # The exchange rate-limits public kline history by source IP.  EMA+AVWAP
+    # starts several per-symbol fetches concurrently and the account launcher
+    # can run three coordinators on the same host, so serialize each account's
+    # page requests.  Across three accounts this caps the startup burst at six
+    # history requests/second instead of dozens at once.
+    _KLINE_REQUEST_MIN_INTERVAL_SECONDS = 0.5
 
     def __init__(
         self, config: ExchangeConfig, logger: Optional[logging.Logger] = None
@@ -37,6 +44,21 @@ class BitunixExchange(Exchange):
         self._client = BitunixClient(config, self._log)
         self._default_margin_coin = "USDT"
         self._pair_meta_cache: Dict[str, Dict[str, Any]] = {}
+        self._kline_request_lock = threading.Lock()
+        self._next_kline_request_at = 0.0
+
+    def _wait_for_kline_request_slot(self) -> None:
+        """Reserve a paced slot for one public Bitunix kline request."""
+        with self._kline_request_lock:
+            now = time.monotonic()
+            wait_seconds = max(0.0, self._next_kline_request_at - now)
+            # Reserve before sleeping so concurrent symbol fetches cannot all
+            # wake up and issue their requests together.
+            self._next_kline_request_at = max(
+                now, self._next_kline_request_at
+            ) + self._KLINE_REQUEST_MIN_INTERVAL_SECONDS
+        if wait_seconds > 0:
+            time.sleep(wait_seconds)
 
     @staticmethod
     def _quantize(
@@ -764,6 +786,7 @@ class BitunixExchange(Exchange):
         # strategy warm-up can safely request more history than one response.
         while remaining > 0:
             page_limit = min(remaining, self._KLINE_PAGE_SIZE)
+            self._wait_for_kline_request_slot()
             page = self._client.get_kline_history(
                 symbol=symbol,
                 interval=interval,
