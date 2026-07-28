@@ -5,7 +5,7 @@ set -l script_dir (cd (dirname (status filename)); and pwd)
 set -l project_root (cd "$script_dir/.."; and pwd)
 cd "$project_root"; or exit 1
 
-set -l python_bin .venv/bin/python
+set -l python_bin "$project_root/.venv/bin/python"
 if not test -x "$python_bin"
     echo "Error: expected Python environment at $python_bin" >&2
     exit 1
@@ -21,6 +21,9 @@ if test "$LIVE_TRADING_CONFIRM" != YES
 end
 
 function start_account --argument-names account
+    # Fish functions do not inherit the caller's local variables. Define this
+    # inside the function so nohup always receives the Python executable.
+    set -l python_bin "$PWD/.venv/bin/python"
     set -l config_file "configs/live_trading.ema_avwap_pullback_$account.env"
     set -l data_root "./data/ema_avwap_pullback/account_$account"
     set -l log_root "./logs/ema_avwap_pullback/account_$account"
