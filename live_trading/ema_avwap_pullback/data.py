@@ -19,10 +19,9 @@ class EmaAvwapDataMixin(EmaAvwapMixinTyping):
         rows = self._fetch_strategy_klines(symbol, self._cfg.timeframe, 3)
         if rows is None:
             return None
-        # The latest-candle poll already includes the forming candle. Reuse these
-        # rows during the immediately following live tick instead of issuing a
-        # second kline request for the same symbol and interval.
-        self._latest_kline_rows_by_symbol[symbol] = rows
+        # Bitunix REST is treated as history only. It may contain a forming row
+        # or it may stop at the latest closed row, so select by close boundary
+        # rather than assuming any position in this three-row response.
         closed = self._ready_closed_candles(symbol, self._cfg.timeframe, rows)
         return closed[-1] if closed else None
 
@@ -109,54 +108,27 @@ class EmaAvwapDataMixin(EmaAvwapMixinTyping):
         return live_snapshot, avwap
 
     def _live_avwap_candles(self, snapshot: _SymbolSnapshot) -> Tuple[Candle, ...]:
-        raw = self._latest_kline_rows_by_symbol.get(snapshot.symbol)
+        forming = self._fresh_forming_kline(snapshot.symbol)
         expected_open_ms = (
             snapshot.candle.open_time_ms
             + interval_to_milliseconds(snapshot.timeframe)
         )
-        if raw is not None:
-            cached_tail = [
-                Candle.from_binance(snapshot.symbol, snapshot.timeframe, row)
-                for row in raw
-            ]
-            if not any(
-                candle.open_time_ms == expected_open_ms for candle in cached_tail
-            ):
-                raw = None
-        if raw is None:
-            # Kline polling is deliberately asynchronous.  Do not turn a live
-            # signal or exit check into a blocking network request when the
-            # latest Bitunix poll did not include the next forming bar.
+        if forming is None:
+            # Do not turn a live signal or exit check into a blocking REST
+            # request. The REST history endpoint cannot guarantee a forming
+            # candle, so proceeding without a fresh WebSocket candle is unsafe.
             return tuple(snapshot.candles)
-
-        tail = [
-            Candle.from_binance(snapshot.symbol, snapshot.timeframe, row) for row in raw
-        ]
-        newer = [
-            candle for candle in tail if candle.open_time > snapshot.candle.open_time
-        ]
-        if not newer:
+        if forming.open_time_ms <= snapshot.candle.open_time_ms:
             return tuple(snapshot.candles)
-
-        interval_ms = interval_to_milliseconds(snapshot.timeframe)
-        appended: list[Candle] = []
-        for candle in sorted(newer, key=lambda item: item.open_time):
-            if candle.open_time_ms < expected_open_ms:
-                continue
-            if candle.open_time_ms > expected_open_ms:
-                self._log.warning(
-                    "EmaAvwapPullback: live AVWAP tail for %s has a candle gap "
-                    "after %s; using closed snapshot until the bar snapshot is rebuilt",
-                    snapshot.symbol,
-                    snapshot.candle.close_time.isoformat(),
-                )
-                break
-            appended.append(candle)
-            expected_open_ms += interval_ms
-
-        if not appended:
+        if forming.open_time_ms > expected_open_ms:
+            self._log.warning(
+                "EmaAvwapPullback: live AVWAP stream for %s has a candle gap "
+                "after %s; using closed snapshot until the bar snapshot is rebuilt",
+                snapshot.symbol,
+                snapshot.candle.close_time.isoformat(),
+            )
             return tuple(snapshot.candles)
-        return tuple(snapshot.candles) + tuple(appended)
+        return tuple(snapshot.candles) + (forming,)
 
     def _fetch_strategy_klines(
         self, symbol: str, interval: str, limit: int
