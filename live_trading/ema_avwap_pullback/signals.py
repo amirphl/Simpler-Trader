@@ -28,6 +28,10 @@ class _EntryNoLongerMarketableError(RuntimeError):
     """Raised when a marketable entry would become a resting limit order."""
 
 
+class _NonRetriableEntryError(RuntimeError):
+    """Raised when an entry can never succeed without a new signal/sizing."""
+
+
 class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
     def _process_signal_state(self, snapshot: _SymbolSnapshot, now: datetime) -> None:
         symbol = snapshot.symbol
@@ -769,18 +773,6 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 candidate.side.value,
             )
             return False
-        occupied_slots = self._occupied_position_slots()
-        if occupied_slots >= self._cfg.max_concurrent_positions:
-            self._log.warning(
-                "EmaAvwapPullback: rejected %s %s entry because max concurrent "
-                "positions is reached (%d occupied, limit=%d)",
-                symbol,
-                candidate.side.value,
-                occupied_slots,
-                self._cfg.max_concurrent_positions,
-            )
-            return False
-
         key = self._pending_key(symbol, candidate.side)
         pending = PendingEntryRecord(
             order_key=key,
@@ -830,16 +822,6 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
         self._notify_entry_signal(candidate)
         self._activate_due_entries(now)
         return True
-
-    def _occupied_position_slots(self) -> int:
-        """Count exchange positions and all unresolved entry orders once each."""
-        occupied_symbols = set(self._state.active_positions)
-        occupied_symbols.update(
-            pending.symbol
-            for pending in self._state.pending_entries.values()
-            if pending.status not in {"CANCELLED", "FILLED", "REJECTED", "EXPIRED"}
-        )
-        return len(occupied_symbols)
 
     def _activate_due_entries(self, now: datetime) -> None:
         if not self._position_sync_healthy:
@@ -891,6 +873,16 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 continue
             try:
                 order = self._place_limit_entry(pending)
+            except _NonRetriableEntryError as exc:
+                self._log.warning(
+                    "EmaAvwapPullback: dropped %s because its entry order is "
+                    "invalid and cannot succeed without a new signal: %s",
+                    pending.order_key,
+                    exc,
+                )
+                self._remove_pending_entry(pending)
+                self._save_state()
+                continue
             except _InsufficientBalanceError as exc:
                 pending.status = "PENDING"
                 pending.notes = f"{pending.notes}; insufficient balance: {exc}".strip(
@@ -959,6 +951,21 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
     def _place_limit_entry(self, pending: PendingEntryRecord) -> Optional[OrderResult]:
         self._ensure_pending_limit_is_marketable(pending)
         try:
+            quantity_validator = getattr(self._exchange, "validate_order_quantity", None)
+            if callable(quantity_validator):
+                # Check venue lot-size requirements before changing account
+                # settings or attempting a POST.  The returned value is the
+                # exchange-normalized quantity retained in persisted state.
+                normalized_quantity = float(
+                    quantity_validator(pending.symbol, pending.quantity)
+                )
+                if normalized_quantity <= 0:
+                    raise _NonRetriableEntryError(
+                        f"normalized quantity is invalid for {pending.symbol}"
+                    )
+                if pending.quantity != normalized_quantity:
+                    pending.quantity = normalized_quantity
+                    self._save_state()
             validator = getattr(self._exchange, "validate_ema_avwap_execution", None)
             if callable(validator):
                 # Recheck immediately before a state-changing order in case the
@@ -974,9 +981,13 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 lambda: self._exchange.set_leverage(pending.symbol, pending.leverage),
                 f"set_leverage {pending.symbol}",
             )
+        except _NonRetriableEntryError:
+            raise
         except Exception as exc:
             if self._is_insufficient_balance_error(exc):
                 raise _InsufficientBalanceError(str(exc)) from exc
+            if self._is_non_retriable_order_error(exc):
+                raise _NonRetriableEntryError(str(exc)) from exc
             self._log.error(
                 "EmaAvwapPullback: failed to set account config for %s before "
                 "entry (mode=%s leverage=%sx): %s",
@@ -1011,6 +1022,8 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
         except Exception as exc:
             if self._is_insufficient_balance_error(exc):
                 raise _InsufficientBalanceError(str(exc)) from exc
+            if self._is_non_retriable_order_error(exc):
+                raise _NonRetriableEntryError(str(exc)) from exc
             self._log.error(
                 "EmaAvwapPullback: open_limit_position failed for %s %s: %s",
                 pending.symbol,
