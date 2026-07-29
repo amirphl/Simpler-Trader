@@ -97,6 +97,14 @@ class BitunixExchange(Exchange):
             )
         return normalized_qty
 
+    def validate_order_quantity(self, symbol: str, quantity: float) -> float:
+        """Validate and normalize an entry quantity without placing an order.
+
+        Strategies use this before changing margin or leverage so an order that
+        cannot meet Bitunix's lot-size rules is discarded instead of retried.
+        """
+        return self._normalize_quantity(symbol, quantity)
+
     def _normalize_limit_price(
         self, symbol: str, side: PositionSide, price: float
     ) -> float:
