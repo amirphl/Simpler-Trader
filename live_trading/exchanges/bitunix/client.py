@@ -1484,12 +1484,25 @@ class BitunixClient:
         if normalized_client_id:
             params["clientId"] = normalized_client_id
 
-        data = self._request(
-            "GET",
-            "/api/v1/futures/trade/get_order_detail",
-            query=params,
-            auth=True,
-        )
+        try:
+            data = self._request(
+                "GET",
+                "/api/v1/futures/trade/get_order_detail",
+                query=params,
+                auth=True,
+            )
+        except ValueError as exc:
+            # A local pending entry can have a client id before its first POST.
+            # Bitunix returns 20007 when that id has never reached the venue;
+            # callers should treat it as an absent order, not an API failure.
+            if "bitunix error code 20007" in str(exc).lower():
+                self._log.debug(
+                    "Bitunix: order detail not found order_id=%s client_id=%s",
+                    normalized_order_id,
+                    normalized_client_id,
+                )
+                return {}
+            raise
         if not data or data.get("code", 0) != 0:
             self._log.warning(
                 "Bitunix: get_order_detail failed order_id=%s client_id=%s code=%s msg=%s",
