@@ -51,6 +51,8 @@ class EmaAvwapPullbackLiveConfig:
 
     leverage: int = 10
     margin_mode: MarginMode = MarginMode.ISOLATED
+    # EMA + AVWAP holds at most one active or pending entry per symbol. This
+    # legacy shared-config field is not an account-wide position limit.
     max_concurrent_positions: int = 1
     max_entry_notional_usdt: float = 15.0
     max_position_size_pct: float = 10.0
