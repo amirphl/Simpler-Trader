@@ -259,6 +259,7 @@ def _load_ema_avwap_pullback_env_config(read_env: Callable[..., str]) -> Dict[st
         "execution_interval_minutes": read_env("EXECUTION_INTERVAL_MINUTES"),
         "poll_interval_seconds": read_env("POLL_INTERVAL_SECONDS"),
         "trailing_check_interval_seconds": read_env("TRAILING_CHECK_INTERVAL_SECONDS"),
+        "live_kline_stale_seconds": read_env("LIVE_KLINE_STALE_SECONDS"),
         "deprecated_exchange_base_url": read_env("EXCHANGE_BASE_URL"),
         "http_proxy": read_env("HTTP_PROXY"),
         "https_proxy": read_env("HTTPS_PROXY"),
@@ -771,6 +772,11 @@ def _apply_ema_avwap_pullback_env_defaults(
             config["trailing_check_interval_seconds"],
             "TRAILING_CHECK_INTERVAL_SECONDS",
         )
+    if config["live_kline_stale_seconds"]:
+        args.live_kline_stale_seconds = _parse_float(
+            config["live_kline_stale_seconds"],
+            "LIVE_KLINE_STALE_SECONDS",
+        )
     if config["http_proxy"]:
         args.http_proxy = config["http_proxy"]
     if config["https_proxy"]:
@@ -1233,6 +1239,9 @@ def build_ema_avwap_pullback_config(
         poll_interval_seconds=float(_arg(args, "poll_interval_seconds", 5.0)),
         trailing_check_interval_seconds=float(
             _arg(args, "trailing_check_interval_seconds", 5.0)
+        ),
+        live_kline_stale_seconds=float(
+            _arg(args, "live_kline_stale_seconds", 10.0)
         ),
         leverage=config.leverage,
         margin_mode=config.margin_mode,
