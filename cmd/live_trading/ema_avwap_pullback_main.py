@@ -62,7 +62,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Accepted for shared-config compatibility; ignored by EMA + AVWAP",
     )
     parser.add_argument("--max-entry-notional-usdt", type=float, default=15.0)
-    parser.add_argument("--max-concurrent-positions", type=int, default=1)
+    parser.add_argument(
+        "--max-concurrent-positions",
+        type=int,
+        default=1,
+        help="Set to 1; EMA + AVWAP permits one active/pending entry per symbol",
+    )
     parser.add_argument("--max-position-size-pct", type=float, default=10.0)
     parser.add_argument("--disable-symbol-hours", type=float, default=0.0)
 
@@ -157,6 +162,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--poll-interval-seconds", type=float, default=5.0)
     parser.add_argument("--trailing-check-interval-seconds", type=float, default=5.0)
+    parser.add_argument(
+        "--live-kline-stale-seconds",
+        type=float,
+        default=10.0,
+        help="Reject a WebSocket forming candle that has not refreshed within this interval",
+    )
     parser.add_argument(
         "--state-file",
         type=Path,
