@@ -72,6 +72,25 @@ cp configs/backtest.ema_avwap_pullback.env.example configs/backtest.ema_avwap_pu
 ./scripts/run_ema_avwap_pullback_backtest.sh
 ```
 
+The EMA + AVWAP backtest uses the same independent execution controls as the
+live strategy:
+
+- `STRATEGY_ENTRY_MODE` / `--entry-mode`: `live` evaluates the AVWAP-middle
+  pullback on the first observed price of the next candle; `close` requires an
+  opposite-color candle to close past the middle.
+- `STRATEGY_EXIT_MODE` / `--exit-mode`: `live` exits on a live target touch;
+  `close` exits only when the completed candle closes at or past the target.
+  Rigid and trailing protective stops remain live in both modes.
+- `STRATEGY_EXIT_BAND` / `--exit-band`: selects `band_1` or `band_2`.
+- `MINIMUM_BALANCE_USDT` / `--minimum-balance-usdt`: skips entries when the
+  available-equity proxy is at or below the same live-trading safety floor.
+
+Historical candles do not contain the per-second forming-kline snapshots available to the
+live process. The two `live_middle_*` backtests therefore use the next candle open as the
+first-live-price proxy and that completed candle's AVWAP as the forming-bar proxy; this
+assumption is included in the statistics. The backtest applies the same setup age, EMA,
+entry-deviation, notional-cap, marketability, and protective-stop gates as live trading.
+
 ### Strategy Selection
 
 - `STRATEGY_NAME=heiken_ashi` or `ema_avwap_pullback` or `pinbar_magic_v3` or `strong_trend_stair`
@@ -101,6 +120,9 @@ cp configs/backtest.ema_avwap_pullback.env.example configs/backtest.ema_avwap_pu
 - `RISK_EQUITY_MARK_SOURCE=close|open|hl2|ohlc4`
 - `POLL_INTERVAL_SECONDS`
 - `TRAILING_CHECK_INTERVAL_SECONDS`
+- `LIVE_KLINE_STALE_SECONDS`: maximum age of the current Bitunix WebSocket kline
+  used for live AVWAP entry/exit calculation. If it is stale, the coordinator
+  skips that live calculation rather than using REST history as a substitute.
 
 Note:
 - PinBar Magic v3 does not rely on symbol scanning in the live coordinator.
@@ -109,28 +131,74 @@ Note:
 ### EMA + AVWAP Pullback Variables
 
 - `SYMBOLS=ETHUSDT`
-- `EQUITY_RISK_PCT`
+- `POSITION_NOTIONAL_PCT`: entry notional budget as a percentage of available
+  balance. It is not stop-loss risk.
 - `EMA_LENGTH`
 - `CONSECUTIVE_COUNT`
 - `EMA_VALIDATION_MODE=body|wick`
 - `SETUP_WAITING_REPLACEMENT_MODE=keep_waiting|replace_waiting`
-- `POSITION_SIZING_MODE=risk_distance|risk_amount_per_price`
+- `MAX_SETUP_AGE_BARS`: discard an unfilled setup after this many completed bars.
+- `MAX_ENTRY_DEVIATION_PCT`: reject an observed price that is too far from AVWAP.
+- `MAX_POSITION_SIZE_PCT` and `MAX_ENTRY_NOTIONAL_USDT`: percentage and
+  absolute caps on the entry-notional budget.
+- `MAX_CONCURRENT_POSITIONS=1`: EMA + AVWAP allows one active or pending entry
+  per symbol, not one position for the whole account. Each configured symbol
+  can therefore have its own position.
+- `POSITION_SIZING_MODE=risk_amount_per_price` only. It sizes from the notional
+  budget after fees and slippage; `risk_distance` is not supported.
+- `ENTRY_MODE=close|live`
+  - `close` evaluates the newest closed candle as soon as the next forming candle
+    is observed. An opposite-color pullback must close past the AVWAP middle.
+  - `live` enters when current price reaches the on-the-fly AVWAP middle. A new
+    setup's first observed live price must already be on the favourable side,
+    while a persisted observation pair can cross on a later tick.
+- `EXIT_MODE=close|live`
+  - `close` exits when the newest closed candle closes at or past the configured
+    AVWAP target band.
+  - `live` exits as soon as current price reaches the on-the-fly target band.
+- `EXIT_BAND=band_1|band_2`: independently selects the first or second AVWAP
+  profit-target band.
 - `AVWAP_MULTIPLIER_1`, `AVWAP_MULTIPLIER_2`, `AVWAP_MULTIPLIER_3`
 - `RIGID_STOP_LOSS_PCT`
+- `RIGID_STOP_LOSS_PCT` is required for every entry; AVWAP bands are never used
+  as stop losses.
 - `TRAILING_ACTIVATION_THRESHOLD_PCT`
 - `TRAILING_GAP_PCT`
 - `ENTRY_CANCEL_BARS`
 - `MAX_HISTORY_BARS`
+  - Bitunix kline history is paginated in 200-bar requests, so values above 200
+    are delivered instead of silently truncated.
+- `CANDLE_READY_DELAY_SECONDS=0` evaluates a newly closed candle without an
+  intentional time delay. If the exchange initially returns the previous bar,
+  the coordinator retries within the same candle boundary instead of waiting
+  for another candle.
+- `EXECUTION_INTERVAL_MINUTES` controls the regular market-data poll cadence;
+  polling is automatically capped at the strategy timeframe so shorter candles
+  cannot be skipped.
 - `EMERGENCY_CLOSE_ON_STOP_FAILURE=true|false`
 - `ALLOW_DYNAMIC_STOP_WIDENING=true|false`
 - `POLL_INTERVAL_SECONDS`
 - `TRAILING_CHECK_INTERVAL_SECONDS`
 
+Trailing stops activate once price reaches AVWAP band 1 plus/minus
+`TRAILING_ACTIVATION_THRESHOLD_PCT`, then ratchet by `TRAILING_GAP_PCT` from the
+best favourable price. The live coordinator evaluates them on its configured tick
+cadence; the parity backtest uses its documented deterministic OHLC path proxy.
+Set `TRAILING_GAP_PCT` above zero for a conventional trailing distance; a zero gap
+intentionally exits on its activation price because stop triggers are inclusive.
+
+EMA + AVWAP is mainnet-only. `TESTNET` is rejected, state writes are atomically
+replaced under state- and account-scoped process locks, and the state file is
+tagged `mainnet`; do not reuse an old unscoped state file without manually
+reconciling it first. The multi-process EMA launcher refuses multiple symbols;
+run one coordinator with a comma-separated `SYMBOLS` list instead.
+
 ### Exchange / Risk / Scheduling
 
-- `EXCHANGE`, `TRADING_MODE`, `API_KEY`, `API_SECRET`, `API_PASSPHRASE`, `TESTNET`
+- `EXCHANGE`, `TRADING_MODE`, `API_KEY`, `API_SECRET`, `API_PASSPHRASE`
 - `LEVERAGE`, `TAKE_PROFIT_PCT`
-- `POSITION_SIZE_USDT`, `MAX_CONCURRENT_POSITIONS`, `MAX_POSITION_SIZE_PCT`
+- `POSITION_SIZE_USDT` (ignored by EMA + AVWAP), `MAX_ENTRY_NOTIONAL_USDT`,
+  `MAX_CONCURRENT_POSITIONS`, `MAX_POSITION_SIZE_PCT`
 - `MARGIN_MODE`, `DISABLE_SYMBOL_HOURS`
 - `CANDLE_READY_DELAY_SECONDS`, `EXECUTION_INTERVAL_MINUTES`
 - `STATE_FILE`, `POSITIONS_DB`, `KLINES_DB`, `LOG_FILE`
