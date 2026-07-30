@@ -112,6 +112,11 @@ class EmaAvwapPullbackLiveCoordinator(
             self._cfg.exit_band.value,
             self._cfg.rigid_stop_loss_pct,
         )
+        self._log.info(
+            "EmaAvwapPullback persistence state_file=%s positions_db=%s",
+            self._cfg.state_file,
+            self._cfg.positions_db,
+        )
         while self._running:
             now: datetime = datetime.now(tz=timezone.utc)
             try:

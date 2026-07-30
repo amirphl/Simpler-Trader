@@ -103,6 +103,10 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
             self._position_runtime_by_symbol[symbol] = runtime
             self._position_miss_count_by_symbol[symbol] = 0
             order_status = self._reconcile_pending_order(pending)
+            remaining_quantity = max(pending.quantity - record.quantity, 0.0)
+            is_fully_filled = (
+                order_status == "FILLED" and remaining_quantity <= 1e-12
+            )
             if self._order_is_terminal(order_status):
                 self._remove_pending_entry(pending)
 
@@ -126,18 +130,43 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
                 )
                 continue
 
-            self._notify_trade_opened(record, runtime, stop_price)
-            self._log.info(
-                "EmaAvwapPullback: ENTRY EXECUTION filled entry_mode=%s symbol=%s "
-                "side=%s entry=%.8f qty=%.8f rigid_stop=%s trigger=%s",
-                runtime.entry_mode.value,
-                symbol,
-                ex_pos.side.value,
-                entry_price,
-                record.quantity,
-                f"{stop_price:.8f}" if stop_price is not None else "disabled",
-                runtime.entry_trigger_mode,
+            self._notify_trade_opened(
+                record,
+                runtime,
+                stop_price,
+                order_status=order_status,
+                requested_quantity=pending.quantity,
             )
+            if is_fully_filled:
+                self._log.info(
+                    "EmaAvwapPullback: ENTRY EXECUTION filled entry_mode=%s "
+                    "symbol=%s side=%s entry=%.8f qty=%.8f rigid_stop=%s "
+                    "trigger=%s",
+                    runtime.entry_mode.value,
+                    symbol,
+                    ex_pos.side.value,
+                    entry_price,
+                    record.quantity,
+                    f"{stop_price:.8f}" if stop_price is not None else "disabled",
+                    runtime.entry_trigger_mode,
+                )
+            else:
+                self._log.warning(
+                    "EmaAvwapPullback: ENTRY EXECUTION exposure opened from "
+                    "unconfirmed/partial fill entry_mode=%s symbol=%s side=%s "
+                    "entry=%.8f filled_qty=%.8f requested_qty=%.8f "
+                    "remaining_qty=%.8f order_status=%s rigid_stop=%s trigger=%s",
+                    runtime.entry_mode.value,
+                    symbol,
+                    ex_pos.side.value,
+                    entry_price,
+                    record.quantity,
+                    pending.quantity,
+                    remaining_quantity,
+                    order_status or "UNKNOWN",
+                    f"{stop_price:.8f}" if stop_price is not None else "disabled",
+                    runtime.entry_trigger_mode,
+                )
             self._save_position_to_db(record)
             self._save_state()
 

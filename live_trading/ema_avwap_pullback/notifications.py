@@ -111,9 +111,20 @@ class EmaAvwapNotificationMixin(EmaAvwapMixinTyping):
         position: PositionRecord,
         runtime: _PositionRuntime,
         stop_price: float | None,
+        *,
+        order_status: str = "",
+        requested_quantity: float | None = None,
     ) -> None:
         avwap = runtime.last_avwap
         target_band = runtime.exit_band.number
+        remaining_quantity = (
+            max(requested_quantity - position.quantity, 0.0)
+            if requested_quantity is not None
+            else 0.0
+        )
+        is_fully_filled = (
+            order_status == "FILLED" and remaining_quantity <= 1e-12
+        )
         lines = [
             f"Entry Mode: {runtime.entry_mode.value}",
             f"Exit Mode: {runtime.exit_mode.value}",
@@ -127,9 +138,24 @@ class EmaAvwapNotificationMixin(EmaAvwapMixinTyping):
             else "Rigid Stop: disabled",
             f"Anchor: {runtime.anchor_time.isoformat()}",
             f"Trigger: {runtime.entry_trigger_mode}",
-            "Reason: entry order filled",
+            (
+                "Reason: entry order filled"
+                if is_fully_filled
+                else "Reason: entry exposure opened; order is partially filled "
+                "or awaiting confirmation"
+            ),
             f"Time: {datetime.now(timezone.utc).isoformat()}",
         ]
+        if not is_fully_filled:
+            lines.extend(
+                [
+                    f"Order Status: {order_status or 'unknown'}",
+                    f"Requested Qty: {requested_quantity:.8g}"
+                    if requested_quantity is not None
+                    else "Requested Qty: unavailable",
+                    f"Remaining Qty: {remaining_quantity:.8g}",
+                ]
+            )
         if avwap is not None:
             lines.extend(
                 [
