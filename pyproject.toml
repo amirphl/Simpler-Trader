@@ -1,0 +1,21 @@
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+respect-gitignore = true
+
+[tool.ruff.lint]
+# Start with correctness and syntax checks. Broader rule families can
+# be enabled incrementally without turning the initial tooling setup into a rewrite.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Package initializers intentionally expose public imports.
+"**/__init__.py" = ["F401"]
+# These executable scripts bootstrap the repository root before local imports.
+"scripts/*.py" = ["E402"]
+
+[tool.ruff.format]
+docstring-code-format = true
+indent-style = "space"
+line-ending = "lf"
+quote-style = "double"
