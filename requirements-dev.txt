@@ -1,0 +1,9 @@
+-r requirements.txt
+
+# Code quality
+ruff>=0.12.0
+ty>=0.0.56
+
+# Local Git hooks
+pre-commit>=4.2.0
+
