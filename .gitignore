@@ -17,6 +17,8 @@ venv/
 !.vscode/extensions.json
 .mypy_cache/
 .pytest_cache/
+.ruff_cache/
+.ty_cache/
 
 # Local data/output
 data/
