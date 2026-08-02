@@ -13,6 +13,8 @@ from candle_downloader.downloader import CandleDownloader, DownloadRequest
 from candle_downloader.models import Candle
 from candle_downloader.storage import CandleStore
 
+from .performance import build_performance_statistics
+
 CandleMatrix = Dict[str, Dict[str, List[Candle]]]
 StrategyRunResult = Tuple[Sequence["TradePerformance"], Mapping[str, Any] | None]
 
@@ -261,6 +263,13 @@ class BaseBacktester:
             equity_curve=[initial_capital],
         )
         if not trades:
+            stats.extra["performance"] = build_performance_statistics(
+                trades=trades,
+                initial_capital=initial_capital,
+                start=config.start,
+                end=config.end,
+                risk_free_rate=getattr(config, "risk_free_rate", 0.0),
+            )
             return stats
 
         stats.winning_trades = sum(1 for trade in trades if trade.pnl > 0)
@@ -292,6 +301,13 @@ class BaseBacktester:
             trades=trades,
             risk_free_rate=getattr(config, "risk_free_rate", 0.0),
             average_trade_duration_sec=stats.average_trade_duration_sec,
+        )
+        stats.extra["performance"] = build_performance_statistics(
+            trades=trades,
+            initial_capital=initial_capital,
+            start=config.start,
+            end=config.end,
+            risk_free_rate=getattr(config, "risk_free_rate", 0.0),
         )
         return stats
 
