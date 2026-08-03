@@ -1,191 +1,44 @@
 from __future__ import annotations
 
 import logging
-import math
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import datetime
-from statistics import mean
-from typing import Any, Dict, List, Literal, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
-from candle_downloader.binance import interval_to_milliseconds
 from candle_downloader.models import Candle
 
 from .base import BacktestContext, BacktestStrategy, TradePerformance
+from .ema_avwap_pullback.calculations import EmaAvwapCalculationsMixin
+from .ema_avwap_pullback.config import (
+    Direction,
+    EmaAvwapPullbackStrategyConfig,
+    EntryMode,
+    ExitBand,
+    ExitMode,
+)
+from .ema_avwap_pullback.models import (
+    _AvwapSnapshot,
+    _CrossDecision,
+    _ExitDecision,
+    _PositionState,
+    _SetupState,
+)
+from .ema_avwap_pullback.reporting import EmaAvwapReportingMixin
 from .indicators import ema as calc_ema
 
-Direction = Literal["long", "short"]
-EmaValidationMode = Literal["body", "wick"]
-SetupWaitingReplacementMode = Literal["keep_waiting", "replace_waiting"]
-PositionSizingMode = Literal["risk_distance", "risk_amount_per_price"]
+
+__all__ = [
+    "EmaAvwapPullbackStrategy",
+    "EmaAvwapPullbackStrategyConfig",
+    "EntryMode",
+    "ExitMode",
+    "ExitBand",
+]
 
 
-@dataclass(frozen=True)
-class EmaAvwapPullbackStrategyConfig:
-    symbol: str
-    timeframe: str
-
-    initial_equity: float = 100.0
-    leverage: float = 1.0
-    equity_risk_pct: float = 1.0
-
-    ema_length: int = 55
-    consecutive_count: int = 4
-    ema_validation_mode: EmaValidationMode = "body"
-    setup_waiting_replacement_mode: SetupWaitingReplacementMode = "keep_waiting"
-    position_sizing_mode: PositionSizingMode = "risk_distance"
-
-    avwap_multiplier_1: float = 1.0
-    avwap_multiplier_2: float = 2.0
-    avwap_multiplier_3: float = 3.0
-
-    rigid_stop_loss_pct: float = 0.0
-    trailing_activation_threshold_pct: float = 0.0
-    trailing_gap_pct: float = 1.0
-
-    maker_fee_pct: float = 0.0002
-    taker_fee_pct: float = 0.0006
-    entry_slippage_pct: float = 0.0
-    exit_slippage_pct: float = 0.0
-    use_gap_cross_detection: bool = True
-    max_decision_log_entries: int = 20000
-
-    def __post_init__(self) -> None:
-        symbol = self.symbol.strip().upper()
-        timeframe = self.timeframe.strip()
-        if not symbol:
-            raise ValueError("symbol must not be empty")
-        if not timeframe:
-            raise ValueError("timeframe must not be empty")
-        if self.initial_equity <= 0:
-            raise ValueError("initial_equity must be positive")
-        if self.leverage <= 0:
-            raise ValueError("leverage must be positive")
-        if self.equity_risk_pct <= 0:
-            raise ValueError("equity_risk_pct must be positive")
-        if self.ema_length <= 0:
-            raise ValueError("ema_length must be positive")
-        if self.consecutive_count <= 0:
-            raise ValueError("consecutive_count must be positive")
-        if self.ema_validation_mode not in {"body", "wick"}:
-            raise ValueError("ema_validation_mode must be one of: body, wick")
-        if self.setup_waiting_replacement_mode not in {
-            "keep_waiting",
-            "replace_waiting",
-        }:
-            raise ValueError(
-                "setup_waiting_replacement_mode must be one of: "
-                "keep_waiting, replace_waiting"
-            )
-        if self.position_sizing_mode not in {"risk_distance", "risk_amount_per_price"}:
-            raise ValueError(
-                "position_sizing_mode must be one of: "
-                "risk_distance, risk_amount_per_price"
-            )
-        if min(
-            self.avwap_multiplier_1,
-            self.avwap_multiplier_2,
-            self.avwap_multiplier_3,
-        ) <= 0:
-            raise ValueError("AVWAP multipliers must be positive")
-        if self.rigid_stop_loss_pct < 0:
-            raise ValueError("rigid_stop_loss_pct must be non-negative")
-        if self.trailing_activation_threshold_pct < 0:
-            raise ValueError("trailing_activation_threshold_pct must be non-negative")
-        if self.trailing_gap_pct < 0:
-            raise ValueError("trailing_gap_pct must be non-negative")
-        if min(self.maker_fee_pct, self.taker_fee_pct) < 0:
-            raise ValueError("fee values must be non-negative")
-        if min(self.entry_slippage_pct, self.exit_slippage_pct) < 0:
-            raise ValueError("slippage values must be non-negative")
-        if self.max_decision_log_entries <= 0:
-            raise ValueError("max_decision_log_entries must be positive")
-        interval_to_milliseconds(timeframe)
-        object.__setattr__(self, "symbol", symbol)
-        object.__setattr__(self, "timeframe", timeframe)
-
-
-@dataclass(frozen=True)
-class _AvwapSnapshot:
-    anchor_index: int
-    anchor_time: datetime
-    candle_index: int
-    vwap: float
-    stdev: float
-    upper1: float
-    lower1: float
-    upper2: float
-    lower2: float
-    upper3: float
-    lower3: float
-
-
-@dataclass(frozen=True)
-class _SetupState:
-    direction: Direction
-    anchor_index: int
-    detected_index: int
-    detected_time: datetime
-    consecutive_count: int
-    is_waiting_for_cross: bool = False
-
-
-@dataclass
-class _PositionState:
-    direction: Direction
-    anchor_index: int
-    setup_detected_index: int
-    setup_detected_time: datetime
-    entry_time: datetime
-    entry_index: int
-    raw_entry_price: float
-    entry_price: float
-    qty: float
-    risk_amount: float
-    risk_amount_interpretation: str
-    entry_fee: float
-    stop_level_at_entry: float
-    rigid_stop_level_at_entry: float | None
-    trailing_activation_level_at_entry: float
-    entry_trigger_mode: str
-    position_sizing_mode: PositionSizingMode
-    trailing_active: bool = False
-    trailing_stop: float | None = None
-    extreme_price: float | None = None
-
-
-@dataclass(frozen=True)
-class _SizingDecision:
-    qty: float
-    distance: float
-    entry_price: float
-    estimated_exit_price: float
-    risk_amount_interpretation: str
-    base_qty_before_costs: float
-    qty_reduction_from_costs: float
-    sizing_reference_price: float
-    effective_price_for_sizing: float
-    entry_slippage_per_unit: float
-    exit_slippage_per_unit: float
-    entry_fee_per_unit: float
-    exit_fee_per_unit: float
-    total_cost_per_unit: float
-
-
-@dataclass(frozen=True)
-class _CrossDecision:
-    crossed: bool
-    mode: str | None = None
-
-
-@dataclass(frozen=True)
-class _ExitDecision:
-    reason: str
-    raw_exit_price: float
-    stop_level: float
-    activation_level: float
-
-
-class EmaAvwapPullbackStrategy(BacktestStrategy):
+class EmaAvwapPullbackStrategy(
+    EmaAvwapCalculationsMixin, EmaAvwapReportingMixin, BacktestStrategy
+):
     def __init__(self, config: EmaAvwapPullbackStrategyConfig) -> None:
         self._config = config
         self._log = logging.getLogger(self.__class__.__name__)
@@ -218,14 +71,62 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
 
         trades: List[TradePerformance] = []
         decision_log: List[Dict[str, Any]] = []
+        is_closed_candle_compatible = (
+            cfg.entry_mode is EntryMode.CLOSE and cfg.exit_mode is ExitMode.CLOSE
+        )
         stats: Dict[str, Any] = {
             "config": self._config_as_dict(),
             "execution_assumptions": {
-                "entry_fill_model": "intrabar_intersection",
-                "exit_fill_model": "intrabar_intersection",
+                "historical_data_source": "completed_ohlcv_candles_only",
+                "live_strategy_compatibility": (
+                    "closed_candle_equivalent"
+                    if is_closed_candle_compatible
+                    else "live_tick_ohlc_approximation"
+                ),
+                "live_tick_approximation_warning": (
+                    None
+                    if is_closed_candle_compatible
+                    else "Live entry/exit behavior uses forming-candle AVWAP and "
+                    "individual quotes. Historical OHLCV cannot replay that path "
+                    "without lower-timeframe or tick data."
+                ),
+                "entry_mode": cfg.entry_mode.value,
+                "exit_mode": cfg.exit_mode.value,
+                "exit_band": cfg.exit_band.value,
+                "target_band_number": cfg.exit_band.number,
+                "entry_fill_model": (
+                    "closed_candle_market_price_proxy"
+                    if cfg.entry_mode is EntryMode.CLOSE
+                    else "next_candle_open_first_live_quote_proxy"
+                ),
+                "exit_fill_model": (
+                    "closed_candle_avwap_target_emulation"
+                    if cfg.exit_mode is ExitMode.CLOSE
+                    else "ohlc_live_avwap_target_emulation"
+                ),
+                "gap_fill_model": "next_observed_open_proxy",
                 "intrabar_price_path": "open -> nearest extreme -> far extreme -> close",
                 "gap_cross_detection": cfg.use_gap_cross_detection,
-                "avwap_value_source": "completed_bar_snapshot",
+                "entry_avwap_value_source": (
+                    "closed_candle_snapshot"
+                    if cfg.entry_mode is EntryMode.CLOSE
+                    else "completed_bar_proxy_for_forming_candle"
+                ),
+                "target_avwap_value_source": (
+                    "closed_candle_snapshot"
+                    if cfg.exit_mode is ExitMode.CLOSE
+                    else "completed_bar_proxy_for_forming_candle"
+                ),
+                "live_kline_limitation": (
+                    "Historical OHLCV has no per-poll forming-candle snapshots; "
+                    "live modes use the next candle open as the first quote and "
+                    "that bar's final AVWAP snapshot as a deterministic proxy."
+                ),
+                "dynamic_trailing_management": (
+                    "enabled: live-equivalent activation and ratchet rules over "
+                    "the deterministic OHLC path proxy"
+                ),
+                "protective_stop_model": "rigid_stop_plus_ratcheting_trailing_stop",
             },
             "setups_detected_long": 0,
             "setups_detected_short": 0,
@@ -241,10 +142,20 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
             "entries_short": 0,
             "entries_skipped_invalid_risk": 0,
             "entries_skipped_non_positive_equity": 0,
+            "entries_skipped_minimum_balance": 0,
             "entries_skipped_zero_qty": 0,
+            "entries_capped_by_live_notional_limits": 0,
+            "setups_expired": 0,
+            "setups_invalidated_by_ema": 0,
+            "setups_discarded_unfavorable_first_observation": 0,
+            "entries_skipped_excessive_deviation": 0,
+            "entries_skipped_unmarketable": 0,
+            "entries_skipped_stop_already_breached": 0,
             "stop_exits": 0,
             "rigid_stop_exits": 0,
             "trailing_exits": 0,
+            "target_exits_band_1": 0,
+            "target_exits_band_2": 0,
             "end_of_backtest_exits": 0,
             "trailing_activations": 0,
             "trailing_updates": 0,
@@ -256,6 +167,15 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
             "decision_log": decision_log,
             "initial_equity": cfg.initial_equity,
         }
+
+        if not is_closed_candle_compatible:
+            self._log.warning(
+                "EMA+AVWAP backtest uses a live-tick OHLC approximation "
+                "(entry_mode=%s, exit_mode=%s). Use close/close for a "
+                "closed-candle-equivalent comparison with live trading.",
+                cfg.entry_mode.value,
+                cfg.exit_mode.value,
+            )
 
         active_long_setup: _SetupState | None = None
         active_short_setup: _SetupState | None = None
@@ -292,6 +212,7 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
                     candle_index=idx,
                     prev_close=prev_close,
                     avwap=avwap,
+                    trailing_avwap=position.trailing_avwap,
                     stats=stats,
                     decision_log=decision_log,
                 )
@@ -305,19 +226,27 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
                         raw_exit_price=exit_decision.raw_exit_price,
                         stop_level=exit_decision.stop_level,
                         activation_level=exit_decision.activation_level,
+                        target_level=exit_decision.target_level,
                         avwap=avwap,
                         trades=trades,
                         stats=stats,
                     )
                     realized_equity += pnl
                     position = None
+                else:
+                    # The live coordinator refreshes the trailing reference
+                    # only when this candle has closed.  Targets remain based
+                    # on the forming-candle AVWAP proxy passed above.
+                    position.trailing_avwap = avwap
 
+            entered_this_candle = False
             if position is None:
                 active_long_setup, position = self._process_pending_setup(
                     setup=active_long_setup,
                     candle=candle,
                     candle_index=idx,
                     prev_close=prev_close,
+                    ema_value=ema_value,
                     realized_equity=realized_equity,
                     candles=candles,
                     tpv_prefix=tpv_prefix,
@@ -327,6 +256,7 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
                     decision_log=decision_log,
                 )
                 if position is not None:
+                    entered_this_candle = True
                     active_long_setup = None
                     active_short_setup = None
 
@@ -336,6 +266,7 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
                     candle=candle,
                     candle_index=idx,
                     prev_close=prev_close,
+                    ema_value=ema_value,
                     realized_equity=realized_equity,
                     candles=candles,
                     tpv_prefix=tpv_prefix,
@@ -345,10 +276,49 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
                     decision_log=decision_log,
                 )
                 if position is not None:
+                    entered_this_candle = True
                     active_long_setup = None
                     active_short_setup = None
 
-            if position is None:
+            if position is not None and entered_this_candle and position.entry_path_remaining:
+                avwap = self._build_avwap_snapshot(
+                    candles=candles,
+                    anchor_index=position.anchor_index,
+                    candle_index=idx,
+                    tpv_prefix=tpv_prefix,
+                    vol_prefix=vol_prefix,
+                    tpv2_prefix=tpv2_prefix,
+                )
+                exit_decision = self._process_position_for_candle(
+                    position=position,
+                    candle=candle,
+                    candle_index=idx,
+                    prev_close=position.raw_entry_price,
+                    avwap=avwap,
+                    trailing_avwap=position.trailing_avwap,
+                    stats=stats,
+                    decision_log=decision_log,
+                    path_override=position.entry_path_remaining,
+                )
+                if exit_decision is not None:
+                    pnl = self._close_position(
+                        position=position,
+                        candle=candle,
+                        candle_index=idx,
+                        exit_time=candle.close_time,
+                        exit_reason=exit_decision.reason,
+                        raw_exit_price=exit_decision.raw_exit_price,
+                        stop_level=exit_decision.stop_level,
+                        activation_level=exit_decision.activation_level,
+                        target_level=exit_decision.target_level,
+                        avwap=avwap,
+                        trades=trades,
+                        stats=stats,
+                    )
+                    realized_equity += pnl
+                    position = None
+
+            if position is None and not entered_this_candle:
                 maybe_long_setup = self._detect_setup(
                     direction="long",
                     candles=candles,
@@ -404,8 +374,11 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
                 exit_time=last_candle.close_time,
                 exit_reason="End of backtest",
                 raw_exit_price=last_candle.close,
-                stop_level=avwap.lower2 if position.direction == "long" else avwap.upper2,
+                stop_level=avwap.lower1 if position.direction == "long" else avwap.upper1,
                 activation_level=self._trailing_activation_level(position.direction, avwap),
+                target_level=self._target_band_level(
+                    position.direction, avwap, position.exit_band
+                ),
                 avwap=avwap,
                 trades=trades,
                 stats=stats,
@@ -474,6 +447,33 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
         if mode == "wick":
             return candle.high < ema_value
         return max(candle.open, candle.close) < ema_value
+
+    @staticmethod
+    def _price_respects_ema(
+        *, direction: Direction, price: float, ema_value: float
+    ) -> bool:
+        return price > ema_value if direction == "long" else price < ema_value
+
+    @staticmethod
+    def _entry_price_is_marketable(
+        *, direction: Direction, current_price: float, entry_price: float
+    ) -> bool:
+        return current_price <= entry_price if direction == "long" else current_price >= entry_price
+
+    @staticmethod
+    def _entry_deviation_pct(price: float, avwap: float) -> float:
+        if avwap <= 0:
+            return float("inf")
+        return abs(price - avwap) / avwap * 100.0
+
+    @staticmethod
+    def _setup_after_skipped_entry(
+        setup: _SetupState, entry_mode: EntryMode
+    ) -> _SetupState:
+        """Preserve a setup when the live coordinator can retry it on a tick."""
+        if entry_mode is EntryMode.LIVE:
+            return replace(setup, is_waiting_for_cross=True)
+        return setup
 
     def _replace_or_store_setup(
         self,
@@ -573,6 +573,7 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
         candle: Candle,
         candle_index: int,
         prev_close: float,
+        ema_value: float,
         realized_equity: float,
         candles: Sequence[Candle],
         tpv_prefix: Sequence[float],
@@ -584,11 +585,60 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
         if setup is None or candle_index <= setup.detected_index:
             return setup, None
 
-        expects_pullback = (
-            candle.is_bearish() if setup.direction == "long" else candle.is_bullish()
+        setup_age_bars = candle_index - setup.detected_index
+        if setup_age_bars > self._config.max_setup_age_bars:
+            stats["setups_expired"] += 1
+            self._record_event(
+                decision_log=decision_log,
+                stats=stats,
+                event="setup_discarded",
+                payload={
+                    "timestamp": candle.close_time.isoformat(),
+                    "candle_index": candle_index,
+                    "setup_type": setup.direction,
+                    "reason": "maximum setup age exceeded",
+                    "setup_age_bars": setup_age_bars,
+                    "max_setup_age_bars": self._config.max_setup_age_bars,
+                },
+            )
+            return None, None
+
+        entry_mode = self._config.entry_mode
+        has_persisted_live_observation = (
+            setup.last_observed_price is not None
+            and setup.last_observed_middle is not None
         )
-        if not expects_pullback:
-            return setup, None
+        is_first_live_observation = (
+            entry_mode is EntryMode.LIVE
+            and not has_persisted_live_observation
+            and candle_index == setup.detected_index + 1
+        )
+        # A live entry receives its first forming-candle quote immediately
+        # after a setup is detected.  Its candle has not closed yet, so using
+        # the final close here would add a look-ahead EMA filter that does not
+        # exist in the coordinator. Every later evaluation, including a retry
+        # after a rejected live entry candidate, does see this completed-bar
+        # gate before the next forming-candle tick.
+        if not is_first_live_observation and not self._price_respects_ema(
+            direction=setup.direction,
+            price=candle.close,
+            ema_value=ema_value,
+        ):
+            stats["setups_invalidated_by_ema"] += 1
+            self._record_event(
+                decision_log=decision_log,
+                stats=stats,
+                event="setup_discarded",
+                payload={
+                    "timestamp": candle.close_time.isoformat(),
+                    "candle_index": candle_index,
+                    "setup_type": setup.direction,
+                    "reason": "closed price crossed the EMA",
+                    "closed_price": candle.close,
+                    "ema_value": ema_value,
+                },
+            )
+            return None, None
 
         avwap = self._build_avwap_snapshot(
             candles=candles,
@@ -598,15 +648,82 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
             vol_prefix=vol_prefix,
             tpv2_prefix=tpv2_prefix,
         )
-        cross_direction = "down" if setup.direction == "long" else "up"
-        cross = self._detect_level_cross(
-            candle=candle,
-            prev_close=prev_close,
-            level=avwap.vwap,
-            direction=cross_direction,
-        )
+
+        exit_mode = self._config.exit_mode
+        exit_band = self._config.exit_band
+        decision_price: float
+        raw_entry_price: float
+        if entry_mode is EntryMode.CLOSE:
+            expects_pullback = (
+                candle.is_bearish() if setup.direction == "long" else candle.is_bullish()
+            )
+            if not expects_pullback:
+                return setup, None
+            crossed_middle = (
+                candle.close < avwap.vwap
+                if setup.direction == "long"
+                else candle.close > avwap.vwap
+            )
+            cross = _CrossDecision(crossed_middle, "candle_close")
+            decision_price = candle.close
+            # Live mode 2 submits its order at the current market price after the
+            # close signal. The closing price is the best historical-bar proxy.
+            raw_entry_price = candle.close
+        else:
+            # The live coordinator has no previous tick for a new setup.  Its
+            # first quote must already be on the favourable side of AVWAP or it
+            # discards the setup; it does not infer an intrabar cross later
+            # from OHLC extremes.  The next candle open is the only unbiased
+            # historical proxy for that first live quote.
+            decision_price = candle.open
+            raw_entry_price = avwap.vwap
+            if (
+                setup.last_observed_price is None
+                or setup.last_observed_middle is None
+            ):
+                crossed = self._price_is_past_entry_line(
+                    direction=setup.direction,
+                    price=decision_price,
+                    entry_price=raw_entry_price,
+                )
+            else:
+                crossed = self._price_crossed_entry_line(
+                    direction=setup.direction,
+                    previous_price=setup.last_observed_price,
+                    previous_entry_price=setup.last_observed_middle,
+                    current_price=decision_price,
+                    current_entry_price=raw_entry_price,
+                )
+            cross = _CrossDecision(
+                crossed,
+                "live_tick",
+                tuple((candle.open, *self._price_path(candle))),
+            )
 
         if not cross.crossed:
+            has_previous_live_observation = (
+                setup.last_observed_price is not None
+                and setup.last_observed_middle is not None
+            )
+            if entry_mode is EntryMode.LIVE and not has_previous_live_observation:
+                stats["setups_discarded_unfavorable_first_observation"] += 1
+                self._record_event(
+                    decision_log=decision_log,
+                    stats=stats,
+                    event="setup_discarded",
+                    payload={
+                        "timestamp": candle.close_time.isoformat(),
+                        "candle_index": candle_index,
+                        "setup_type": setup.direction,
+                        "entry_mode": entry_mode.value,
+                        "exit_mode": exit_mode.value,
+                        "exit_band": exit_band.value,
+                        "reason": "first live observation was not at a favorable AVWAP cross",
+                        "decision_price": decision_price,
+                        "vwap_middle_line": avwap.vwap,
+                    },
+                )
+                return None, None
             self._record_event(
                 decision_log=decision_log,
                 stats=stats,
@@ -615,10 +732,17 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
                     "timestamp": candle.close_time.isoformat(),
                     "candle_index": candle_index,
                     "setup_type": setup.direction,
+                    "entry_mode": entry_mode.value,
+                    "exit_mode": exit_mode.value,
+                    "exit_band": exit_band.value,
                     "consecutive_count": setup.consecutive_count,
                     "anchor_index": setup.anchor_index,
                     "anchor_time": candles[setup.anchor_index].open_time.isoformat(),
-                    "entry_signal_details": "pullback candle did not cross AVWAP middle line yet",
+                    "entry_signal_details": (
+                        "opposite candle did not close past AVWAP middle"
+                        if entry_mode is EntryMode.CLOSE
+                        else "first live observation did not touch AVWAP middle"
+                    ),
                     "vwap_middle_line": avwap.vwap,
                     "upper_band_1": avwap.upper1,
                     "lower_band_1": avwap.lower1,
@@ -626,10 +750,49 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
                     "lower_band_2": avwap.lower2,
                 },
             )
-            return replace(setup, is_waiting_for_cross=True), None
+            return (
+                replace(
+                    setup,
+                    is_waiting_for_cross=True,
+                    last_observed_price=(
+                        decision_price if entry_mode is EntryMode.LIVE else None
+                    ),
+                    last_observed_middle=(
+                        avwap.vwap if entry_mode is EntryMode.LIVE else None
+                    ),
+                ),
+                None,
+            )
 
-        risk_amount = realized_equity * (self._config.equity_risk_pct / 100.0)
-        if risk_amount <= 0:
+        if realized_equity <= self._config.minimum_balance_usdt:
+            stats["entries_skipped_minimum_balance"] += 1
+            self._record_event(
+                decision_log=decision_log,
+                stats=stats,
+                event="entry_skipped",
+                payload={
+                    "timestamp": candle.close_time.isoformat(),
+                    "candle_index": candle_index,
+                    "setup_type": setup.direction,
+                    "entry_signal_details": "available-equity proxy was at or below the minimum balance",
+                    "realized_equity": realized_equity,
+                    "minimum_balance_usdt": self._config.minimum_balance_usdt,
+                },
+            )
+            return self._setup_after_skipped_entry(setup, entry_mode), None
+
+        requested_notional_budget = realized_equity * (
+            self._config.position_notional_pct / 100.0
+        )
+        percentage_cap = realized_equity * (
+            self._config.max_position_size_pct / 100.0
+        )
+        position_notional_budget = min(
+            requested_notional_budget,
+            percentage_cap,
+            self._config.max_entry_notional_usdt,
+        )
+        if position_notional_budget <= 0:
             stats["entries_skipped_non_positive_equity"] += 1
             self._record_event(
                 decision_log=decision_log,
@@ -639,19 +802,20 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
                     "timestamp": candle.close_time.isoformat(),
                     "candle_index": candle_index,
                     "setup_type": setup.direction,
-                    "entry_signal_details": "non-positive risk amount",
+                    "entry_signal_details": "non-positive position-notional budget",
                     "realized_equity": realized_equity,
                 },
             )
-            return None, None
+            return self._setup_after_skipped_entry(setup, entry_mode), None
 
-        raw_entry_price = avwap.vwap
-        stop_level = avwap.lower2 if setup.direction == "long" else avwap.upper2
+        if position_notional_budget < requested_notional_budget:
+            stats["entries_capped_by_live_notional_limits"] += 1
+
+        dynamic_stop_level = avwap.lower1 if setup.direction == "long" else avwap.upper1
         sizing = self._build_sizing_decision(
             direction=setup.direction,
             raw_entry_price=raw_entry_price,
-            stop_level=stop_level,
-            risk_amount=risk_amount,
+            position_notional_budget=position_notional_budget,
         )
         if sizing is None:
             stats["entries_skipped_invalid_risk"] += 1
@@ -663,12 +827,14 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
                     "timestamp": candle.close_time.isoformat(),
                     "candle_index": candle_index,
                     "setup_type": setup.direction,
-                    "entry_signal_details": "stop distance was not positive",
+                    "entry_mode": entry_mode.value,
+                    "exit_mode": exit_mode.value,
+                    "exit_band": exit_band.value,
+                    "entry_signal_details": "notional-budget sizing was unavailable",
                     "entry_intersection_price": raw_entry_price,
-                    "stop_loss_level": stop_level,
                 },
             )
-            return None, None
+            return self._setup_after_skipped_entry(setup, entry_mode), None
 
         qty = sizing.qty
         if qty <= 0:
@@ -684,11 +850,71 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
                     "entry_signal_details": "computed quantity was not positive",
                 },
             )
-            return None, None
+            return self._setup_after_skipped_entry(setup, entry_mode), None
 
         entry_price = sizing.entry_price
-        entry_fee = entry_price * qty * self._config.maker_fee_pct
         rigid_stop_level = self._rigid_stop_level(setup.direction, entry_price)
+        if entry_mode is EntryMode.LIVE and not self._entry_price_is_marketable(
+            direction=setup.direction,
+            current_price=decision_price,
+            entry_price=entry_price,
+        ):
+            stats["entries_skipped_unmarketable"] += 1
+            self._record_event(
+                decision_log=decision_log,
+                stats=stats,
+                event="entry_skipped",
+                payload={
+                    "timestamp": candle.close_time.isoformat(),
+                    "candle_index": candle_index,
+                    "setup_type": setup.direction,
+                    "entry_signal_details": "live AVWAP middle order was no longer marketable",
+                    "decision_price": decision_price,
+                    "entry_price": entry_price,
+                },
+            )
+            return self._setup_after_skipped_entry(setup, entry_mode), None
+        if rigid_stop_level is not None and self._rigid_stop_is_touched(
+            direction=setup.direction,
+            price=decision_price,
+            rigid_stop=rigid_stop_level,
+        ):
+            stats["entries_skipped_stop_already_breached"] += 1
+            self._record_event(
+                decision_log=decision_log,
+                stats=stats,
+                event="entry_skipped",
+                payload={
+                    "timestamp": candle.close_time.isoformat(),
+                    "candle_index": candle_index,
+                    "setup_type": setup.direction,
+                    "entry_signal_details": "price was already beyond the protective stop",
+                    "decision_price": decision_price,
+                    "rigid_stop_loss_level": rigid_stop_level,
+                },
+            )
+            return self._setup_after_skipped_entry(setup, entry_mode), None
+        deviation_pct = self._entry_deviation_pct(decision_price, avwap.vwap)
+        if deviation_pct > self._config.max_entry_deviation_pct:
+            stats["entries_skipped_excessive_deviation"] += 1
+            self._record_event(
+                decision_log=decision_log,
+                stats=stats,
+                event="entry_skipped",
+                payload={
+                    "timestamp": candle.close_time.isoformat(),
+                    "candle_index": candle_index,
+                    "setup_type": setup.direction,
+                    "entry_signal_details": "live price exceeded the AVWAP deviation limit",
+                    "decision_price": decision_price,
+                    "vwap_middle_line": avwap.vwap,
+                    "entry_deviation_pct": deviation_pct,
+                    "max_entry_deviation_pct": self._config.max_entry_deviation_pct,
+                },
+            )
+            return self._setup_after_skipped_entry(setup, entry_mode), None
+
+        entry_fee = entry_price * qty * self._config.taker_fee_pct
         trailing_activation_level = self._trailing_activation_level(setup.direction, avwap)
         estimated_entry_slippage_cost = sizing.entry_slippage_per_unit * qty
         estimated_exit_slippage_cost = sizing.exit_slippage_per_unit * qty
@@ -700,19 +926,29 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
             anchor_index=setup.anchor_index,
             setup_detected_index=setup.detected_index,
             setup_detected_time=setup.detected_time,
-            entry_time=candle.close_time,
+            entry_time=(
+                candle.close_time if entry_mode is EntryMode.CLOSE else candle.open_time
+            ),
             entry_index=candle_index,
             raw_entry_price=raw_entry_price,
             entry_price=entry_price,
             qty=qty,
-            risk_amount=risk_amount,
-            risk_amount_interpretation=sizing.risk_amount_interpretation,
+            position_notional_budget=position_notional_budget,
             entry_fee=entry_fee,
-            stop_level_at_entry=stop_level,
+            stop_level_at_entry=dynamic_stop_level,
             rigid_stop_level_at_entry=rigid_stop_level,
             trailing_activation_level_at_entry=trailing_activation_level,
-            entry_trigger_mode=cross.mode or "intrabar",
+            entry_trigger_mode=cross.mode or "live_tick",
             position_sizing_mode=self._config.position_sizing_mode,
+            entry_mode=entry_mode,
+            exit_mode=exit_mode,
+            exit_band=exit_band,
+            decision_price=decision_price,
+            ema_value_at_entry=ema_value,
+            entry_path_remaining=(
+                () if entry_mode is EntryMode.CLOSE else cross.remaining_path
+            ),
+            trailing_avwap=avwap,
         )
 
         stats[f"entries_{setup.direction}"] += 1
@@ -730,16 +966,25 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
                 "timestamp": candle.close_time.isoformat(),
                 "candle_index": candle_index,
                 "setup_type": setup.direction,
+                "entry_mode": entry_mode.value,
+                "exit_mode": exit_mode.value,
+                "exit_band": exit_band.value,
+                "exit_band_number": exit_band.number,
                 "consecutive_count": setup.consecutive_count,
                 "anchor_index": setup.anchor_index,
                 "anchor_time": candles[setup.anchor_index].open_time.isoformat(),
-                "entry_signal_details": "first pullback candle crossed AVWAP middle line",
+                "entry_signal_details": (
+                    "opposite candle closed past AVWAP middle"
+                    if entry_mode is EntryMode.CLOSE
+                    else "first live observation was at or past AVWAP middle"
+                ),
                 "entry_trigger_mode": cross.mode,
+                "decision_price": decision_price,
                 "entry_intersection_price": raw_entry_price,
                 "executed_entry_price": entry_price,
                 "position_qty": qty,
-                "risk_amount": risk_amount,
-                "risk_amount_interpretation": sizing.risk_amount_interpretation,
+                "position_notional_budget": position_notional_budget,
+                "requested_position_notional_budget": requested_notional_budget,
                 "position_sizing_mode": self._config.position_sizing_mode,
                 "sizing_reference_price": sizing.sizing_reference_price,
                 "effective_price_for_sizing": sizing.effective_price_for_sizing,
@@ -756,10 +1001,12 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
                 "estimated_entry_fee": entry_fee,
                 "estimated_exit_fee": estimated_exit_fee,
                 "estimated_total_cost_buffer": estimated_total_cost_buffer,
-                "stop_loss_level": stop_level,
+                "dynamic_stop_level_at_entry": dynamic_stop_level,
+                "dynamic_stop_management_enabled": True,
                 "rigid_stop_loss_pct": self._config.rigid_stop_loss_pct,
                 "rigid_stop_loss_level": rigid_stop_level,
                 "trailing_activation_level": trailing_activation_level,
+                "target_level": self._target_band_level(setup.direction, avwap, exit_band),
                 "vwap_middle_line": avwap.vwap,
                 "upper_band_1": avwap.upper1,
                 "lower_band_1": avwap.lower1,
@@ -785,179 +1032,377 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
         avwap: _AvwapSnapshot,
         stats: Dict[str, Any],
         decision_log: List[Dict[str, Any]],
+        trailing_avwap: _AvwapSnapshot | None = None,
+        path_override: Sequence[float] | None = None,
     ) -> _ExitDecision | None:
-        stop_level = avwap.lower2 if position.direction == "long" else avwap.upper2
-        rigid_stop_level = position.rigid_stop_level_at_entry
-        activation_level = self._trailing_activation_level(position.direction, avwap)
+        """Emulate live target, rigid-stop, and trailing decisions over OHLC.
 
-        if position.direction == "long":
-            gap_exit = self._check_long_gap_exit(
-                position=position,
-                prev_close=prev_close,
-                open_price=candle.open,
-                stop_level=stop_level,
+        The live coordinator observes individual prices, whereas historical
+        candles only provide OHLC.  We therefore process the deterministic
+        ``open -> nearest extreme -> far extreme -> close`` proxy already used
+        by the strategy.  At every observed price the ordering is the same as
+        live trading: target first, then protective stops; a trailing stop only
+        activates or ratchets on a favourable move.  A zero-percent trailing
+        gap is the intentional exception: its inclusive stop condition fires
+        at the activating price in both live and backtest execution.
+        """
+        stop_level = avwap.lower1 if position.direction == "long" else avwap.upper1
+        trailing_reference = trailing_avwap or avwap
+        rigid_stop_level = position.rigid_stop_level_at_entry
+        activation_level = self._trailing_activation_level(
+            position.direction, trailing_reference
+        )
+        exit_mode = position.exit_mode
+        exit_band = position.exit_band
+        target_level = self._target_band_level(
+            position.direction, avwap, exit_band
+        )
+        target_reason = f"AVWAP band {exit_band.number} target"
+        close_target_reason = f"{target_reason} on candle close"
+        target_is_live = exit_mode is ExitMode.LIVE
+
+        if path_override is None:
+            gap_exit = self._first_exit_on_price_move(
+                direction=position.direction,
+                start_price=prev_close,
+                end_price=candle.open,
+                target_level=target_level,
+                target_reason=target_reason,
                 rigid_stop_level=rigid_stop_level,
+                trailing_stop=(
+                    position.trailing_stop if position.trailing_active else None
+                ),
+                include_target=target_is_live,
             )
             if gap_exit is not None:
                 return _ExitDecision(
                     reason=gap_exit[0],
-                    raw_exit_price=gap_exit[1],
+                    # Live target/stop checks run on the currently observed
+                    # quote.  A historical bar gap therefore exits at the
+                    # next observed open proxy, not at an unavailable exact
+                    # intersection within the gap.
+                    raw_exit_price=candle.open,
                     stop_level=stop_level,
                     activation_level=activation_level,
+                    target_level=target_level,
                 )
-            open_exit = self._check_long_open_exit(
-                position=position,
-                open_price=candle.open,
-                stop_level=stop_level,
-                rigid_stop_level=rigid_stop_level,
-            )
-            if open_exit is not None:
-                return _ExitDecision(
-                    reason=open_exit[0],
-                    raw_exit_price=open_exit[1],
-                    stop_level=stop_level,
-                    activation_level=activation_level,
-                )
+            path = (candle.open, *self._price_path(candle))
+        else:
+            path = tuple(path_override)
 
-            if not position.trailing_active and candle.open >= activation_level:
-                self._activate_long_trailing(
-                    position=position,
-                    extreme_price=candle.open,
-                    candle=candle,
-                    candle_index=candle_index,
-                    activation_level=activation_level,
-                    avwap=avwap,
-                    mode="gap",
-                    stats=stats,
-                    decision_log=decision_log,
-                )
-
-            start_price = candle.open
-            for end_price in self._price_path(candle):
-                if end_price >= start_price:
-                    if not position.trailing_active and start_price <= activation_level <= end_price:
-                        self._activate_long_trailing(
-                            position=position,
-                            extreme_price=end_price,
-                            candle=candle,
-                            candle_index=candle_index,
-                            activation_level=activation_level,
-                            avwap=avwap,
-                            mode="intrabar",
-                            stats=stats,
-                            decision_log=decision_log,
-                        )
-                    elif position.trailing_active:
-                        self._update_long_trailing(
-                            position=position,
-                            extreme_price=end_price,
-                            candle=candle,
-                            candle_index=candle_index,
-                            avwap=avwap,
-                            stats=stats,
-                            decision_log=decision_log,
-                        )
-                else:
-                    adverse_exit = self._first_long_downside_exit(
-                        position=position,
-                        start_price=start_price,
-                        end_price=end_price,
-                        stop_level=stop_level,
-                        rigid_stop_level=rigid_stop_level,
-                    )
-                    if adverse_exit is not None:
-                        return _ExitDecision(
-                            reason=adverse_exit[0],
-                            raw_exit_price=adverse_exit[1],
-                            stop_level=stop_level,
-                            activation_level=activation_level,
-                        )
-                start_price = end_price
+        if not path:
             return None
-
-        gap_exit = self._check_short_gap_exit(
+        first_price = path[0]
+        observed_exit = self._exit_at_observed_price(
             position=position,
-            prev_close=prev_close,
-            open_price=candle.open,
-            stop_level=stop_level,
+            price=first_price,
+            target_level=target_level,
+            target_reason=(
+                target_reason
+                if target_is_live or len(path) == 1
+                else close_target_reason
+            ),
             rigid_stop_level=rigid_stop_level,
+            include_target=target_is_live or len(path) == 1,
         )
-        if gap_exit is not None:
+        if observed_exit is not None:
             return _ExitDecision(
-                reason=gap_exit[0],
-                raw_exit_price=gap_exit[1],
+                reason=observed_exit[0],
+                raw_exit_price=first_price,
                 stop_level=stop_level,
                 activation_level=activation_level,
+                target_level=target_level,
             )
-        open_exit = self._check_short_open_exit(
+        trailing_exit = self._advance_trailing_at_price(
             position=position,
-            open_price=candle.open,
-            stop_level=stop_level,
-            rigid_stop_level=rigid_stop_level,
+            price=first_price,
+            candle=candle,
+            candle_index=candle_index,
+            activation_level=activation_level,
+            avwap=avwap,
+            stats=stats,
+            decision_log=decision_log,
         )
-        if open_exit is not None:
+        if trailing_exit is not None:
             return _ExitDecision(
-                reason=open_exit[0],
-                raw_exit_price=open_exit[1],
+                reason=trailing_exit[0],
+                raw_exit_price=trailing_exit[1],
                 stop_level=stop_level,
                 activation_level=activation_level,
+                target_level=target_level,
             )
 
-        if not position.trailing_active and candle.open <= activation_level:
-            self._activate_short_trailing(
+        start_price = first_price
+        for path_index, end_price in enumerate(path[1:], start=1):
+            crossed = self._first_exit_on_price_move(
+                direction=position.direction,
+                start_price=start_price,
+                end_price=end_price,
+                target_level=target_level,
+                target_reason=target_reason,
+                rigid_stop_level=rigid_stop_level,
+                trailing_stop=(
+                    position.trailing_stop if position.trailing_active else None
+                ),
+                include_target=target_is_live,
+            )
+            if crossed is not None:
+                return _ExitDecision(
+                    reason=crossed[0],
+                    raw_exit_price=crossed[1],
+                    stop_level=stop_level,
+                    activation_level=activation_level,
+                    target_level=target_level,
+                )
+            is_close = path_index == len(path) - 1
+            if (
+                is_close
+                and not target_is_live
+                and self._target_is_touched(
+                    direction=position.direction,
+                    price=end_price,
+                    target=target_level,
+                )
+            ):
+                return _ExitDecision(
+                    reason=close_target_reason,
+                    raw_exit_price=end_price,
+                    stop_level=stop_level,
+                    activation_level=activation_level,
+                    target_level=target_level,
+                )
+
+            trailing_exit = self._advance_trailing_on_price_move(
                 position=position,
-                extreme_price=candle.open,
+                start_price=start_price,
+                end_price=end_price,
                 candle=candle,
                 candle_index=candle_index,
                 activation_level=activation_level,
                 avwap=avwap,
-                mode="gap",
                 stats=stats,
                 decision_log=decision_log,
             )
-
-        start_price = candle.open
-        for end_price in self._price_path(candle):
-            if end_price <= start_price:
-                if not position.trailing_active and start_price >= activation_level >= end_price:
-                    self._activate_short_trailing(
-                        position=position,
-                        extreme_price=end_price,
-                        candle=candle,
-                        candle_index=candle_index,
-                        activation_level=activation_level,
-                        avwap=avwap,
-                        mode="intrabar",
-                        stats=stats,
-                        decision_log=decision_log,
-                    )
-                elif position.trailing_active:
-                    self._update_short_trailing(
-                        position=position,
-                        extreme_price=end_price,
-                        candle=candle,
-                        candle_index=candle_index,
-                        avwap=avwap,
-                        stats=stats,
-                        decision_log=decision_log,
-                    )
-            else:
-                adverse_exit = self._first_short_upside_exit(
-                    position=position,
-                    start_price=start_price,
-                    end_price=end_price,
+            if trailing_exit is not None:
+                return _ExitDecision(
+                    reason=trailing_exit[0],
+                    raw_exit_price=trailing_exit[1],
                     stop_level=stop_level,
-                    rigid_stop_level=rigid_stop_level,
+                    activation_level=activation_level,
+                    target_level=target_level,
                 )
-                if adverse_exit is not None:
-                    return _ExitDecision(
-                        reason=adverse_exit[0],
-                        raw_exit_price=adverse_exit[1],
-                        stop_level=stop_level,
-                        activation_level=activation_level,
-                    )
             start_price = end_price
         return None
+
+    def _exit_at_observed_price(
+        self,
+        *,
+        position: _PositionState,
+        price: float,
+        target_level: float,
+        target_reason: str,
+        rigid_stop_level: float | None,
+        include_target: bool,
+    ) -> Tuple[str, float] | None:
+        # Live target handling precedes the trailing manager on each tick.
+        # Close-mode targets are evaluated only at the completed-bar close.
+        if include_target and self._target_is_touched(
+            direction=position.direction, price=price, target=target_level
+        ):
+            return target_reason, target_level
+
+        candidates: List[Tuple[str, float]] = []
+        trailing_stop = position.trailing_stop if position.trailing_active else None
+        if position.direction == "long":
+            if trailing_stop is not None and price <= trailing_stop:
+                candidates.append(("Trailing stop", trailing_stop))
+            if rigid_stop_level is not None and price <= rigid_stop_level:
+                candidates.append(("Rigid stop loss", rigid_stop_level))
+            return max(candidates, key=lambda item: item[1]) if candidates else None
+
+        if trailing_stop is not None and price >= trailing_stop:
+            candidates.append(("Trailing stop", trailing_stop))
+        if rigid_stop_level is not None and price >= rigid_stop_level:
+            candidates.append(("Rigid stop loss", rigid_stop_level))
+        return min(candidates, key=lambda item: item[1]) if candidates else None
+
+    def _first_exit_on_price_move(
+        self,
+        *,
+        direction: Direction,
+        start_price: float,
+        end_price: float,
+        target_level: float,
+        target_reason: str,
+        rigid_stop_level: float | None,
+        trailing_stop: float | None,
+        include_target: bool,
+    ) -> Tuple[str, float] | None:
+        """Return the first executable level reached on one price segment."""
+        if end_price == start_price:
+            return None
+
+        candidates: List[Tuple[str, float]] = []
+        if direction == "long":
+            if (
+                include_target
+                and end_price > start_price
+                and start_price < target_level <= end_price
+            ):
+                candidates.append((target_reason, target_level))
+            if end_price < start_price:
+                if trailing_stop is not None and start_price > trailing_stop >= end_price:
+                    candidates.append(("Trailing stop", trailing_stop))
+                if (
+                    rigid_stop_level is not None
+                    and start_price > rigid_stop_level >= end_price
+                ):
+                    candidates.append(("Rigid stop loss", rigid_stop_level))
+        else:
+            if (
+                include_target
+                and end_price < start_price
+                and start_price > target_level >= end_price
+            ):
+                candidates.append((target_reason, target_level))
+            if end_price > start_price:
+                if trailing_stop is not None and start_price < trailing_stop <= end_price:
+                    candidates.append(("Trailing stop", trailing_stop))
+                if (
+                    rigid_stop_level is not None
+                    and start_price < rigid_stop_level <= end_price
+                ):
+                    candidates.append(("Rigid stop loss", rigid_stop_level))
+
+        if not candidates:
+            return None
+        return (
+            min(candidates, key=lambda item: item[1])
+            if end_price > start_price
+            else max(candidates, key=lambda item: item[1])
+        )
+
+    def _advance_trailing_at_price(
+        self,
+        *,
+        position: _PositionState,
+        price: float,
+        candle: Candle,
+        candle_index: int,
+        activation_level: float,
+        avwap: _AvwapSnapshot,
+        stats: Dict[str, Any],
+        decision_log: List[Dict[str, Any]],
+    ) -> Tuple[str, float] | None:
+        if position.direction == "long":
+            if not position.trailing_active and price >= activation_level:
+                self._activate_long_trailing(
+                    position=position,
+                    extreme_price=price,
+                    candle=candle,
+                    candle_index=candle_index,
+                    activation_level=activation_level,
+                    avwap=avwap,
+                    mode="ohlc_path",
+                    stats=stats,
+                    decision_log=decision_log,
+                )
+            elif position.trailing_active:
+                self._update_long_trailing(
+                    position=position,
+                    extreme_price=price,
+                    candle=candle,
+                    candle_index=candle_index,
+                    avwap=avwap,
+                    stats=stats,
+                    decision_log=decision_log,
+                )
+            return self._trailing_exit_at_price(position=position, price=price)
+
+        if not position.trailing_active and price <= activation_level:
+            self._activate_short_trailing(
+                position=position,
+                extreme_price=price,
+                candle=candle,
+                candle_index=candle_index,
+                activation_level=activation_level,
+                avwap=avwap,
+                mode="ohlc_path",
+                stats=stats,
+                decision_log=decision_log,
+            )
+        elif position.trailing_active:
+            self._update_short_trailing(
+                position=position,
+                extreme_price=price,
+                candle=candle,
+                candle_index=candle_index,
+                avwap=avwap,
+                stats=stats,
+                decision_log=decision_log,
+            )
+        return self._trailing_exit_at_price(position=position, price=price)
+
+    def _advance_trailing_on_price_move(
+        self,
+        *,
+        position: _PositionState,
+        start_price: float,
+        end_price: float,
+        candle: Candle,
+        candle_index: int,
+        activation_level: float,
+        avwap: _AvwapSnapshot,
+        stats: Dict[str, Any],
+        decision_log: List[Dict[str, Any]],
+    ) -> Tuple[str, float] | None:
+        if position.direction == "long" and end_price >= start_price:
+            return self._advance_trailing_at_price(
+                position=position,
+                price=end_price,
+                candle=candle,
+                candle_index=candle_index,
+                activation_level=activation_level,
+                avwap=avwap,
+                stats=stats,
+                decision_log=decision_log,
+            )
+        if position.direction == "short" and end_price <= start_price:
+            return self._advance_trailing_at_price(
+                position=position,
+                price=end_price,
+                candle=candle,
+                candle_index=candle_index,
+                activation_level=activation_level,
+                avwap=avwap,
+                stats=stats,
+                decision_log=decision_log,
+            )
+        return None
+
+    def _trailing_exit_at_price(
+        self, *, position: _PositionState, price: float
+    ) -> Tuple[str, float] | None:
+        """Mirror the live tick's inclusive trailing-stop trigger."""
+        if not position.trailing_active or position.trailing_stop is None:
+            return None
+        if position.direction == "long" and price <= position.trailing_stop:
+            return "Trailing stop", position.trailing_stop
+        if position.direction == "short" and price >= position.trailing_stop:
+            return "Trailing stop", position.trailing_stop
+        return None
+
+    def _target_is_touched(self, *, direction: Direction, price: float, target: float) -> bool:
+        if direction == "long":
+            return price >= target
+        return price <= target
+
+    def _rigid_stop_is_touched(
+        self, *, direction: Direction, price: float, rigid_stop: float
+    ) -> bool:
+        if direction == "long":
+            return price <= rigid_stop
+        return price >= rigid_stop
 
     def _check_long_gap_exit(
         self,
@@ -1194,7 +1639,9 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
     ) -> None:
         if not position.trailing_active:
             return
-        current_extreme = position.extreme_price if position.extreme_price is not None else extreme_price
+        current_extreme = (
+            position.extreme_price if position.extreme_price is not None else extreme_price
+        )
         if extreme_price <= current_extreme:
             return
         previous_stop = position.trailing_stop
@@ -1233,7 +1680,9 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
     ) -> None:
         if not position.trailing_active:
             return
-        current_extreme = position.extreme_price if position.extreme_price is not None else extreme_price
+        current_extreme = (
+            position.extreme_price if position.extreme_price is not None else extreme_price
+        )
         if extreme_price >= current_extreme:
             return
         previous_stop = position.trailing_stop
@@ -1259,9 +1708,7 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
             },
         )
 
-    def _constrain_trailing_stop(
-        self, position: _PositionState, trailing_stop: float
-    ) -> float:
+    def _constrain_trailing_stop(self, position: _PositionState, trailing_stop: float) -> float:
         rigid_stop = position.rigid_stop_level_at_entry
         if rigid_stop is None:
             return trailing_stop
@@ -1280,6 +1727,7 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
         raw_exit_price: float,
         stop_level: float,
         activation_level: float,
+        target_level: float | None,
         avwap: _AvwapSnapshot,
         trades: List[TradePerformance],
         stats: Dict[str, Any],
@@ -1298,7 +1746,11 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
         net_pnl = gross_pnl - position.entry_fee - exit_fee
         position_notional = position.entry_price * position.qty
         position_pnl_pct = (net_pnl / position_notional) * 100.0 if position_notional > 0 else 0.0
-        r_multiple = net_pnl / position.risk_amount if position.risk_amount > 0 else 0.0
+        notional_multiple = (
+            net_pnl / position.position_notional_budget
+            if position.position_notional_budget > 0
+            else 0.0
+        )
         holding_bars = max(candle_index - position.entry_index, 0)
 
         metadata: Dict[str, str | float | int | None] = {
@@ -1307,27 +1759,35 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
             "setup_detected_index": position.setup_detected_index,
             "entry_raw_price": position.raw_entry_price,
             "entry_price": position.entry_price,
+            "entry_mode": position.entry_mode.value,
+            "exit_mode": position.exit_mode.value,
+            "exit_band": position.exit_band.value,
+            "exit_band_number": position.exit_band.number,
+            "entry_trigger_mode": position.entry_trigger_mode,
+            "entry_decision_price": position.decision_price,
+            "ema_value_at_entry": position.ema_value_at_entry,
             "exit_raw_price": raw_exit_price,
             "exit_price": exit_price,
             "qty": position.qty,
-            "risk_amount": position.risk_amount,
+            "position_notional_budget": position.position_notional_budget,
             "entry_fee": position.entry_fee,
             "exit_fee": exit_fee,
             "gross_pnl": gross_pnl,
             "net_pnl": net_pnl,
             "position_pnl_pct": position_pnl_pct,
             "price_return_pct": return_pct,
-            "r_multiple": r_multiple,
+            "notional_multiple": notional_multiple,
             "holding_bars": holding_bars,
             "stop_level_at_entry": position.stop_level_at_entry,
             "stop_level_at_exit": stop_level,
+            "dynamic_stop_management_enabled": True,
             "rigid_stop_level_at_entry": position.rigid_stop_level_at_entry,
             "trailing_activation_level_at_entry": position.trailing_activation_level_at_entry,
             "trailing_activation_level_at_exit": activation_level,
             "trailing_stop": position.trailing_stop,
             "reason": exit_reason,
+            "target_level_at_exit": target_level,
             "position_sizing_mode": position.position_sizing_mode,
-            "risk_amount_interpretation": position.risk_amount_interpretation,
         }
 
         trades.append(
@@ -1347,6 +1807,10 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
             stats["rigid_stop_exits"] += 1
         elif exit_reason == "Trailing stop":
             stats["trailing_exits"] += 1
+        elif exit_reason.startswith("AVWAP band 1 target"):
+            stats["target_exits_band_1"] += 1
+        elif exit_reason.startswith("AVWAP band 2 target"):
+            stats["target_exits_band_2"] += 1
 
         reason_counts = stats["exit_reason_counts"]
         reason_counts[exit_reason] = int(reason_counts.get(exit_reason, 0)) + 1
@@ -1359,6 +1823,10 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
                 "timestamp": candle.close_time.isoformat(),
                 "candle_index": candle_index,
                 "setup_type": position.direction,
+                "entry_mode": position.entry_mode.value,
+                "exit_mode": position.exit_mode.value,
+                "exit_band": position.exit_band.value,
+                "exit_band_number": position.exit_band.number,
                 "exit_reason": exit_reason,
                 "exit_price": exit_price,
                 "raw_exit_price": raw_exit_price,
@@ -1368,13 +1836,14 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
                 "gross_pnl": gross_pnl,
                 "entry_fee": position.entry_fee,
                 "exit_fee": exit_fee,
-                "risk_amount": position.risk_amount,
-                "risk_amount_interpretation": position.risk_amount_interpretation,
+                "position_notional_budget": position.position_notional_budget,
                 "position_sizing_mode": position.position_sizing_mode,
                 "trailing_stop": position.trailing_stop,
                 "stop_loss_level": stop_level,
+                "dynamic_stop_management_enabled": True,
                 "rigid_stop_loss_level": position.rigid_stop_level_at_entry,
                 "trailing_activation_level": activation_level,
+                "target_level": target_level,
                 "vwap_middle_line": avwap.vwap,
                 "upper_band_1": avwap.upper1,
                 "lower_band_1": avwap.lower1,
@@ -1390,275 +1859,3 @@ class EmaAvwapPullbackStrategy(BacktestStrategy):
             exit_price,
         )
         return net_pnl
-
-    def _detect_level_cross(
-        self,
-        *,
-        candle: Candle,
-        prev_close: float,
-        level: float,
-        direction: Literal["up", "down"],
-    ) -> _CrossDecision:
-        if self._config.use_gap_cross_detection:
-            if direction == "down" and prev_close >= level >= candle.open:
-                return _CrossDecision(True, "gap")
-            if direction == "up" and prev_close <= level <= candle.open:
-                return _CrossDecision(True, "gap")
-
-        start_price = candle.open
-        for end_price in self._price_path(candle):
-            if direction == "down" and start_price >= level >= end_price:
-                return _CrossDecision(True, "intrabar")
-            if direction == "up" and start_price <= level <= end_price:
-                return _CrossDecision(True, "intrabar")
-            start_price = end_price
-        return _CrossDecision(False)
-
-    def _price_path(self, candle: Candle) -> Tuple[float, float, float]:
-        if abs(candle.open - candle.high) < abs(candle.open - candle.low):
-            return candle.high, candle.low, candle.close
-        return candle.low, candle.high, candle.close
-
-    def _build_avwap_prefixes(
-        self, candles: Sequence[Candle]
-    ) -> Tuple[List[float], List[float], List[float]]:
-        tpv_prefix = [0.0]
-        vol_prefix = [0.0]
-        tpv2_prefix = [0.0]
-        for candle in candles:
-            typical_price = (candle.high + candle.low + candle.close) / 3.0
-            tpv_prefix.append(tpv_prefix[-1] + typical_price * candle.volume)
-            vol_prefix.append(vol_prefix[-1] + candle.volume)
-            tpv2_prefix.append(tpv2_prefix[-1] + (typical_price**2) * candle.volume)
-        return tpv_prefix, vol_prefix, tpv2_prefix
-
-    def _build_avwap_snapshot(
-        self,
-        *,
-        candles: Sequence[Candle],
-        anchor_index: int,
-        candle_index: int,
-        tpv_prefix: Sequence[float],
-        vol_prefix: Sequence[float],
-        tpv2_prefix: Sequence[float],
-    ) -> _AvwapSnapshot:
-        weighted_sum = tpv_prefix[candle_index + 1] - tpv_prefix[anchor_index]
-        volume_sum = vol_prefix[candle_index + 1] - vol_prefix[anchor_index]
-        weighted_sq_sum = tpv2_prefix[candle_index + 1] - tpv2_prefix[anchor_index]
-        if volume_sum <= 0:
-            raise ValueError("AVWAP requires positive cumulative volume")
-
-        vwap = weighted_sum / volume_sum
-        variance = max((weighted_sq_sum / volume_sum) - (vwap**2), 0.0)
-        stdev = math.sqrt(variance)
-        cfg = self._config
-        return _AvwapSnapshot(
-            anchor_index=anchor_index,
-            anchor_time=candles[anchor_index].open_time,
-            candle_index=candle_index,
-            vwap=vwap,
-            stdev=stdev,
-            upper1=vwap + cfg.avwap_multiplier_1 * stdev,
-            lower1=vwap - cfg.avwap_multiplier_1 * stdev,
-            upper2=vwap + cfg.avwap_multiplier_2 * stdev,
-            lower2=vwap - cfg.avwap_multiplier_2 * stdev,
-            upper3=vwap + cfg.avwap_multiplier_3 * stdev,
-            lower3=vwap - cfg.avwap_multiplier_3 * stdev,
-        )
-
-    def _trailing_activation_level(
-        self, direction: Direction, avwap: _AvwapSnapshot
-    ) -> float:
-        threshold = self._config.trailing_activation_threshold_pct / 100.0
-        if direction == "long":
-            return avwap.upper1 * (1.0 + threshold)
-        return avwap.lower1 * (1.0 - threshold)
-
-    def _rigid_stop_level(
-        self, direction: Direction, entry_price: float
-    ) -> float | None:
-        pct = self._config.rigid_stop_loss_pct / 100.0
-        if pct <= 0:
-            return None
-        if direction == "long":
-            return entry_price * (1.0 - pct)
-        return entry_price * (1.0 + pct)
-
-    def _build_sizing_decision(
-        self,
-        *,
-        direction: Direction,
-        raw_entry_price: float,
-        stop_level: float,
-        risk_amount: float,
-    ) -> _SizingDecision | None:
-        distance = (
-            raw_entry_price - stop_level if direction == "long" else stop_level - raw_entry_price
-        )
-        if distance <= 0:
-            return None
-
-        entry_price = self._apply_entry_slippage(direction, raw_entry_price)
-        estimated_exit_price = self._apply_exit_slippage(direction, raw_entry_price)
-        entry_slippage_per_unit = abs(entry_price - raw_entry_price)
-        exit_slippage_per_unit = abs(estimated_exit_price - raw_entry_price)
-        entry_fee_per_unit = entry_price * self._config.maker_fee_pct
-        exit_fee_per_unit = estimated_exit_price * self._config.taker_fee_pct
-        total_cost_per_unit = (
-            entry_slippage_per_unit
-            + exit_slippage_per_unit
-            + entry_fee_per_unit
-            + exit_fee_per_unit
-        )
-
-        if self._config.position_sizing_mode == "risk_amount_per_price":
-            base_qty_before_costs = risk_amount / raw_entry_price
-            effective_price_for_sizing = raw_entry_price + total_cost_per_unit
-            qty = risk_amount / effective_price_for_sizing
-            risk_amount_interpretation = "position_notional_budget"
-        else:
-            qty = risk_amount / distance
-            base_qty_before_costs = qty
-            effective_price_for_sizing = distance
-            risk_amount_interpretation = "stop_loss_risk"
-
-        return _SizingDecision(
-            qty=qty,
-            distance=distance,
-            entry_price=entry_price,
-            estimated_exit_price=estimated_exit_price,
-            risk_amount_interpretation=risk_amount_interpretation,
-            base_qty_before_costs=base_qty_before_costs,
-            qty_reduction_from_costs=max(base_qty_before_costs - qty, 0.0),
-            sizing_reference_price=raw_entry_price,
-            effective_price_for_sizing=effective_price_for_sizing,
-            entry_slippage_per_unit=entry_slippage_per_unit,
-            exit_slippage_per_unit=exit_slippage_per_unit,
-            entry_fee_per_unit=entry_fee_per_unit,
-            exit_fee_per_unit=exit_fee_per_unit,
-            total_cost_per_unit=total_cost_per_unit,
-        )
-
-    def _apply_entry_slippage(self, direction: Direction, price: float) -> float:
-        slip = self._config.entry_slippage_pct
-        if direction == "long":
-            return price * (1.0 + slip)
-        return price * (1.0 - slip)
-
-    def _apply_exit_slippage(self, direction: Direction, price: float) -> float:
-        slip = self._config.exit_slippage_pct
-        if direction == "long":
-            return price * (1.0 - slip)
-        return price * (1.0 + slip)
-
-    def _record_event(
-        self,
-        *,
-        decision_log: List[Dict[str, Any]],
-        stats: Dict[str, Any],
-        event: str,
-        payload: Dict[str, Any],
-    ) -> None:
-        if len(decision_log) >= self._config.max_decision_log_entries:
-            stats["decision_log_truncated_count"] += 1
-            return
-        item = {"event": event}
-        item.update(payload)
-        decision_log.append(item)
-
-    def _summarize_trade_stats(
-        self, trades: Sequence[TradePerformance]
-    ) -> Dict[str, Any]:
-        if not trades:
-            return {
-                "trade_count": 0,
-                "wins": 0,
-                "losses": 0,
-                "win_rate": 0.0,
-                "avg_r_multiple": 0.0,
-                "avg_return_pct": 0.0,
-                "avg_holding_bars": 0.0,
-                "long_trade_count": 0,
-                "short_trade_count": 0,
-                "gross_profit_long": 0.0,
-                "gross_profit_short": 0.0,
-                "gross_loss_long": 0.0,
-                "gross_loss_short": 0.0,
-                "total_net_pnl": 0.0,
-            }
-
-        wins = sum(1 for trade in trades if trade.pnl > 0)
-        losses = sum(1 for trade in trades if trade.pnl < 0)
-        long_trades: List[TradePerformance] = []
-        short_trades: List[TradePerformance] = []
-        r_values: List[float] = []
-        hold_bars: List[int] = []
-        gross_profit_long = 0.0
-        gross_profit_short = 0.0
-        gross_loss_long = 0.0
-        gross_loss_short = 0.0
-
-        for trade in trades:
-            metadata = dict(trade.metadata or {})
-            direction = str(metadata.get("direction", ""))
-            r_values.append(float(metadata.get("r_multiple", 0.0)))
-            hold_bars.append(int(metadata.get("holding_bars", 0)))
-
-            if direction == "long":
-                long_trades.append(trade)
-                if trade.pnl >= 0:
-                    gross_profit_long += trade.pnl
-                else:
-                    gross_loss_long += abs(trade.pnl)
-            elif direction == "short":
-                short_trades.append(trade)
-                if trade.pnl >= 0:
-                    gross_profit_short += trade.pnl
-                else:
-                    gross_loss_short += abs(trade.pnl)
-
-        return {
-            "trade_count": len(trades),
-            "wins": wins,
-            "losses": losses,
-            "win_rate": wins / len(trades),
-            "avg_r_multiple": mean(r_values) if r_values else 0.0,
-            "avg_return_pct": mean(trade.return_pct for trade in trades),
-            "avg_holding_bars": mean(hold_bars) if hold_bars else 0.0,
-            "best_trade_pnl": max(trade.pnl for trade in trades),
-            "worst_trade_pnl": min(trade.pnl for trade in trades),
-            "long_trade_count": len(long_trades),
-            "short_trade_count": len(short_trades),
-            "gross_profit_long": gross_profit_long,
-            "gross_profit_short": gross_profit_short,
-            "gross_loss_long": gross_loss_long,
-            "gross_loss_short": gross_loss_short,
-            "total_net_pnl": sum(trade.pnl for trade in trades),
-        }
-
-    def _config_as_dict(self) -> Dict[str, Any]:
-        cfg = self._config
-        return {
-            "symbol": cfg.symbol,
-            "timeframe": cfg.timeframe,
-            "initial_equity": cfg.initial_equity,
-            "leverage": cfg.leverage,
-            "equity_risk_pct": cfg.equity_risk_pct,
-            "ema_length": cfg.ema_length,
-            "consecutive_count": cfg.consecutive_count,
-            "ema_validation_mode": cfg.ema_validation_mode,
-            "setup_waiting_replacement_mode": cfg.setup_waiting_replacement_mode,
-            "position_sizing_mode": cfg.position_sizing_mode,
-            "avwap_multiplier_1": cfg.avwap_multiplier_1,
-            "avwap_multiplier_2": cfg.avwap_multiplier_2,
-            "avwap_multiplier_3": cfg.avwap_multiplier_3,
-            "rigid_stop_loss_pct": cfg.rigid_stop_loss_pct,
-            "trailing_activation_threshold_pct": cfg.trailing_activation_threshold_pct,
-            "trailing_gap_pct": cfg.trailing_gap_pct,
-            "maker_fee_pct": cfg.maker_fee_pct,
-            "taker_fee_pct": cfg.taker_fee_pct,
-            "entry_slippage_pct": cfg.entry_slippage_pct,
-            "exit_slippage_pct": cfg.exit_slippage_pct,
-            "use_gap_cross_detection": cfg.use_gap_cross_detection,
-            "max_decision_log_entries": cfg.max_decision_log_entries,
-        }
