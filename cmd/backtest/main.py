@@ -17,6 +17,9 @@ from backtest import (
     EngulfingStrategyConfig,
     EmaAvwapPullbackStrategy,
     EmaAvwapPullbackStrategyConfig,
+    EntryMode,
+    ExitBand,
+    ExitMode,
     PinBarMagicStrategyConfigV3,
     PinBarMagicStrategyV3,
     StrongTrendStairStrategy,
@@ -172,20 +175,31 @@ def load_ema_avwap_pullback_env_config() -> Dict[str, str]:
         "show_stochastic": os.getenv("SHOW_STOCHASTIC", "true"),
         "show_equity": os.getenv("SHOW_EQUITY", "true"),
         "log_level": os.getenv("LOG_LEVEL", "INFO"),
-        "equity_risk_pct": os.getenv("STRATEGY_EQUITY_RISK_PCT", "1"),
+        "position_notional_pct": os.getenv("STRATEGY_POSITION_NOTIONAL_PCT", "1"),
+        "minimum_balance_usdt": os.getenv("MINIMUM_BALANCE_USDT", "0"),
+        "max_position_size_pct": os.getenv("MAX_POSITION_SIZE_PCT", "10"),
         "ema_length": os.getenv("STRATEGY_EMA_LENGTH", "55"),
         "consecutive_count": os.getenv("STRATEGY_CONSECUTIVE_COUNT", "4"),
         "ema_validation_mode": os.getenv("STRATEGY_EMA_VALIDATION_MODE", "body"),
         "setup_waiting_replacement_mode": os.getenv(
             "STRATEGY_SETUP_WAITING_REPLACEMENT_MODE", "keep_waiting"
         ),
-        "position_sizing_mode": os.getenv(
-            "STRATEGY_POSITION_SIZING_MODE", "risk_distance"
+        "max_setup_age_bars": os.getenv("STRATEGY_MAX_SETUP_AGE_BARS", "3"),
+        "max_entry_deviation_pct": os.getenv(
+            "STRATEGY_MAX_ENTRY_DEVIATION_PCT", "1"
         ),
+        "position_sizing_mode": os.getenv(
+            "STRATEGY_POSITION_SIZING_MODE", "risk_amount_per_price"
+        ),
+        "entry_mode": os.getenv("STRATEGY_ENTRY_MODE", ""),
+        "exit_mode": os.getenv("STRATEGY_EXIT_MODE", ""),
+        "exit_band": os.getenv("STRATEGY_EXIT_BAND", ""),
+        "removed_entry_exit_mode": os.getenv("STRATEGY_ENTRY_EXIT_MODE", ""),
+        "max_entry_notional_usdt": os.getenv("MAX_ENTRY_NOTIONAL_USDT", "15"),
         "avwap_multiplier_1": os.getenv("STRATEGY_AVWAP_MULTIPLIER_1", "1.0"),
         "avwap_multiplier_2": os.getenv("STRATEGY_AVWAP_MULTIPLIER_2", "2.0"),
         "avwap_multiplier_3": os.getenv("STRATEGY_AVWAP_MULTIPLIER_3", "3.0"),
-        "rigid_stop_loss_pct": os.getenv("STRATEGY_RIGID_STOP_LOSS_PCT", "0"),
+        "rigid_stop_loss_pct": os.getenv("STRATEGY_RIGID_STOP_LOSS_PCT", "3"),
         "trailing_activation_threshold_pct": os.getenv(
             "STRATEGY_TRAILING_ACTIVATION_THRESHOLD_PCT", "0"
         ),
@@ -1045,9 +1059,19 @@ def build_ema_avwap_pullback_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeframe", help="Binance interval (e.g., 1h, 4h)")
     parser.add_argument("--leverage", type=float, help="Leverage multiplier")
     parser.add_argument(
-        "--equity-risk-pct",
+        "--position-notional-pct",
         type=float,
-        help="Percent of current equity risked between AVWAP entry and band-2 stop",
+        help="Percent of current available-equity proxy used as the entry notional budget",
+    )
+    parser.add_argument(
+        "--minimum-balance-usdt",
+        type=float,
+        help="Skip entries when the available-equity proxy is at or below this live-style floor",
+    )
+    parser.add_argument(
+        "--max-position-size-pct",
+        type=float,
+        help="Maximum entry notional as a percent of the available-equity proxy",
     )
     parser.add_argument("--ema-length", type=int, help="EMA length")
     parser.add_argument(
@@ -1066,9 +1090,39 @@ def build_ema_avwap_pullback_parser() -> argparse.ArgumentParser:
         help="When a setup is already in setup_waiting and a new same-direction setup is detected, either keep waiting on the old setup or replace it with the new one",
     )
     parser.add_argument(
+        "--max-setup-age-bars",
+        type=int,
+        help="Discard an unfilled setup after this many completed candles",
+    )
+    parser.add_argument(
+        "--max-entry-deviation-pct",
+        type=float,
+        help="Reject an entry when its observed price is farther than this from AVWAP",
+    )
+    parser.add_argument(
         "--position-sizing-mode",
-        choices=("risk_distance", "risk_amount_per_price"),
-        help="Size positions either from stop distance risk or by dividing the risk budget by the current price while reserving for slippage and fees",
+        choices=("risk_amount_per_price",),
+        help="EMA/AVWAP live-compatible notional-budget sizing mode",
+    )
+    parser.add_argument(
+        "--entry-mode",
+        choices=tuple(mode.value for mode in EntryMode),
+        help="Match live ENTRY_MODE: close or live AVWAP-middle evaluation",
+    )
+    parser.add_argument(
+        "--exit-mode",
+        choices=tuple(mode.value for mode in ExitMode),
+        help="Match live EXIT_MODE: evaluate the AVWAP target at candle close or live",
+    )
+    parser.add_argument(
+        "--exit-band",
+        choices=tuple(band.value for band in ExitBand),
+        help="Match live EXIT_BAND: AVWAP band_1 or band_2",
+    )
+    parser.add_argument(
+        "--max-entry-notional-usdt",
+        type=float,
+        help="Absolute live-style cap on the entry notional budget",
     )
     parser.add_argument(
         "--avwap-multiplier-1",
@@ -1088,17 +1142,17 @@ def build_ema_avwap_pullback_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--rigid-stop-loss-pct",
         type=float,
-        help="Fixed stop loss percent from executed entry price; 0 disables the rigid stop",
+        help="Required fixed protective stop percent from executed entry price",
     )
     parser.add_argument(
         "--trailing-activation-threshold-pct",
         type=float,
-        help="Additional percent penetration beyond AVWAP band 1 before trailing activates",
+        help="Percent beyond AVWAP band 1 required to activate the trailing stop",
     )
     parser.add_argument(
         "--trailing-gap-pct",
         type=float,
-        help="Percent gap between the favorable extreme and the trailing stop",
+        help="Trailing-stop gap from the best price after activation",
     )
     parser.add_argument(
         "--maker-fee-pct",
@@ -1123,7 +1177,7 @@ def build_ema_avwap_pullback_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--use-gap-cross-detection",
         action=argparse.BooleanOptionalAction,
-        help="Treat gaps through the AVWAP line or stop level as exact intersection fills",
+        help="Retained for live-config compatibility; gap exits use the next observed open proxy",
     )
     parser.add_argument(
         "--max-decision-log-entries",
@@ -1523,6 +1577,13 @@ def resolve_ema_avwap_pullback_config(
     args = _ArgNamespace(args)  # type: ignore[assignment]
     config: Dict[str, Any] = {}
 
+    if env_config.get("removed_entry_exit_mode"):
+        raise ValueError(
+            "STRATEGY_ENTRY_EXIT_MODE has been removed for EMA+AVWAP backtests. "
+            "Use STRATEGY_ENTRY_MODE, STRATEGY_EXIT_MODE, and "
+            "STRATEGY_EXIT_BAND instead."
+        )
+
     config["strategy"] = (
         (args.strategy or env_config.get("strategy") or "ema_avwap_pullback")
         .strip()
@@ -1533,10 +1594,20 @@ def resolve_ema_avwap_pullback_config(
     config["leverage"] = args.leverage or (
         float(env_config["leverage"]) if env_config["leverage"] else None
     )
-    config["equity_risk_pct"] = (
-        args.equity_risk_pct
-        if args.equity_risk_pct is not None
-        else float(env_config.get("equity_risk_pct", "1"))
+    config["position_notional_pct"] = (
+        args.position_notional_pct
+        if args.position_notional_pct is not None
+        else float(env_config.get("position_notional_pct", "1"))
+    )
+    config["minimum_balance_usdt"] = (
+        args.minimum_balance_usdt
+        if args.minimum_balance_usdt is not None
+        else float(env_config.get("minimum_balance_usdt", "0"))
+    )
+    config["max_position_size_pct"] = (
+        args.max_position_size_pct
+        if args.max_position_size_pct is not None
+        else float(env_config.get("max_position_size_pct", "10"))
     )
     config["ema_length"] = (
         args.ema_length
@@ -1555,9 +1626,31 @@ def resolve_ema_avwap_pullback_config(
         args.setup_waiting_replacement_mode
         or env_config.get("setup_waiting_replacement_mode", "keep_waiting")
     )
+    config["max_setup_age_bars"] = (
+        args.max_setup_age_bars
+        if args.max_setup_age_bars is not None
+        else int(env_config.get("max_setup_age_bars", "3"))
+    )
+    config["max_entry_deviation_pct"] = (
+        args.max_entry_deviation_pct
+        if args.max_entry_deviation_pct is not None
+        else float(env_config.get("max_entry_deviation_pct", "1"))
+    )
     config["position_sizing_mode"] = (
         args.position_sizing_mode
-        or env_config.get("position_sizing_mode", "risk_distance")
+        or env_config.get("position_sizing_mode", "risk_amount_per_price")
+    )
+    config["entry_mode"] = args.entry_mode or env_config.get("entry_mode") or None
+    config["exit_mode"] = args.exit_mode or env_config.get("exit_mode") or None
+    config["exit_band"] = args.exit_band or env_config.get("exit_band") or None
+    config["max_entry_notional_usdt"] = (
+        args.max_entry_notional_usdt
+        if args.max_entry_notional_usdt is not None
+        else (
+            float(env_config["max_entry_notional_usdt"])
+            if env_config.get("max_entry_notional_usdt")
+            else 15.0
+        )
     )
     config["avwap_multiplier_1"] = (
         args.avwap_multiplier_1
@@ -1577,7 +1670,7 @@ def resolve_ema_avwap_pullback_config(
     config["rigid_stop_loss_pct"] = (
         args.rigid_stop_loss_pct
         if args.rigid_stop_loss_pct is not None
-        else float(env_config.get("rigid_stop_loss_pct", "0"))
+        else float(env_config.get("rigid_stop_loss_pct", "3"))
     )
     config["trailing_activation_threshold_pct"] = (
         args.trailing_activation_threshold_pct
@@ -2234,7 +2327,10 @@ def build_ema_avwap_pullback_strategy(
             timeframe=str(config["timeframe"]),
             initial_equity=float(config["initial_capital"]),
             leverage=float(config["leverage"]),
-            equity_risk_pct=float(config["equity_risk_pct"]),
+            max_entry_notional_usdt=float(config["max_entry_notional_usdt"]),
+            max_position_size_pct=float(config["max_position_size_pct"]),
+            position_notional_pct=float(config["position_notional_pct"]),
+            minimum_balance_usdt=float(config["minimum_balance_usdt"]),
             ema_length=int(config["ema_length"]),
             consecutive_count=int(config["consecutive_count"]),
             ema_validation_mode=str(config["ema_validation_mode"]).strip().lower(),
@@ -2243,7 +2339,24 @@ def build_ema_avwap_pullback_strategy(
             )
             .strip()
             .lower(),
+            max_setup_age_bars=int(config["max_setup_age_bars"]),
+            max_entry_deviation_pct=float(config["max_entry_deviation_pct"]),
             position_sizing_mode=str(config["position_sizing_mode"]).strip().lower(),
+            entry_mode=(
+                EntryMode(str(config["entry_mode"]).strip().lower())
+                if config.get("entry_mode")
+                else EntryMode.CLOSE
+            ),
+            exit_mode=(
+                ExitMode(str(config["exit_mode"]).strip().lower())
+                if config.get("exit_mode")
+                else ExitMode.CLOSE
+            ),
+            exit_band=(
+                ExitBand(str(config["exit_band"]).strip().lower())
+                if config.get("exit_band")
+                else ExitBand.BAND_1
+            ),
             avwap_multiplier_1=float(config["avwap_multiplier_1"]),
             avwap_multiplier_2=float(config["avwap_multiplier_2"]),
             avwap_multiplier_3=float(config["avwap_multiplier_3"]),
