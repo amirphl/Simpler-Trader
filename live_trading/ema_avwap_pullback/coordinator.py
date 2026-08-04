@@ -7,13 +7,16 @@ import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Dict, Optional
 
+from candle_downloader.binance import (
+    BinanceClient,
+    BinanceClientConfig,
+)
 from candle_downloader.models import Candle
-from candle_downloader.binance import interval_to_milliseconds
 from signal_notifier import TelegramClient
 
-from ..exchange import Exchange, KlineUpdate
+from ..exchange import Exchange
 from ..models import TradingState
 from .calculations import EmaAvwapCalculationMixin
 from .config import Direction, EmaAvwapPullbackLiveConfig
@@ -52,9 +55,19 @@ class EmaAvwapPullbackLiveCoordinator(
         self._running = False
         self._last_closed_candle_time_by_symbol: Dict[str, datetime] = {}
         self._last_snapshot_by_symbol: Dict[str, _SymbolSnapshot] = {}
-        self._forming_kline_by_symbol: Dict[str, tuple[Candle, float]] = {}
-        self._forming_kline_lock = threading.Lock()
-        self._live_kline_stream: Any | None = None
+        # All EMA/AVWAP signal candles come from Binance REST.  Keeping this
+        # distinct from ``_exchange`` prevents a mixed Binance/Bitunix
+        # indicator history when the two venues trade at different prices.
+        self._binance_signal_client = BinanceClient(
+            BinanceClientConfig(
+                max_retries=self._cfg.api_retries,
+                initial_retry_delay=max(self._cfg.api_retry_delay_seconds, 0.1),
+                max_retry_delay=max(self._cfg.api_retry_delay_seconds, 0.1),
+            ),
+            logger=self._log,
+        )
+        self._forming_binance_candle_by_symbol: Dict[str, tuple[Candle, float]] = {}
+        self._forming_binance_candle_lock = threading.Lock()
         self._active_setups: Dict[tuple[str, Direction], _SetupState] = {}
         self._last_price_by_setup_key: Dict[tuple[str, Direction], float] = {}
         self._last_middle_by_setup_key: Dict[tuple[str, Direction], float] = {}
@@ -68,7 +81,7 @@ class EmaAvwapPullbackLiveCoordinator(
         self._state_lock_handles = []
         self._last_tick_trailing_check_ts = 0.0
         self._market_data_executor = ThreadPoolExecutor(
-            max_workers=min(8, max(1, len(self._cfg.symbols))),
+            max_workers=min(8, max(2, len(self._cfg.symbols) * 2)),
             thread_name_prefix="ema-avwap-market-data",
         )
         self._candle_fetch_futures: Dict[
@@ -77,6 +90,7 @@ class EmaAvwapPullbackLiveCoordinator(
         self._snapshot_futures: Dict[
             str, tuple[Candle, Future[_SymbolSnapshot | None]]
         ] = {}
+        self._forming_candle_fetch_futures: Dict[str, Future[Candle | None]] = {}
         self._last_market_data_poll_slot_by_symbol: Dict[str, int] = {}
         self._init_persistence()
 
@@ -101,9 +115,12 @@ class EmaAvwapPullbackLiveCoordinator(
             # anything rather than attempting to infer a position to manage.
             validator()
         self._running = True
-        self._start_live_kline_stream()
+        # Bitunix's kline WebSocket is intentionally disabled.  Binance REST
+        # is the sole signal-data source for both closed and forming candles;
+        # Bitunix remains the execution venue and price source for orders.
         self._log.info(
-            "EmaAvwapPullback started (symbols=%s timeframe=%s "
+            "EmaAvwapPullback started (signal_data=binance_rest "
+            "execution_data=bitunix symbols=%s timeframe=%s "
             "entry_mode=%s exit_mode=%s exit_band=%s rigid_stop_loss_pct=%.8f)",
             ",".join(self._cfg.symbols),
             self._cfg.timeframe,
@@ -128,86 +145,26 @@ class EmaAvwapPullbackLiveCoordinator(
 
     def stop(self) -> None:
         self._running = False
-        stream = self._live_kline_stream
-        self._live_kline_stream = None
-        if stream is not None:
-            try:
-                stream.stop()
-            except Exception:
-                self._log.debug("EMA+AVWAP live kline stream stop failed", exc_info=True)
         self._market_data_executor.shutdown(wait=False, cancel_futures=True)
         try:
             self._exchange.close()
         except Exception:
             self._log.debug("Exchange close failed during stop", exc_info=True)
         finally:
+            self._binance_signal_client.close()
             self._close_persistence()
 
-    def _start_live_kline_stream(self) -> None:
-        """Start Bitunix's forming-candle stream when live indicators need it.
-
-        REST kline history is deliberately excluded from this path: Bitunix can
-        return only closed candles from its REST endpoint.  A failure to start
-        or refresh this stream therefore leaves live decisions fail-closed.
-        """
-        if (
-            self._cfg.entry_mode.value != "live"
-            and self._cfg.exit_mode.value != "live"
-        ):
-            return
-        start_stream = getattr(self._exchange, "start_kline_stream", None)
-        if not callable(start_stream):
-            self._log.error(
-                "EmaAvwapPullback: exchange does not provide a forming-candle "
-                "stream; live entry and exit indicator evaluation is disabled"
-            )
-            return
-        try:
-            self._live_kline_stream = start_stream(
-                symbols=self._cfg.symbols,
-                interval=self._cfg.timeframe,
-                on_kline=self._cache_forming_kline,
-            )
-        except Exception:
-            self._log.error(
-                "EmaAvwapPullback: failed to start Bitunix forming-candle stream; "
-                "live indicator evaluation will fail closed",
-                exc_info=True,
+    def _cache_forming_binance_candle(self, symbol: str, candle: Candle) -> None:
+        """Store a validated current Binance REST candle for live indicators."""
+        with self._forming_binance_candle_lock:
+            self._forming_binance_candle_by_symbol[symbol] = (
+                candle,
+                time.monotonic(),
             )
 
-    def _cache_forming_kline(self, update: KlineUpdate) -> None:
-        """Store a current Bitunix WebSocket candle for the next live check."""
-        if (
-            update.interval != self._cfg.timeframe
-            or update.symbol not in self._cfg.symbols
-        ):
-            return
-        interval_ms = interval_to_milliseconds(self._cfg.timeframe)
-        open_time_ms = (update.event_time_ms // interval_ms) * interval_ms
-        row = [
-            open_time_ms,
-            str(update.open),
-            str(update.high),
-            str(update.low),
-            str(update.close),
-            str(update.base_volume),
-            open_time_ms + interval_ms - 1,
-            str(update.quote_volume),
-        ]
-        try:
-            candle = Candle.from_binance(update.symbol, self._cfg.timeframe, row)
-        except (IndexError, TypeError, ValueError):
-            self._log.warning(
-                "EmaAvwapPullback: rejected malformed Bitunix forming kline for %s",
-                update.symbol,
-            )
-            return
-        with self._forming_kline_lock:
-            self._forming_kline_by_symbol[update.symbol] = (candle, time.monotonic())
-
-    def _fresh_forming_kline(self, symbol: str) -> Candle | None:
-        with self._forming_kline_lock:
-            cached = self._forming_kline_by_symbol.get(symbol)
+    def _fresh_forming_binance_candle(self, symbol: str) -> Candle | None:
+        with self._forming_binance_candle_lock:
+            cached = self._forming_binance_candle_by_symbol.get(symbol)
         if cached is None:
             return None
         candle, received_at = cached
@@ -228,10 +185,50 @@ class EmaAvwapPullbackLiveCoordinator(
             self._process_new_snapshots(snapshots, now)
         self._schedule_market_data_fetches(now)
 
+    def _collect_completed_forming_candle_fetches(self) -> None:
+        for symbol, future in list(self._forming_candle_fetch_futures.items()):
+            if not future.done():
+                continue
+            del self._forming_candle_fetch_futures[symbol]
+            try:
+                forming = future.result()
+            except Exception as exc:
+                self._log.warning(
+                    "EmaAvwapPullback: Binance forming-candle fetch failed for %s: %s",
+                    symbol,
+                    exc,
+                )
+                continue
+            if forming is not None:
+                self._cache_forming_binance_candle(symbol, forming)
+
+    def _schedule_forming_candle_fetches(self) -> None:
+        if (
+            self._cfg.entry_mode.value != "live"
+            and self._cfg.exit_mode.value != "live"
+        ):
+            return
+        needs_live_entry_candle = (
+            self._cfg.entry_mode.value == "live" and bool(self._active_setups)
+        )
+        needs_live_exit_candle = (
+            self._cfg.exit_mode.value == "live"
+            and bool(self._position_runtime_by_symbol)
+        )
+        if not (needs_live_entry_candle or needs_live_exit_candle):
+            return
+        for symbol in self._cfg.symbols:
+            if symbol in self._forming_candle_fetch_futures:
+                continue
+            self._forming_candle_fetch_futures[symbol] = self._market_data_executor.submit(
+                self._fetch_latest_forming_binance_candle,
+                symbol,
+            )
+
     def _collect_completed_candle_fetches(self) -> None:
         """Schedule snapshot construction only after completed venue-data polls.
 
-        Results are consumed only when their futures are done.  A Bitunix
+        Results are consumed only when their futures are done.  A Binance REST
         timeout therefore cannot hold up position management in ``_on_tick``.
         """
         for symbol, (poll_slot, future) in list(
@@ -244,7 +241,7 @@ class EmaAvwapPullbackLiveCoordinator(
                 latest_closed = future.result()
             except Exception as exc:
                 self._log.warning(
-                    "EmaAvwapPullback: latest Bitunix candle fetch failed for %s: %s",
+                    "EmaAvwapPullback: latest Binance candle fetch failed for %s: %s",
                     symbol,
                     exc,
                 )
@@ -272,7 +269,7 @@ class EmaAvwapPullbackLiveCoordinator(
                 snapshot = future.result()
             except Exception as exc:
                 self._log.warning(
-                    "EmaAvwapPullback: Bitunix snapshot build failed for %s: %s",
+                    "EmaAvwapPullback: Binance snapshot build failed for %s: %s",
                     symbol,
                     exc,
                 )
@@ -318,7 +315,7 @@ class EmaAvwapPullbackLiveCoordinator(
     ) -> bool:
         """Return whether the latest closed bar covers this scheduled poll.
 
-        Bitunix reports kline ``closeTime`` as one millisecond before the next
+        Binance reports kline ``closeTime`` as one millisecond before the next
         bar's open.  Compare the bar's canonical end boundary instead of that
         inclusive timestamp so a valid bar does not make every later poll in
         the slot look stale.
@@ -377,6 +374,8 @@ class EmaAvwapPullbackLiveCoordinator(
 
     def _on_tick(self, now: datetime) -> None:
         self._sync_positions(now)
+        self._collect_completed_forming_candle_fetches()
+        self._schedule_forming_candle_fetches()
         self._process_live_setup_crosses(now)
         self._activate_due_entries(now)
         self._manage_live_position_exits(now)
