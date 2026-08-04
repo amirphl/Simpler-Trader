@@ -402,6 +402,10 @@ class EmaAvwapCalculationMixin(EmaAvwapMixinTyping):
 
     def _safe_fetch_price(self, symbol: str) -> Optional[float]:
         try:
+            # EMA/AVWAP signals are calculated from Binance candles, but an
+            # order must be sized and priced from the execution venue. In this
+            # deployment ``_exchange`` is Bitunix, so never substitute a
+            # Binance price here.
             price = self._retry(lambda: self._exchange.fetch_price(symbol), "fetch_price")
             if price is None:
                 return None
