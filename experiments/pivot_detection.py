@@ -126,6 +126,10 @@ def _argmin_low(candles: Sequence[Candle], a: int, b: int) -> int:
     return best
 
 
+def _pivot_search_start(reference_index: int, config: PivotConfig) -> int:
+    return reference_index if config.include_reference_candle else reference_index + 1
+
+
 def _swing_pct(pivot: Pivot) -> float:
     mid = (pivot.high + pivot.low) / 2.0
     if mid == 0.0:
@@ -193,8 +197,12 @@ def detect_pivots(
                 else:
                     break
             else:
-                # pivot_start = j if cfg.include_reference_candle else j + 1
-                pivot_index = _argmax_high(candles, left_bound, k + 1)
+                pivot_start = _pivot_search_start(j, cfg)
+                pivot_end = p - 1
+                if pivot_start > pivot_end:
+                    cursor = p
+                    continue
+                pivot_index = _argmax_high(candles, pivot_start, pivot_end)
                 candidate = Pivot(
                     index=pivot_index,
                     type="bearish",
@@ -244,9 +252,12 @@ def detect_pivots(
                 else:
                     break
             else:
-                # pivot_start = j if cfg.include_reference_candle else j + 1
-                pivot_start = left_bound
-                pivot_index = _argmin_low(candles, pivot_start, k + 1)
+                pivot_start = _pivot_search_start(j, cfg)
+                pivot_end = p - 1
+                if pivot_start > pivot_end:
+                    cursor = p
+                    continue
+                pivot_index = _argmin_low(candles, pivot_start, pivot_end)
                 candidate = Pivot(
                     index=pivot_index,
                     type="bullish",
