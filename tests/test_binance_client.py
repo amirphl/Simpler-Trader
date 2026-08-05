@@ -43,6 +43,13 @@ class BinanceClientTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "max_retries"):
             BinanceClientConfig(max_retries=0)
 
+    def test_kline_limit_accepts_binance_maximum(self) -> None:
+        client = BinanceClient(BinanceClientConfig(), opener=_FakeOpener([[]]))
+
+        self.assertEqual(client._validate_limit(1_000), 1_000)  # noqa: SLF001
+        with self.assertRaisesRegex(ValueError, "1..1000"):
+            client._validate_limit(1_001)  # noqa: SLF001
+
     def test_fetch_klines_parses_valid_payload(self) -> None:
         opener = _FakeOpener(
             [
@@ -72,6 +79,36 @@ class BinanceClientTests(unittest.TestCase):
         self.assertEqual(len(candles), 1)
         self.assertEqual(candles[0].symbol, "BTCUSDT")
         self.assertIn("symbol=BTCUSDT", opener.urls[0])
+
+    def test_fetch_recent_klines_requests_current_candle_without_range(self) -> None:
+        opener = _FakeOpener(
+            [
+                [
+                    [
+                        1_700_000_000_000,
+                        "100.0",
+                        "110.0",
+                        "95.0",
+                        "105.0",
+                        "12.5",
+                        1_700_000_059_999,
+                    ]
+                ]
+            ]
+        )
+        client = BinanceClient(BinanceClientConfig(), opener=opener)
+
+        candles = client.fetch_recent_klines(
+            symbol="btcusdt",
+            interval="1m",
+            limit=1,
+        )
+
+        self.assertEqual(len(candles), 1)
+        self.assertEqual(candles[0].symbol, "BTCUSDT")
+        self.assertIn("limit=1", opener.urls[0])
+        self.assertNotIn("startTime", opener.urls[0])
+        self.assertNotIn("endTime", opener.urls[0])
 
     def test_config_strips_base_url(self) -> None:
         config = BinanceClientConfig(base_url=" https://api.binance.com/ ")
