@@ -18,7 +18,8 @@ DEFAULT_HEADERS = {
     "Accept": "application/json",
     "User-Agent": "Simpler-Trader/1.0",
 }
-MAX_BATCH = 500
+# Binance's /api/v3/klines endpoint accepts up to 1,000 rows per request.
+MAX_BATCH = 1_000
 
 _INTERVAL_TO_MILLISECONDS = {
     "1m": 60_000,
@@ -119,6 +120,36 @@ class BinanceClient:
             end_ms=end_ms,
             limit=validated_limit,
         )
+        payload = self._get_json(KLINES_ENDPOINT, params, context=params)
+        rows = self._require_list_payload(payload, endpoint=KLINES_ENDPOINT)
+        return self._parse_klines(
+            rows,
+            symbol=normalized_symbol,
+            interval=normalized_interval,
+        )
+
+    def fetch_recent_klines(
+        self,
+        *,
+        symbol: str,
+        interval: str,
+        limit: int,
+    ) -> List[Candle]:
+        """Return Binance's most recent candles, including the forming bar.
+
+        The public kline endpoint returns the active candle as its final row
+        while that interval is open.  Callers that need only stable history
+        must still select candles by their close boundary rather than relying
+        on the final row's position.
+        """
+        normalized_symbol = normalize_symbol(symbol)
+        normalized_interval = self._normalize_interval(interval)
+        validated_limit = self._validate_limit(limit)
+        params: Dict[str, str | int] = {
+            "symbol": normalized_symbol,
+            "interval": normalized_interval,
+            "limit": validated_limit,
+        }
         payload = self._get_json(KLINES_ENDPOINT, params, context=params)
         rows = self._require_list_payload(payload, endpoint=KLINES_ENDPOINT)
         return self._parse_klines(
