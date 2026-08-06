@@ -45,11 +45,12 @@ DATA STRUCTURES
     label          : str    # e.g. "UP_BOS_0", "DOWN_BOS_2"
   }
 
-  CHOCH_UPDATE {
-    bos_index    : int    # which BOS_RECORD this update belongs to
-    candle_index : int    # the candle that holds the CHoCH price extreme
-    level        : float  # CHoCH price level
-    reason       : "initial-range" | "continuous"
+  CHOCH_RECORD {
+    bos_index                : int    # which BOS_RECORD owns this CHoCH
+    candle_index             : int    # candle that holds the initial structural extreme
+    level                    : float  # initial structural CHoCH price level
+    current_level            : float  # current cascade level used for detection
+    first_hunt_candle_index  : int?   # first candle that hunted this CHoCH
   }
 
 
@@ -63,7 +64,7 @@ ALGORITHM STATE
   forming_bos    : BOS_RECORD | None       # the BOS currently being built
   bos_counter    : int = 0                 # next BOS index to assign
   active_bos_ids : list[int]               # all confirmed BOS IDs since last reversal
-  choch_levels   : dict[int → list[float]] # per BOS ID: cascading CHoCH levels
+  choch_records  : dict[int → CHOCH_RECORD] # exactly one retained CHoCH per BOS
 
 
 HELPER FUNCTIONS
@@ -135,11 +136,13 @@ MAIN LOOP  (i = anchor_index .. N-1, where N = len(candles))
     direction_reversed ← False
 
     for each bos_id in active_bos_ids:
-      last_level ← choch_levels[bos_id].last()
-      if choch_crossed(direction, last_level, candle[i], hunt_mode):
+      choch ← choch_records[bos_id]
+      if choch_crossed(direction, choch.current_level, candle[i], hunt_mode):
         new_level ← choch_new_level(direction, candle[i], hunt_mode)
-        choch_levels[bos_id].append(new_level)
-        emit CHOCH_UPDATE(bos_id, i, new_level, reason="continuous")
+        if choch.first_hunt_candle_index is None:
+          choch.first_hunt_candle_index ← i
+          emit CHOCH_HUNT(bos_id, i, choch.current_level)
+        choch.current_level ← new_level
         if bos_id == newest_id:
           direction_reversed ← True
 
@@ -253,11 +256,17 @@ SUB-PROCEDURE: CONFIRM_BOS(hunt_index)
     if swing_pct < min_swing_pct:
       return   # BOS discarded (too small); formation is still reset by the caller
 
-  # Record confirmed BOS and its initial CHoCH
+  # Record confirmed BOS and its initial CHoCH. The record retains only the
+  # first future hunt candle; later cascade levels are kept only as live state.
   bos_records.append(forming_bos)
   active_bos_ids.append(forming_bos.index)
-  choch_levels[forming_bos.index] ← [choch_level]
-  emit CHOCH_UPDATE(forming_bos.index, choch_candle_idx, choch_level, reason="initial-range")
+  choch_records[forming_bos.index] ← CHOCH_RECORD(
+      bos_index=forming_bos.index,
+      candle_index=choch_candle_idx,
+      level=choch_level,
+      current_level=choch_level,
+      first_hunt_candle_index=None
+  )
 
 
 DOWNWARD MIRROR (explicit)
@@ -319,8 +328,8 @@ REPRESENTATION
     from candle[start_index] to candle[hunt_index].
     Labelled "DOWN_BOS_N".
 
-  UP_CHoCH N (last CHoCH update for UP_BOS N):
-    Dashed blue horizontal line at the last CHoCH level,
+  UP_CHoCH N (retained CHoCH for UP_BOS N):
+    Dashed blue horizontal line at the initial structural CHoCH level,
     from the CHoCH candle extending ~10 candles forward.
     Labelled "UP_CH_N".
 
