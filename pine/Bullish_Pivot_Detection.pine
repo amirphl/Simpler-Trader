@@ -1,0 +1,251 @@
+//@version=6
+indicator("Bullish Pivot Detector", overlay = true, max_labels_count = 500)
+
+//=============================================================================
+// INPUTS
+//=============================================================================
+
+touchCountsAsHunt = input.bool(false, "Touch counts as hunt")
+sameCandleRule = input.string("Low wins", "If high and low are hunted on same candle", options = ["Low wins", "High wins"])
+aliveColor = input.color(color.lime, "Alive pivot color")
+deadColor = input.color(color.red, "Dead pivot color")
+offsetTicks = input.int(10, "Icon offset ticks", minval = 0)
+iconSizeInput = input.string("Large", "Icon size", options = ["Small", "Normal", "Large", "Huge"])
+showDebug = input.bool(false, "Debug")
+
+iconSize = iconSizeInput == "Small" ? size.small : iconSizeInput == "Normal" ? size.normal : iconSizeInput == "Huge" ? size.huge : size.large
+
+//=============================================================================
+// STATES
+//=============================================================================
+
+int PENDING = 0
+int ALIVE = 1
+int DEAD = 2
+int INVALID = 3
+
+int WAIT_NEXT = 0
+int GREEN_RUN = 1
+int NORMAL = 3
+int MAX_MARKERS = 500
+
+//=============================================================================
+// DATA STRUCTURE
+//=============================================================================
+
+type Pivot
+    int createdBar
+    float minLow
+    int minLowBar
+    float maxHigh
+    float runningMin
+    int runningMinBar
+    float pivotLow
+    int pivotBar
+    int state
+    int phase
+    int confirmedBar
+    label marker
+
+//=============================================================================
+// STORAGE
+//=============================================================================
+
+// Only live records are retained. Terminal pivots do not need to remain in
+// memory, so processing time does not grow with the chart's full history.
+var array<Pivot> pendingPivots = array.new<Pivot>()
+var array<Pivot> alivePivots = array.new<Pivot>()
+// Live markers cannot be deleted because they may later turn into a hunt
+// marker. Retired markers are kept only until a new marker needs their slot.
+var array<label> liveMarkers = array.new_label()
+var array<label> retiredMarkers = array.new_label()
+
+//=============================================================================
+// HELPERS
+//=============================================================================
+
+f_highHunted(float h, float level) =>
+    touchCountsAsHunt ? h >= level : h > level
+
+f_lowHunted(float l, float level) =>
+    touchCountsAsHunt ? l <= level : l < level
+
+f_removeLabel(array<label> markers, label target) =>
+    if array.size(markers) > 0
+        for i = array.size(markers) - 1 to 0
+            if array.get(markers, i) == target
+                array.remove(markers, i)
+
+f_reclaimRetiredMarkerSlots() =>
+    while array.size(liveMarkers) + array.size(retiredMarkers) >= MAX_MARKERS and array.size(retiredMarkers) > 0
+        label oldestRetiredMarker = array.shift(retiredMarkers)
+        label.delete(oldestRetiredMarker)
+
+//=============================================================================
+// CONFIRM PIVOT
+//=============================================================================
+
+f_confirmPending(int pendingIndex) =>
+    Pivot p = array.get(pendingPivots, pendingIndex)
+    if p.state == PENDING
+        p.state := ALIVE
+        p.pivotLow := p.runningMin
+        p.pivotBar := p.runningMinBar
+        p.confirmedBar := bar_index
+        f_reclaimRetiredMarkerSlots()
+        if array.size(liveMarkers) + array.size(retiredMarkers) < MAX_MARKERS
+            p.marker := label.new(x = p.pivotBar, y = p.pivotLow - syminfo.mintick * offsetTicks, text = "▲", xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, textcolor = aliveColor, size = iconSize)
+            array.push(liveMarkers, p.marker)
+        array.remove(pendingPivots, pendingIndex)
+        array.push(alivePivots, p)
+
+//=============================================================================
+// INVALIDATE CANDIDATE
+//=============================================================================
+
+f_invalidatePending(int pendingIndex) =>
+    array.remove(pendingPivots, pendingIndex)
+
+//=============================================================================
+// DESTROY ALIVE PIVOT
+//=============================================================================
+
+f_destroyAlive(int aliveIndex) =>
+    Pivot p = array.get(alivePivots, aliveIndex)
+    if p.state == ALIVE
+        p.state := DEAD
+        if not na(p.marker)
+            label.set_text(p.marker, "×")
+            label.set_textcolor(p.marker, deadColor)
+            f_removeLabel(liveMarkers, p.marker)
+            array.push(retiredMarkers, p.marker)
+        array.remove(alivePivots, aliveIndex)
+
+//=============================================================================
+// GREEN/RED SEQUENCE TRACKER
+//=============================================================================
+
+var int redCount = 0
+var float redMin = na
+var int redMinBar = na
+var float redMax = na
+var float precedingGreenMax = na
+
+//=============================================================================
+// MAIN
+//=============================================================================
+
+bool green = close > open
+bool red = close < open
+
+if barstate.isconfirmed
+    // 1) Destroy old pivots as soon as price crosses their low from above.
+    // Candle colour is irrelevant to a liquidity hunt.
+    if array.size(alivePivots) > 0
+        for i = array.size(alivePivots) - 1 to 0
+            Pivot p = array.get(alivePivots, i)
+            if bar_index > p.confirmedBar and f_lowHunted(low, p.pivotLow)
+                f_destroyAlive(i)
+
+    // 2) Process pending candidates.
+    if array.size(pendingPivots) > 0
+        for i = array.size(pendingPivots) - 1 to 0
+            Pivot p = array.get(pendingPivots, i)
+            if p.state == PENDING and bar_index > p.createdBar
+                if low < p.runningMin
+                    p.runningMin := low
+                    p.runningMinBar := bar_index
+
+                bool confirm = false
+                bool invalidate = false
+
+                if p.phase == WAIT_NEXT
+                    if green
+                        p.phase := GREEN_RUN
+                        if f_highHunted(high, p.maxHigh)
+                            confirm := true
+                    else if red
+                        p.phase := NORMAL
+                else if p.phase == GREEN_RUN
+                    if green
+                        if f_highHunted(high, p.maxHigh)
+                            confirm := true
+                    else if red
+                        p.phase := NORMAL
+                else if p.phase == NORMAL
+                    bool hi = f_highHunted(high, p.maxHigh)
+                    bool lo = f_lowHunted(low, p.minLow)
+                    if hi and lo
+                        if sameCandleRule == "High wins"
+                            confirm := true
+                        else
+                            invalidate := true
+                    else if hi
+                        confirm := true
+                    else if lo
+                        invalidate := true
+
+                // Persist running-low and phase updates before a helper changes
+                // the state, so a stale local PENDING record cannot overwrite
+                // a newly ALIVE/INVALID pivot.
+                array.set(pendingPivots, i, p)
+
+                if confirm
+                    f_confirmPending(i)
+                else if invalidate
+                    f_invalidatePending(i)
+
+//=============================================================================
+// 3) CREATE NEW CANDIDATE
+// RED sequence + GREEN
+// min = RED + GREEN
+// max = preceding GREEN sequence + RED
+//=============================================================================
+
+if barstate.isconfirmed and green and redCount > 0
+    float minValue = math.min(redMin, low)
+    int minBar = low < redMin ? bar_index : redMinBar
+    Pivot p = Pivot.new(createdBar = bar_index, minLow = minValue, minLowBar = minBar, maxHigh = redMax, runningMin = minValue, runningMinBar = minBar, pivotLow = na, pivotBar = na, state = PENDING, phase = WAIT_NEXT, confirmedBar = na, marker = na)
+    int pendingIndex = array.size(pendingPivots)
+    array.push(pendingPivots, p)
+
+    // Immediate trigger-green confirmation.
+    if f_highHunted(high, redMax)
+        f_confirmPending(pendingIndex)
+
+//=============================================================================
+// 4) UPDATE SEQUENCES
+//=============================================================================
+
+if barstate.isconfirmed
+    if red
+        if redCount == 0
+            redMin := low
+            redMinBar := bar_index
+            redMax := na(precedingGreenMax) ? high : math.max(precedingGreenMax, high)
+            precedingGreenMax := na
+        else
+            if low < redMin
+                redMin := low
+                redMinBar := bar_index
+            redMax := math.max(redMax, high)
+        redCount += 1
+    else
+        redCount := 0
+        redMin := na
+        redMinBar := na
+        redMax := na
+        if green
+            precedingGreenMax := na(precedingGreenMax) ? high : math.max(precedingGreenMax, high)
+        else
+            precedingGreenMax := na
+
+//=============================================================================
+// DEBUG
+//=============================================================================
+
+plot(showDebug ? redCount : na, "Red sequence length", display = display.data_window)
+plot(showDebug ? array.size(alivePivots) : na, "Alive pivots", display = display.data_window)
+plot(showDebug ? array.size(pendingPivots) : na, "Pending pivots", display = display.data_window)
+plot(showDebug ? array.size(alivePivots) + array.size(pendingPivots) : na, "Live pivots (pending + alive)", display = display.data_window)
+plot(showDebug ? array.size(liveMarkers) + array.size(retiredMarkers) : na, "Retained pivot markers", display = display.data_window)
