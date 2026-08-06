@@ -3,15 +3,16 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List, Literal, Sequence, Tuple
 
 from candle_downloader.binance import (
     BinanceClient,
     BinanceClientConfig,
-    MAX_BATCH,
-    interval_to_milliseconds,
 )
-from candle_downloader.models import Candle, to_milliseconds
+from candle_downloader.downloader import CandleDownloader, DownloadRequest
+from candle_downloader.models import Candle, to_datetime, to_milliseconds
+from candle_downloader.storage import build_store
 from experiments.candle_csv import read_candles_from_csv
 
 Direction = Literal["UPWARD", "DOWNWARD"]
@@ -39,11 +40,20 @@ class BOSRecord:
 
 
 @dataclass(slots=True)
-class CHoCHUpdate:
+class CHoCHRecord:
+    """One retained CHoCH per BOS.
+
+    ``level`` and ``candle_index`` describe the original structural CHoCH.
+    ``current_level`` is the only mutable state required to continue the
+    cascade.  Once price first hunts the CHoCH, its candle index is retained;
+    later hunts update only ``current_level`` and are not accumulated.
+    """
+
     bos_index: int
-    candle_index: int  # the candle that established (or updated) this CHoCH level
+    candle_index: int
     level: float
-    reason: str  # "initial-range" | "continuous"
+    current_level: float
+    first_hunt_candle_index: int | None = None
 
 
 @dataclass(slots=True)
@@ -87,8 +97,9 @@ class DetectionConfig:
 class BOSCHoCHResult:
     direction_state: DirectionState
     bos_records: List[BOSRecord] = field(default_factory=list)
-    choch_levels_by_bos: Dict[int, List[float]] = field(default_factory=dict)
-    choch_updates: List[CHoCHUpdate] = field(default_factory=list)
+    # A BOS owns exactly one retained CHoCH record.  We do not keep a growing
+    # level/candle history for its cascade; only the first hunt is retained.
+    choch_records_by_bos: Dict[int, CHoCHRecord] = field(default_factory=dict)
     events: List[DetectionEvent] = field(default_factory=list)
     in_progress_bos: "BOSRecord | None" = (
         None  # currently forming or complete, not yet confirmed
@@ -328,14 +339,11 @@ def detect_bos_choch(
 
         result.bos_records.append(forming_bos)
         active_bos_ids.append(forming_bos.index)
-        result.choch_levels_by_bos[forming_bos.index] = [choch_level]
-        result.choch_updates.append(
-            CHoCHUpdate(
-                bos_index=forming_bos.index,
-                candle_index=choch_candle_idx,
-                level=choch_level,
-                reason="initial-range",
-            )
+        result.choch_records_by_bos[forming_bos.index] = CHoCHRecord(
+            bos_index=forming_bos.index,
+            candle_index=choch_candle_idx,
+            level=choch_level,
+            current_level=choch_level,
         )
         result.events.append(
             DetectionEvent(
@@ -361,29 +369,27 @@ def detect_bos_choch(
             newest_hunted = False
 
             for bos_id in active_bos_ids:
-                levels = result.choch_levels_by_bos.get(bos_id)
-                if not levels:
+                choch = result.choch_records_by_bos.get(bos_id)
+                if choch is None:
                     continue
-                last_level = levels[-1]
-                if _is_choch_hunted(direction, last_level, candle, cfg.hunt_mode):
+                if _is_choch_hunted(
+                    direction, choch.current_level, candle, cfg.hunt_mode
+                ):
                     new_level = _choch_new_level(direction, candle, cfg.hunt_mode)
-                    levels.append(new_level)
-                    result.choch_updates.append(
-                        CHoCHUpdate(
-                            bos_index=bos_id,
-                            candle_index=i,
-                            level=new_level,
-                            reason="continuous",
+                    # Retain the first hunt only. The live level must still
+                    # move on every hunt so later reversal detection is
+                    # unchanged, but no cascade history is stored.
+                    if choch.first_hunt_candle_index is None:
+                        choch.first_hunt_candle_index = i
+                        result.events.append(
+                            DetectionEvent(
+                                candle_index=i,
+                                event="CHOCH_HUNT",
+                                direction=direction,
+                                details=f"{_choch_label(direction, bos_id)}@{choch.current_level}",
+                            )
                         )
-                    )
-                    result.events.append(
-                        DetectionEvent(
-                            candle_index=i,
-                            event="CHOCH_HUNT",
-                            direction=direction,
-                            details=f"{_choch_label(direction, bos_id)}@{new_level}",
-                        )
-                    )
+                    choch.current_level = new_level
                     if bos_id == newest_bos_id:
                         newest_hunted = True
 
@@ -563,8 +569,8 @@ def build_plotly_figure(candles: Sequence[Candle], result: BOSCHoCHResult):
     """Build a Plotly candlestick chart with short BOS and CHoCH level lines.
 
     BOS lines span from bos.start_index to bos.hunt_index (add_shape, not add_hline).
-    CHoCH lines are anchored at the candle that holds the CHoCH price extreme
-    (CHoCHUpdate.candle_index), not the BOS hunt candle.
+    CHoCH lines are anchored at the original structural CHoCH candle, not the
+    BOS hunt candle. Each BOS contributes one retained CHoCH record.
     """
     try:
         import plotly.graph_objects as go
@@ -613,27 +619,17 @@ def build_plotly_figure(candles: Sequence[Candle], result: BOSCHoCHResult):
             yanchor="bottom",
         )
 
-    # --- CHoCH lines: short dotted line at the last CHoCH level for each BOS ---
-    # Build a lookup: bos_id → last CHoCHUpdate (preserves candle_index correctly)
-    last_choch_update: Dict[int, CHoCHUpdate] = {}
-    for update in result.choch_updates:
-        last_choch_update[update.bos_index] = (
-            update  # later updates overwrite earlier ones
-        )
-
-    for bos_idx, update in last_choch_update.items():
+    # --- CHoCH lines: one original structural CHoCH per BOS ---
+    for bos_idx, choch in result.choch_records_by_bos.items():
         bos = next((b for b in result.bos_records if b.index == bos_idx), None)
         if bos is None:
             continue
-        if not result.choch_levels_by_bos.get(bos_idx):
-            continue
-
-        choch_ci = update.candle_index
+        choch_ci = choch.candle_index
         # Draw the line ~10 candles past the CHoCH candle so it is clearly visible
         line_end_ci = min(choch_ci + 10, len(candles) - 1)
         x0 = candles[choch_ci].open_time
         x1 = candles[line_end_ci].open_time
-        level = update.level
+        level = choch.level
 
         color = "#2563eb" if bos.direction == "UPWARD" else "#0ea5a4"
         fig.add_shape(
@@ -680,24 +676,28 @@ def download_candles(
     proxies: dict | None = None,
     logger=None,
 ) -> List[Candle]:
+    """Sync Binance candles through PostgreSQL and return the stored range."""
+    store = build_store("postgres", _default_postgres_env_path())
     client = BinanceClient(BinanceClientConfig(proxies=proxies or None), logger=logger)
-    step = interval_to_milliseconds(interval) * MAX_BATCH
-    cursor = start_ms
-    candles: List[Candle] = []
-    while cursor < end_ms:
-        batch_end = min(end_ms, cursor + step)
-        fetched = client.fetch_klines(
-            symbol=symbol,
-            interval=interval,
-            start_ms=cursor,
-            end_ms=batch_end,
-            limit=MAX_BATCH,
+    downloader = CandleDownloader(client=client, store=store, logger=logger)
+    try:
+        result = downloader.sync(
+            DownloadRequest(
+                symbol=symbol,
+                interval=interval,
+                start=to_datetime(start_ms),
+                end=to_datetime(end_ms),
+            )
         )
-        if not fetched:
-            break
-        candles.extend(fetched)
-        cursor = fetched[-1].open_time_ms + interval_to_milliseconds(interval)
-    return candles
+        return result.candles
+    finally:
+        client.close()
+        store.close()
+
+
+def _default_postgres_env_path() -> Path | None:
+    env_path = Path(__file__).resolve().parents[1] / "configs" / "postgres.env"
+    return env_path if env_path.exists() else None
 
 
 def get_candles(
@@ -841,13 +841,14 @@ def main() -> int:
         f"Current direction: {result.direction_state.direction} since index={result.direction_state.since_index}"
     )
     for bos in result.bos_records:
-        choch_levels = result.choch_levels_by_bos.get(bos.index, [])
-        last_choch = choch_levels[-1] if choch_levels else None
+        choch = result.choch_records_by_bos.get(bos.index)
         print(
             f"{bos.label} dir={bos.direction} level={bos.level} "
             f"anchor={bos.anchor_index} start={bos.start_index} "
             f"complete={bos.complete_index} hunt={bos.hunt_index} "
-            f"last_choch={last_choch}"
+            f"choch={choch.level if choch else None} "
+            f"current_choch={choch.current_level if choch else None} "
+            f"first_choch_hunt={choch.first_hunt_candle_index if choch else None}"
         )
     if args.plot:
         fig = build_plotly_figure(candles, result)
