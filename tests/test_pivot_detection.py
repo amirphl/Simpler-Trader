@@ -4,7 +4,8 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from candle_downloader.models import Candle
-from experiments.pivot_detection import detect_pivots, get_candles
+from experiments.pivot_detection import PivotConfig, detect_pivots, get_candles
+from experiments.pivot_detection_v2 import detect_pivots_v2
 
 
 def _candle(
@@ -96,6 +97,53 @@ class PivotDetectionTests(unittest.TestCase):
         self.assertEqual(len(pivots), 1)
         self.assertEqual(pivots[0].reference_index, 1)
         self.assertEqual(pivots[0].previous_bearish_index, None)
+
+    def test_v1_include_reference_candle_flag_controls_candidate_start(self) -> None:
+        candles = [
+            _candle(0, open=10.0, high=12.0, low=9.0, close=9.5),
+            _candle(1, open=9.5, high=10.5, low=9.2, close=10.2),
+            _candle(2, open=10.2, high=11.0, low=8.8, close=9.0),
+        ]
+
+        include_ref = detect_pivots(
+            candles, 10, PivotConfig(include_reference_candle=True)
+        )
+        exclude_ref = detect_pivots(
+            candles, 10, PivotConfig(include_reference_candle=False)
+        )
+
+        self.assertEqual(include_ref[0].index, 0)
+        self.assertEqual(exclude_ref[0].index, 1)
+
+    def test_v2_pivot_uses_full_formation_range(self) -> None:
+        candles = [
+            _candle(0, open=10.0, high=20.0, low=10.0, close=12.0),
+            _candle(1, open=12.0, high=13.0, low=9.5, close=11.0),
+            _candle(2, open=11.0, high=14.0, low=9.8, close=12.5),
+            _candle(3, open=9.5, high=20.0, low=9.0, close=18.0),
+        ]
+
+        entries = detect_pivots_v2(candles, 10)
+        pivots = [entry for entry in entries if entry.pivot_index is not None]
+
+        self.assertEqual(len(pivots), 1)
+        self.assertEqual(pivots[0].pivot_type, "bearish")
+        self.assertEqual(pivots[0].pivot_index, 0)
+
+    def test_v2_bullish_pivot_hunted_by_crossing_down_from_above(self) -> None:
+        candles = [
+            _candle(0, open=20.0, high=21.0, low=10.0, close=18.0),
+            _candle(1, open=18.0, high=20.0, low=11.0, close=19.0),
+            _candle(2, open=19.0, high=20.0, low=9.0, close=12.0),
+            _candle(3, open=21.0, high=22.0, low=9.0, close=10.0),
+        ]
+
+        entries = detect_pivots_v2(candles, 10)
+        pivots = [entry for entry in entries if entry.pivot_index is not None]
+
+        self.assertEqual(len(pivots), 1)
+        self.assertEqual(pivots[0].pivot_type, "bullish")
+        self.assertEqual(pivots[0].pivot_index, 2)
 
 
 if __name__ == "__main__":
