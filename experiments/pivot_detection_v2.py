@@ -55,6 +55,14 @@ def _swing_pct(high: float, low: float) -> float:
     return (high - low) / mid * 100.0
 
 
+def _crosses_range_down_from_above(candle: Candle, high: float, low: float) -> bool:
+    return candle.open >= high and candle.low <= low
+
+
+def _crosses_range_up_from_below(candle: Candle, high: float, low: float) -> bool:
+    return candle.open <= low and candle.high >= high
+
+
 def detect_pivots_v2(
     candles: Sequence[Candle],
     scan_length: int,
@@ -64,10 +72,11 @@ def detect_pivots_v2(
 
     For each bullish candle i: find the previous valid bullish candle (with at
     least one bearish candle in between), compute range [start, i], then scan
-    forward — if the range low is taken out first, the bearish pivot is the
-    argmax high in [start, hunt_index].
+    forward. A bearish pivot is hunted when a later candle starts below the
+    range low and crosses the range high.
 
-    The reverse logic applies for each bearish candle to find bullish pivots.
+    The reverse logic applies for each bearish candle to find bullish pivots:
+    a later candle must start above the range high and cross the range low.
     """
     if scan_length <= 0:
         raise ValueError("scan_length must be > 0")
@@ -111,21 +120,16 @@ def detect_pivots_v2(
                 entries.append(PivotV2Entry(candle_index=i, pivot_index=None, pivot_type=None, hunt_index=None))
                 continue
 
-            min_hunted = False
             hunt_k: int | None = None
             k = i + 1
             while k <= scan_end:
-                if candles[k].low <= range_min:
-                    min_hunted = True
-                    hunt_k = k
-                    break
-                if candles[k].high >= range_max:
+                if _crosses_range_up_from_below(candles[k], range_max, range_min):
                     hunt_k = k
                     break
                 k += 1
 
-            if min_hunted and hunt_k is not None:
-                pivot_idx = _argmax_high(candles, i, hunt_k)
+            if hunt_k is not None:
+                pivot_idx = _argmax_high(candles, start, hunt_k)
                 entries.append(PivotV2Entry(candle_index=i, pivot_index=pivot_idx, pivot_type="bearish", hunt_index=hunt_k))
             else:
                 entries.append(PivotV2Entry(candle_index=i, pivot_index=None, pivot_type=None, hunt_index=hunt_k))
@@ -158,21 +162,16 @@ def detect_pivots_v2(
                 entries.append(PivotV2Entry(candle_index=i, pivot_index=None, pivot_type=None, hunt_index=None))
                 continue
 
-            max_hunted = False
             hunt_k = None
             k = i + 1
             while k <= scan_end:
-                if candles[k].high >= range_max:
-                    max_hunted = True
-                    hunt_k = k
-                    break
-                if candles[k].low <= range_min:
+                if _crosses_range_down_from_above(candles[k], range_max, range_min):
                     hunt_k = k
                     break
                 k += 1
 
-            if max_hunted and hunt_k is not None:
-                pivot_idx = _argmin_low(candles, i, hunt_k)
+            if hunt_k is not None:
+                pivot_idx = _argmin_low(candles, start, hunt_k)
                 entries.append(PivotV2Entry(candle_index=i, pivot_index=pivot_idx, pivot_type="bullish", hunt_index=hunt_k))
             else:
                 entries.append(PivotV2Entry(candle_index=i, pivot_index=None, pivot_type=None, hunt_index=hunt_k))
