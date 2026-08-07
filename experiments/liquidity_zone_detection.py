@@ -63,7 +63,7 @@ from typing import Callable, Dict, List, Literal, Sequence
 from candle_downloader.models import Candle, to_milliseconds
 from experiments.bos_choch_detection import (
     BOSCHoCHResult,
-    CHoCHUpdate,
+    CHoCHRecord,
     DetectionConfig as BOSCHoCHConfig,
     DetectionEvent,
     detect_bos_choch,
@@ -76,12 +76,16 @@ from experiments.pivot_detection_v2 import PivotConfigV2, PivotV2Entry, detect_p
 Direction = Literal["UPWARD", "DOWNWARD"]
 PivotFilter = Literal["BULLISH", "BEARISH", "ALL"]
 PairScanOrder = Literal["newest_to_oldest", "oldest_to_newest"]
-PivotGroupingMode = Literal["combined", "separate_by_type"]
 RepresentativeMode = Literal["choch", "latest_eligible"]
 HuntMode = Literal["wick", "close"]
 IntersectionMethod = Literal["body", "wick"]
 SlopeAttribute = Literal["close", "open", "high", "low"]
-
+LiquidityZoneLineMethod = Literal[
+    "pivot_high_max",
+    "pivot_low_min",
+    "zone_candle_high_max",
+    "zone_candle_low_min",
+]
 
 @dataclass(slots=True)
 class PriceRange:
@@ -112,10 +116,30 @@ class LiquidityZone:
     left_pivot: Pivot  # older / left-side pivot on the chart
     right_pivot: Pivot  # newer / right-side pivot on the chart
     price_range: PriceRange
+    line_price: float
+    line_method: LiquidityZoneLineMethod
     start_index: int
     end_index: int
     is_hunted: bool
     metadata: Dict[str, object] = field(default_factory=dict)
+
+    @property
+    def hunted(self) -> bool:
+        """Preferred spelling alias for callers that mirror pivot semantics."""
+        return self.is_hunted
+
+    @hunted.setter
+    def hunted(self, value: bool) -> None:
+        self.is_hunted = value
+
+    @property
+    def haunted(self) -> bool:
+        """Backwards-compatible misspelling used by older experiment notes."""
+        return self.is_hunted
+
+    @haunted.setter
+    def haunted(self, value: bool) -> None:
+        self.is_hunted = value
 
 
 @dataclass(slots=True)
@@ -133,17 +157,9 @@ class LiquidityZoneConfig:
     # Pivot detection settings forwarded to detect_pivots_v2.
 
     # Pivot selection for level-1 liquidity zones.
-    # Defaults implement the requested behaviour:
-    #   UPWARD   -> bullish, non-hunted pivots
-    #   DOWNWARD -> bearish, non-hunted pivots
-    up_pivot_filter: PivotFilter = "BULLISH"
-    down_pivot_filter: PivotFilter = "BEARISH"
+    up_pivot_filter: PivotFilter = "ALL"
+    down_pivot_filter: PivotFilter = "ALL"
     include_hunted_pivots: bool = False
-
-    # If pivot_filter="ALL":
-    #   combined         -> bullish and bearish pivots may pair with each other
-    #   separate_by_type -> bullish pairs only with bullish, bearish only with bearish
-    pivot_grouping: PivotGroupingMode = "combined"
 
     # Pair scan policy.  Default is right-to-left/newest-to-oldest as requested.
     pair_scan_order: PairScanOrder = "newest_to_oldest"
@@ -160,12 +176,12 @@ class LiquidityZoneConfig:
     # Intersection and slope configuration.
     # intersection_method controls which candle price range is used when
     # checking whether two pivots overlap:
-    #   "body" -> [min(open,close), max(open,close)]   (default, body-to-body)
-    #   "wick" -> [low, high]                          (full candle range)
+    #   "body" -> [min(open,close), max(open,close)]
+    #   "wick" -> [low, high]                          (default, full candle range)
     # slope_attribute controls which price field decides the ascending/
     # descending slope condition between the older and newer pivot candle:
     #   "close" (default), "open", "high", or "low"
-    intersection_method: IntersectionMethod = "body"
+    intersection_method: IntersectionMethod = "wick"
     slope_attribute: SlopeAttribute = "close"
 
     # Representative pivot policy for level-2 zones.
@@ -175,9 +191,6 @@ class LiquidityZoneConfig:
     representative_mode: RepresentativeMode = "choch"
     representative_include_hunted: bool = False
     allow_representative_fallback: bool = True
-
-    # Zone hunted status.  This is independent from pivot hunted status.
-    zone_hunt_mode: HuntMode = "wick"
 
 
 @dataclass(slots=True)
@@ -442,27 +455,46 @@ def _zone_hunted(
 ) -> bool:
     """Return True once later price sweeps the liquidity zone.
 
-    UPWARD zones are treated as support-side liquidity: hunted if later price
-    moves through the lower edge.  DOWNWARD zones are resistance-side liquidity:
-    hunted if later price moves through the upper edge.
+    UPWARD zones are treated as support-side liquidity: hunted if later wicks
+    sweep the bullish line.  DOWNWARD zones are resistance-side liquidity:
+    hunted if later wicks sweep the bearish line.
     """
     if zone.end_index + 1 >= len(candles):
         return False
 
-    low = zone.price_range.low
-    high = zone.price_range.high
+    line_price = zone.line_price
     eps = config.epsilon
 
     for candle in candles[zone.end_index + 1 :]:
         if zone.direction == "UPWARD":
-            value = candle.low if config.zone_hunt_mode == "wick" else candle.close
-            if value <= low + eps:
+            if candle.low <= line_price + eps:
                 return True
         else:
-            value = candle.high if config.zone_hunt_mode == "wick" else candle.close
-            if value >= high - eps:
+            if candle.high >= line_price - eps:
                 return True
     return False
+
+
+def _zone_line_method_for_direction(direction: Direction) -> LiquidityZoneLineMethod:
+    return "pivot_low_min" if direction == "UPWARD" else "pivot_high_max"
+
+
+def _zone_line_price(
+    *,
+    older: Pivot,
+    newer: Pivot,
+    candles: Sequence[Candle],
+    method: LiquidityZoneLineMethod,
+) -> float:
+    if method == "pivot_high_max":
+        return max(older.high, newer.high)
+    if method == "pivot_low_min":
+        return min(older.low, newer.low)
+
+    zone_candles = candles[older.index : newer.index + 1]
+    if method == "zone_candle_high_max":
+        return max(candle.high for candle in zone_candles)
+    return min(candle.low for candle in zone_candles)
 
 
 def _build_zone(
@@ -477,6 +509,13 @@ def _build_zone(
     config: LiquidityZoneConfig,
     metadata: Dict[str, object] | None = None,
 ) -> LiquidityZone:
+    line_method = _zone_line_method_for_direction(direction)
+    line_price = _zone_line_price(
+        older=older,
+        newer=newer,
+        candles=candles,
+        method=line_method,
+    )
     zone = LiquidityZone(
         id=zone_id,
         direction=direction,
@@ -484,6 +523,8 @@ def _build_zone(
         left_pivot=older,
         right_pivot=newer,
         price_range=overlap,
+        line_price=line_price,
+        line_method=line_method,
         start_index=older.index,
         end_index=newer.index,
         is_hunted=False,
@@ -495,6 +536,8 @@ def _build_zone(
     _thickness = overlap.size  # overlap_high − overlap_low
     zone.metadata.setdefault("overlap_low", overlap.low)
     zone.metadata.setdefault("overlap_high", overlap.high)
+    zone.metadata.setdefault("line_price", line_price)
+    zone.metadata.setdefault("line_method", line_method)
     zone.metadata.setdefault("thickness", _thickness)  # canonical name from notes
     zone.metadata.setdefault("overlap_size", _thickness)  # kept for backward compat
     zone.metadata.setdefault("midpoint", _midpoint)
@@ -511,12 +554,7 @@ def _build_zone(
     return zone
 
 
-def _split_for_pairing(
-    pivots: Sequence[Pivot], config: LiquidityZoneConfig
-) -> List[tuple[str, List[Pivot]]]:
-    if config.pivot_grouping == "combined":
-        return [("", list(pivots))]
-
+def _split_for_pairing(pivots: Sequence[Pivot]) -> List[tuple[str, List[Pivot]]]:
     bullish = [pivot for pivot in pivots if _pivot_type(pivot) == "bullish"]
     bearish = [pivot for pivot in pivots if _pivot_type(pivot) == "bearish"]
     groups: List[tuple[str, List[Pivot]]] = []
@@ -547,7 +585,7 @@ def _pair_zones(
     zones: List[LiquidityZone] = []
     reverse = config.pair_scan_order == "newest_to_oldest"
 
-    for group_name, group_pivots in _split_for_pairing(pivots, config):
+    for group_name, group_pivots in _split_for_pairing(pivots):
         ordered = sorted(group_pivots, key=lambda pivot: pivot.index, reverse=reverse)
         if len(ordered) < 2:
             continue
@@ -602,29 +640,27 @@ def _bos_direction_by_id(bos_choch_result: BOSCHoCHResult) -> Dict[int, Directio
     return {bos.index: bos.direction for bos in bos_choch_result.bos_records}
 
 
-def _choch_update_for_reversal(
+def _choch_record_for_reversal(
     reversal: DetectionEvent,
     bos_choch_result: BOSCHoCHResult,
-) -> CHoCHUpdate | None:
-    """Find the CHoCH update that produced a direction reversal.
+) -> CHoCHRecord | None:
+    """Find the retained CHoCH whose first hunt produced a reversal.
 
     In the BOS/CHoCH detector, a reversal happens after the newest active BOS's
-    CHoCH is hunted.  The detector records one or more CHOCH continuous updates
-    on the reversal candle.  We choose the newest BOS from the previous
-    direction; this is the CHoCH source of the new segment.
+    CHoCH is hunted. Each BOS retains only its first CHoCH hunt candle, so we
+    choose the newest matching BOS from the previous direction.
     """
     bos_direction = _bos_direction_by_id(bos_choch_result)
     previous_direction = _opposite_direction(reversal.direction)
 
     same_candle_candidates = [
-        update
-        for update in bos_choch_result.choch_updates
-        if update.candle_index == reversal.candle_index
-        and update.reason == "continuous"
-        and bos_direction.get(update.bos_index) == previous_direction
+        choch
+        for choch in bos_choch_result.choch_records_by_bos.values()
+        if choch.first_hunt_candle_index == reversal.candle_index
+        and bos_direction.get(choch.bos_index) == previous_direction
     ]
     if same_candle_candidates:
-        return max(same_candle_candidates, key=lambda update: update.bos_index)
+        return max(same_candle_candidates, key=lambda choch: choch.bos_index)
     return None
 
 
@@ -756,41 +792,26 @@ def _build_direction_segments(
             )
             segments.append(segment)
 
-        choch_update = _choch_update_for_reversal(reversal, bos_choch_result)
+        choch_record = _choch_record_for_reversal(reversal, bos_choch_result)
 
-        # Notes §4 step 5b: trace back from the continuous CHoCH update (at the
-        # reversal/hunt candle) to the initial-range CHoCH update for the SAME BOS.
-        # The initial-range candle holds the *structural* extreme that defined the
-        # CHoCH level, making it the correct anchor for the representative pivot
-        # search (we want the nearest structural pivot to THAT candle, not to the
-        # hunt candle itself).  Fall back to the continuous update gracefully when
-        # no initial-range entry is found (e.g. older BOS/CHoCH implementations).
-        source_update: "CHoCHUpdate | None" = None
-        if choch_update is not None:
-            source_update = next(
-                (
-                    u
-                    for u in bos_choch_result.choch_updates
-                    if u.bos_index == choch_update.bos_index
-                    and u.reason == "initial-range"
-                ),
-                choch_update,  # graceful fallback
-            )
+        # The retained record already contains the initial structural CHoCH
+        # candle and level, while first_hunt_candle_index identifies the reversal.
+        # No per-cascade update history is required.
 
         current_direction = reversal.direction
         current_start = reversal.candle_index
         current_metadata = {
             "reversal_candle_index": reversal.candle_index,
             "representative_source": "choch",
-            "representative_source_bos_index": choch_update.bos_index
-            if choch_update
+            "representative_source_bos_index": choch_record.bos_index
+            if choch_record
             else None,
             # Use the initial-range CHoCH candle as the anchor (not the hunt candle).
-            "representative_source_index": source_update.candle_index
-            if source_update
+            "representative_source_index": choch_record.candle_index
+            if choch_record
             else reversal.candle_index,
-            "representative_source_level": source_update.level
-            if source_update
+            "representative_source_level": choch_record.level
+            if choch_record
             else None,
         }
 
@@ -842,7 +863,22 @@ def _v2_entries_to_pivots(
                 invalidation_level=None,
             )
         )
+    _mark_pivots_hunted(pivots, candles)
     return pivots
+
+
+def _mark_pivots_hunted(pivots: Sequence[Pivot], candles: Sequence[Candle]) -> None:
+    for pivot in pivots:
+        if pivot.index < 0 or pivot.index >= len(candles):
+            continue
+        if pivot.type == "bearish":
+            pivot.hunted = any(
+                candle.high > pivot.high for candle in candles[pivot.index + 1 :]
+            )
+        elif pivot.type == "bullish":
+            pivot.hunted = any(
+                candle.low < pivot.low for candle in candles[pivot.index + 1 :]
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -1100,7 +1136,7 @@ def build_liquidity_zone_plotly_figure(
                 fig.add_trace(
                     go.Scatter(
                         x=[x0, x1],
-                        y=[zone.price_range.high, zone.price_range.high],
+                        y=[zone.line_price, zone.line_price],
                         mode="lines",
                         line={"width": 2, "color": line_color},
                         name=zone.id,
@@ -1109,6 +1145,8 @@ def build_liquidity_zone_plotly_figure(
                             f"direction={zone.direction}<br>"
                             f"level={zone.level}<br>"
                             f"range={zone.price_range.low:.6f}-{zone.price_range.high:.6f}<br>"
+                            f"line={zone.line_price:.6f}<br>"
+                            f"line_method={zone.line_method}<br>"
                             f"hunted={zone.is_hunted}<extra></extra>"
                         ),
                         showlegend=False,
@@ -1163,18 +1201,15 @@ def main() -> int:
         help="Drop pivots whose (high-low)/mid*100 < this value (0 = disabled)",
     )
     parser.add_argument(
-        "--up-pivot-filter", choices=["BULLISH", "BEARISH", "ALL"], default="BULLISH"
+        "--up-pivot-filter", choices=["BULLISH", "BEARISH", "ALL"], default="ALL"
     )
     parser.add_argument(
-        "--down-pivot-filter", choices=["BULLISH", "BEARISH", "ALL"], default="BEARISH"
+        "--down-pivot-filter", choices=["BULLISH", "BEARISH", "ALL"], default="ALL"
     )
     parser.add_argument(
         "--include-hunted-pivots",
         action="store_true",
         help="Include hunted pivots during level-1 zone detection",
-    )
-    parser.add_argument(
-        "--pivot-grouping", choices=["combined", "separate_by_type"], default="combined"
     )
     parser.add_argument(
         "--pair-scan-order",
@@ -1201,12 +1236,11 @@ def main() -> int:
         action="store_true",
         help="Do not use latest eligible pivot when a segment has no CHoCH source",
     )
-    parser.add_argument("--zone-hunt-mode", choices=["wick", "close"], default="wick")
     parser.add_argument(
         "--intersection-method",
         choices=["body", "wick"],
-        default="body",
-        help="Price range used for pivot-to-pivot overlap check: body (default) or wick",
+        default="wick",
+        help="Price range used for pivot-to-pivot overlap check: body or wick (default)",
     )
     parser.add_argument(
         "--slope-attribute",
@@ -1263,7 +1297,6 @@ def main() -> int:
             up_pivot_filter=args.up_pivot_filter,
             down_pivot_filter=args.down_pivot_filter,
             include_hunted_pivots=args.include_hunted_pivots,
-            pivot_grouping=args.pivot_grouping,
             pair_scan_order=args.pair_scan_order,
             allow_reuse=args.allow_reuse,
             maximum_pivot_distance=args.maximum_pivot_distance,
@@ -1275,7 +1308,6 @@ def main() -> int:
             representative_mode=args.representative_mode,
             representative_include_hunted=args.representative_include_hunted,
             allow_representative_fallback=not args.disable_representative_fallback,
-            zone_hunt_mode=args.zone_hunt_mode,
             intersection_method=args.intersection_method,
             slope_attribute=args.slope_attribute,
         ),
@@ -1301,7 +1333,8 @@ def main() -> int:
             for zone in zones:
                 print(
                     f"{zone.id} left={zone.left_pivot.index} right={zone.right_pivot.index} "
-                    f"range=({zone.price_range.low}, {zone.price_range.high}) hunted={zone.is_hunted}"
+                    f"range=({zone.price_range.low}, {zone.price_range.high}) "
+                    f"line={zone.line_price} line_method={zone.line_method} hunted={zone.is_hunted}"
                 )
 
     if args.plot:
