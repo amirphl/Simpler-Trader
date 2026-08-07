@@ -1,0 +1,869 @@
+//@version=6
+indicator("Bullish Liquidity Lines — Level 1", overlay = true, max_lines_count = 500, max_labels_count = 500)
+
+// Level 1 matches eligible bullish pivots inside every confirmed BoS section
+// and every iCHoCH-bounded window. Every structure event creates an
+// independent section. This indicator only detects Level 1 liquidity:
+// matching eligible pivots inside the same section.
+
+//=============================================================================
+// INPUTS
+//=============================================================================
+
+touchCountsAsHunt = input.bool(false, "Touch counts as hunt", group = "Pivot detection")
+sameCandleRule = input.string("Low wins", "If high and low are hunted on same candle", options = ["Low wins", "High wins"], group = "Pivot detection")
+showPivotMarkers = input.bool(false, "Show pivot markers", group = "Pivot detection")
+aliveColor = input.color(color.lime, "Alive pivot color", group = "Pivot detection")
+deadColor = input.color(color.red, "Dead pivot color", group = "Pivot detection")
+offsetTicks = input.int(10, "Icon offset ticks", minval = 0, group = "Pivot detection")
+iconSizeInput = input.string("Large", "Icon size", options = ["Small", "Normal", "Large", "Huge"], group = "Pivot detection")
+iconSize = iconSizeInput == "Small" ? size.small : iconSizeInput == "Normal" ? size.normal : iconSizeInput == "Huge" ? size.huge : size.large
+
+directionWindow = input.int(3, "Initial direction window", minval = 1, group = "BoS sections")
+huntModeInput = input.string("wick", "Hunt mode", options = ["wick", "close"], group = "BoS sections")
+includeHuntCandleInChochRange = input.bool(true, "Include BoS hunt candle in initial CHoCH range", group = "BoS sections")
+minSwingPct = input.float(0.0, "Minimum swing percent", step = 0.01, minval = 0.0, group = "BoS sections")
+includePullbackInBosLevel = input.bool(true, "Include first pullback candle in BoS level scan", group = "BoS sections")
+chochMarkerLengthBars = input.int(1, "CHoCH marker length (bars)", minval = 1, maxval = 10, group = "BoS sections")
+markerOffsetTicks = input.int(6, "Marker vertical offset (ticks)", minval = 0, group = "BoS sections")
+markerWidth = input.int(2, "BOS line width", minval = 1, maxval = 5, group = "BoS sections")
+chochMarkerWidth = input.int(3, "CHoCH marker width", minval = 1, maxval = 5, group = "BoS sections")
+bullBosColor = input.color(color.lime, "Bullish BOS color", group = "BoS sections")
+bearBosColor = input.color(color.red, "Bearish BOS color", group = "BoS sections")
+bearChochColor = input.color(color.yellow, "Bearish CHoCH color", group = "BoS sections")
+bullChochColor = input.color(color.blue, "Bullish CHoCH color", group = "BoS sections")
+color independentChochColor = color.purple
+
+showLiquidityLines = input.bool(true, "Show bullish liquidity lines", group = "Liquidity lines")
+liquidityLineWidth = input.int(2, "Line width", minval = 1, maxval = 5, group = "Liquidity lines")
+showDebug = input.bool(false, "Show debug values in Data Window", group = "Debug")
+
+//=============================================================================
+// CONSTANTS AND TYPES
+//=============================================================================
+
+int PENDING = 0
+int ALIVE = 1
+int DEAD = 2
+int INVALID = 3
+int WAIT_NEXT = 0
+int GREEN_RUN = 1
+int NORMAL = 3
+int DIR_UP = 1
+int DIR_DOWN = -1
+int PHASE_WAIT_PULLBACK = 0
+int PHASE_FORMING = 1
+int PHASE_AWAIT_HUNT = 2
+int BOS_FORMING = 0
+int BOS_COMPLETE = 1
+int BOS_CONFIRMED = 2
+
+type Pivot
+    int createdBar
+    float minLow
+    int minLowBar
+    float maxHigh
+    float runningMin
+    int runningMinBar
+    float pivotLow
+    int pivotBar
+    int state
+    int phase
+    int confirmedBar
+    bool hunted
+    label marker
+
+type BosRec
+    int index
+    int direction
+    int anchorIndex
+    int startIndex
+    float level
+    int levelLastUpdatedIndex
+    int completeIndex
+    int huntIndex
+    int state
+    bool hunted
+
+type ChochTrack
+    int bosIndex
+    int candleIndex // initial structural CHoCH candle
+    float level // current live level required for cascade detection
+    int firstHuntCandleIndex // retained once; later hunts are not stored
+    int direction
+    bool active
+
+type IndependentChochRec
+    int candleIndex
+    float level
+    int direction
+
+// Every confirmed BoS opens an active section. An iCHoCH closes its own
+// fixed window, which starts at the forming level's origin candle. Both
+// participate in liquidity pairing, regardless of direction.
+type LiquiditySection
+    int id
+    int startBar
+    int endBar
+    bool active
+    bool dirty
+
+// Level 1: two pivots from one confirmed BoS section or iCHoCH-bounded window.
+type LiquidityLine
+    int sectionId
+    int olderPivotId
+    int newerPivotId
+    int olderPivotBar
+    float level
+    line drawing
+    line pivotConnector
+
+//=============================================================================
+// STORAGE
+//=============================================================================
+
+var array<Pivot> candidates = array.new<Pivot>()
+var array<int> alivePivotIds = array.new_int()
+// Potential bullish pivots waiting for confirmation or invalidation.
+var array<int> pendingBullishPivotIds = array.new_int()
+// This is the complete live bullish-pivot registry. It contains both
+// confirmed (ALIVE) and still-forming (PENDING) bullish pivots, and never
+// includes invalidated or hunted pivots.
+var array<int> activeBullishPivotIds = array.new_int()
+var array<BosRec> bosRecords = array.new<BosRec>()
+var array<ChochTrack> chochTracks = array.new<ChochTrack>()
+var array<IndependentChochRec> independentChochRecords = array.new<IndependentChochRec>()
+var array<int> activeBosIds = array.new_int()
+var array<LiquiditySection> liquiditySections = array.new<LiquiditySection>()
+var array<LiquidityLine> liquidityLines = array.new<LiquidityLine>()
+var bool initialized = false
+var int direction = na
+var int directionSinceIndex = na
+var int anchorIndex = na
+var int bosPhase = PHASE_WAIT_PULLBACK
+var int formingStartIndex = na
+var float formingLevel = na
+var int formingLevelLastUpdatedIndex = na
+var int formingCompleteIndex = na
+var int bosCounter = 0
+var bool hasIndependentChoch = false
+var float independentChochLevel = na
+var int independentChochCandleIndex = na
+var int independentChochDirection = na
+
+var float dbgLastBosLevel = na
+var int dbgLastBosStartIndex = na
+var int dbgLastBosHuntIndex = na
+var float dbgLastChochLevel = na
+var int dbgLastChochCandleIndex = na
+var int dbgDirection = na
+
+var int redCount = 0
+var float redMin = na
+var int redMinBar = na
+var float redMax = na
+var float precedingGreenMax = na
+
+//=============================================================================
+// GENERAL AND PIVOT HELPERS
+//=============================================================================
+
+f_highHunted(float h, float level) =>
+    touchCountsAsHunt ? h >= level : h > level
+
+f_lowHunted(float l, float level) =>
+    touchCountsAsHunt ? l <= level : l < level
+
+f_removeInt(array<int> values, int value) =>
+    if array.size(values) > 0
+        for i = array.size(values) - 1 to 0
+            if array.get(values, i) == value
+                array.remove(values, i)
+
+f_clearIntArray(array<int> values) =>
+    while array.size(values) > 0
+        array.pop(values)
+
+f_sectionContainsPivotBar(LiquiditySection section, int pivotBar) =>
+    int sectionEnd = section.active ? bar_index : section.endBar
+    not na(pivotBar) and not na(sectionEnd) and pivotBar >= section.startBar and pivotBar <= sectionEnd
+
+// A pivot can affect only the sections that contain its pivot candle. Marking
+// just those sections avoids rebuilding unrelated historical sections.
+f_markSectionsContainingPivotDirty(int pivotBar) =>
+    if not na(pivotBar) and array.size(liquiditySections) > 0
+        for sectionId = 0 to array.size(liquiditySections) - 1
+            LiquiditySection section = array.get(liquiditySections, sectionId)
+            if f_sectionContainsPivotBar(section, pivotBar)
+                section.dirty := true
+                array.set(liquiditySections, sectionId, section)
+
+f_pivotLevel(Pivot p) =>
+    p.state == PENDING ? p.runningMin : p.pivotLow
+
+f_pivotCandle(Pivot p) =>
+    p.state == PENDING ? p.runningMinBar : p.pivotBar
+
+f_pivotIsEligible(Pivot p, int sectionStart, int sectionEnd) =>
+    bool pendingOrAlive = p.state == PENDING or p.state == ALIVE
+    int pivotBar = f_pivotCandle(p)
+    // Section membership follows the actual pivot candle. Candidate creation
+    // and confirmation bars are intentionally irrelevant to this decision.
+    bool insideSection = not na(pivotBar) and pivotBar >= sectionStart and pivotBar <= sectionEnd
+    pendingOrAlive and not p.hunted and insideSection and not na(f_pivotLevel(p))
+
+f_confirmPivot(int pivotId) =>
+    Pivot p = array.get(candidates, pivotId)
+    if p.state == PENDING
+        p.state := ALIVE
+        p.pivotLow := p.runningMin
+        p.pivotBar := p.runningMinBar
+        p.confirmedBar := bar_index
+        if showPivotMarkers
+            p.marker := label.new(x = p.pivotBar, y = p.pivotLow - syminfo.mintick * offsetTicks, text = "▲", xloc = xloc.bar_index, yloc = yloc.price, style = label.style_none, textcolor = aliveColor, size = iconSize)
+        f_removeInt(alivePivotIds, pivotId)
+        f_removeInt(pendingBullishPivotIds, pivotId)
+        array.push(alivePivotIds, pivotId)
+        array.set(candidates, pivotId, p)
+        f_markSectionsContainingPivotDirty(p.pivotBar)
+
+f_invalidatePivot(int pivotId) =>
+    Pivot p = array.get(candidates, pivotId)
+    if p.state == PENDING
+        f_markSectionsContainingPivotDirty(p.runningMinBar)
+        f_removeInt(pendingBullishPivotIds, pivotId)
+        f_removeInt(activeBullishPivotIds, pivotId)
+        p.state := INVALID
+        array.set(candidates, pivotId, p)
+
+f_destroyPivot(int pivotId) =>
+    Pivot p = array.get(candidates, pivotId)
+    if p.state == ALIVE
+        f_markSectionsContainingPivotDirty(p.pivotBar)
+        f_removeInt(activeBullishPivotIds, pivotId)
+        p.state := DEAD
+        p.hunted := true
+        if not na(p.marker)
+            label.set_text(p.marker, "×")
+            label.set_textcolor(p.marker, deadColor)
+        array.set(candidates, pivotId, p)
+
+//=============================================================================
+// BoS/CHoCH HELPERS
+//=============================================================================
+
+f_offsetFromAbsIndex(int absIndex) =>
+    bar_index - absIndex
+
+f_highAt(int absIndex) =>
+    int offset = f_offsetFromAbsIndex(absIndex)
+    offset >= 0 and offset <= bar_index ? high[offset] : na
+
+f_lowAt(int absIndex) =>
+    int offset = f_offsetFromAbsIndex(absIndex)
+    offset >= 0 and offset <= bar_index ? low[offset] : na
+
+f_openAt(int absIndex) =>
+    int offset = f_offsetFromAbsIndex(absIndex)
+    offset >= 0 and offset <= bar_index ? open[offset] : na
+
+f_closeAt(int absIndex) =>
+    int offset = f_offsetFromAbsIndex(absIndex)
+    offset >= 0 and offset <= bar_index ? close[offset] : na
+
+f_sideAt(int absIndex) =>
+    float o = f_openAt(absIndex)
+    float c = f_closeAt(absIndex)
+    int side = 0
+    if not na(o) and not na(c)
+        if c > o
+            side := 1
+        else if c < o
+            side := -1
+    side
+
+f_isOpposite(int dir, bool isBull, bool isBear) =>
+    dir == DIR_UP ? isBear : isBull
+
+f_isResume(int dir, bool isBull, bool isBear) =>
+    dir == DIR_UP ? isBull : isBear
+
+f_extremeValue(int dir, int absIndex) =>
+    dir == DIR_UP ? f_highAt(absIndex) : f_lowAt(absIndex)
+
+f_bosHunted(int dir, float level, string huntMode) =>
+    dir == DIR_UP ? (huntMode == "wick" ? high : close) >= level : (huntMode == "wick" ? low : close) <= level
+
+f_chochHunted(int dir, float level, string huntMode) =>
+    dir == DIR_UP ? (huntMode == "wick" ? low : close) <= level : (huntMode == "wick" ? high : close) >= level
+
+f_newChochLevel(int dir, string huntMode) =>
+    dir == DIR_UP ? (huntMode == "wick" ? low : close) : (huntMode == "wick" ? high : close)
+
+f_rangeCounterTrendExtreme(int dir, int startIdx, int endIdx) =>
+    float outLevel = na
+    int outIndex = na
+    if startIdx > endIdx
+        outLevel := dir == DIR_UP ? low : high
+        outIndex := bar_index
+    else
+        outLevel := dir == DIR_UP ? f_lowAt(startIdx) : f_highAt(startIdx)
+        outIndex := startIdx
+        if endIdx > startIdx
+            for index = startIdx + 1 to endIdx
+                float candidate = dir == DIR_UP ? f_lowAt(index) : f_highAt(index)
+                if not na(candidate) and (dir == DIR_UP ? candidate < outLevel : candidate > outLevel)
+                    outLevel := candidate
+                    outIndex := index
+    [outLevel, outIndex]
+
+f_initialChoch(int dir, int startIdx, int huntIdx, bool includeHunt) =>
+    int endIdx = includeHunt ? huntIdx : huntIdx - 1
+    int safeStart = startIdx
+    int safeEnd = endIdx
+    if safeStart > safeEnd
+        safeStart := huntIdx
+        safeEnd := huntIdx
+    f_rangeCounterTrendExtreme(dir, safeStart, safeEnd)
+
+f_drawMarkerLine(int absIndex, color clr, string sty, bool isBullish) =>
+    if absIndex >= 0 and absIndex <= bar_index
+        int offset = f_offsetFromAbsIndex(absIndex)
+        if offset >= 0 and offset <= bar_index
+            float y = isBullish ? high[offset] + syminfo.mintick * markerOffsetTicks : low[offset] - syminfo.mintick * markerOffsetTicks
+            line.new(x1 = absIndex, y1 = y, x2 = absIndex + chochMarkerLengthBars, y2 = y, xloc = xloc.bar_index, extend = extend.none, color = clr, style = sty, width = chochMarkerWidth)
+
+f_drawBosLine(int levelIndex, int huntIndex, float level, color clr) =>
+    if levelIndex >= 0 and levelIndex <= huntIndex and huntIndex <= bar_index
+        line.new(x1 = levelIndex, y1 = level, x2 = huntIndex, y2 = level, xloc = xloc.bar_index, extend = extend.none, color = clr, style = line.style_solid, width = markerWidth)
+
+f_drawIndependentChochLine(int absIndex, bool isBullish) =>
+    f_drawMarkerLine(absIndex, independentChochColor, line.style_solid, isBullish)
+
+f_addBosSection(int levelOriginBar) =>
+    int sectionId = array.size(liquiditySections)
+    LiquiditySection section = LiquiditySection.new(id = sectionId, startBar = levelOriginBar, endBar = na, active = true, dirty = true)
+    array.push(liquiditySections, section)
+    sectionId
+
+f_addIndependentChochSection(int levelOriginBar, int chochBar) =>
+    int sectionId = array.size(liquiditySections)
+    LiquiditySection section = LiquiditySection.new(id = sectionId, startBar = levelOriginBar, endBar = chochBar, active = false, dirty = true)
+    array.push(liquiditySections, section)
+    sectionId
+
+f_closeSection(int sectionId, int endBar) =>
+    if sectionId >= 0 and sectionId < array.size(liquiditySections)
+        LiquiditySection section = array.get(liquiditySections, sectionId)
+        section.endBar := endBar
+        section.active := false
+        // Closing a BoS window happens before this bar's pivot state machine.
+        // Keep it dirty so a bullish pivot confirmed on the CHoCH candle is
+        // included in the final, closed window. This is direction-agnostic:
+        // it is just as important when a DOWN structure is reversing up.
+        section.dirty := true
+        array.set(liquiditySections, sectionId, section)
+        if array.size(liquidityLines) > 0
+            for lineId = 0 to array.size(liquidityLines) - 1
+                LiquidityLine liquidity = array.get(liquidityLines, lineId)
+                if liquidity.sectionId == sectionId and not na(liquidity.drawing)
+                    line.set_x2(liquidity.drawing, endBar)
+                    line.set_extend(liquidity.drawing, extend.none)
+
+// Confirmed BoS sections overlap during one structure, but all terminate
+// together when that structure reverses.
+f_closeActiveBosSections(int endBar) =>
+    if array.size(liquiditySections) > 0
+        for sectionId = 0 to array.size(liquiditySections) - 1
+            LiquiditySection section = array.get(liquiditySections, sectionId)
+            if section.active
+                f_closeSection(sectionId, endBar)
+
+//=============================================================================
+// SHARED PIVOT-PAIRING RULES
+//=============================================================================
+
+f_candlesIntersect(int olderBar, int newerBar) =>
+    int olderOffset = bar_index - olderBar
+    int newerOffset = bar_index - newerBar
+    bool validOffsets = olderOffset >= 0 and olderOffset <= bar_index and newerOffset >= 0 and newerOffset <= bar_index
+    bool intersects = false
+    if validOffsets
+        intersects := math.max(low[olderOffset], low[newerOffset]) <= math.min(high[olderOffset], high[newerOffset])
+    intersects
+
+f_pendingPairIsAllowed(Pivot older, Pivot newer) =>
+    not (newer.state == PENDING and older.state != PENDING)
+
+// Match chronology is defined by the actual pivot candle, never by the bar
+// where a candidate was created or later confirmed. A pending pivot uses its
+// current running-min candle until it becomes confirmed.
+f_pivotComesBefore(int leftId, int rightId) =>
+    Pivot left = array.get(candidates, leftId)
+    Pivot right = array.get(candidates, rightId)
+    int leftBar = f_pivotCandle(left)
+    int rightBar = f_pivotCandle(right)
+    // A tie cannot form a pair because f_pairIsValid requires `olderBar <
+    // newerBar`; the id merely makes the otherwise-equal ordering stable.
+    leftBar < rightBar or (leftBar == rightBar and leftId < rightId)
+
+f_sortPivotIdsByCandle(array<int> pivotIds) =>
+    if array.size(pivotIds) > 1
+        for currentPos = 1 to array.size(pivotIds) - 1
+            int scanPos = currentPos
+            while scanPos > 0 and f_pivotComesBefore(array.get(pivotIds, scanPos), array.get(pivotIds, scanPos - 1))
+                int currentId = array.get(pivotIds, scanPos)
+                array.set(pivotIds, scanPos, array.get(pivotIds, scanPos - 1))
+                array.set(pivotIds, scanPos - 1, currentId)
+                scanPos -= 1
+
+f_pairIsValid(int olderId, int newerId) =>
+    Pivot older = array.get(candidates, olderId)
+    Pivot newer = array.get(candidates, newerId)
+    int olderBar = f_pivotCandle(older)
+    int newerBar = f_pivotCandle(newer)
+    olderBar < newerBar and f_pendingPairIsAllowed(older, newer) and f_pivotLevel(newer) > f_pivotLevel(older) and f_candlesIntersect(olderBar, newerBar)
+
+f_sameLevel(float left, float right) =>
+    math.abs(left - right) < syminfo.mintick * 0.5
+
+//=============================================================================
+// LEVEL 1: WITHIN-SECTION LIQUIDITY
+//=============================================================================
+
+f_sectionAlreadyHasLevel(int sectionId, float level) =>
+    bool found = false
+    if array.size(liquidityLines) > 0
+        for lineId = 0 to array.size(liquidityLines) - 1
+            LiquidityLine liquidity = array.get(liquidityLines, lineId)
+            if liquidity.sectionId == sectionId and f_sameLevel(liquidity.level, level)
+                found := true
+                break
+    found
+
+f_deleteSectionLines(int sectionId) =>
+    if array.size(liquidityLines) > 0
+        for lineId = array.size(liquidityLines) - 1 to 0
+            LiquidityLine liquidity = array.get(liquidityLines, lineId)
+            if liquidity.sectionId == sectionId
+                if not na(liquidity.drawing)
+                    line.delete(liquidity.drawing)
+                if not na(liquidity.pivotConnector)
+                    line.delete(liquidity.pivotConnector)
+                array.remove(liquidityLines, lineId)
+
+f_recordLiquidityLine(int sectionId, int olderId, int newerId) =>
+    Pivot older = array.get(candidates, olderId)
+    Pivot newer = array.get(candidates, newerId)
+    LiquiditySection section = array.get(liquiditySections, sectionId)
+    float level = f_pivotLevel(older)
+    int olderBar = f_pivotCandle(older)
+    int newerBar = f_pivotCandle(newer)
+    if not f_sectionAlreadyHasLevel(sectionId, level)
+        line drawing = na
+        line pivotConnector = na
+        if showLiquidityLines
+            int lineEnd = section.active ? bar_index : section.endBar
+            drawing := line.new(x1 = olderBar, y1 = level, x2 = lineEnd, y2 = level, xloc = xloc.bar_index, extend = section.active ? extend.right : extend.none, color = color.gray, width = liquidityLineWidth)
+            pivotConnector := line.new(x1 = olderBar, y1 = level, x2 = newerBar, y2 = f_pivotLevel(newer), xloc = xloc.bar_index, extend = extend.none, color = color.gray, style = line.style_solid, width = 2)
+        LiquidityLine liquidity = LiquidityLine.new(sectionId = sectionId, olderPivotId = olderId, newerPivotId = newerId, olderPivotBar = olderBar, level = level, drawing = drawing, pivotConnector = pivotConnector)
+        array.push(liquidityLines, liquidity)
+
+f_rebuildSection(int sectionId) =>
+    LiquiditySection section = array.get(liquiditySections, sectionId)
+    // A closed section must be rebuilt too. Its line is bounded by endBar,
+    // whereas an active section extends right. Restricting pairing to active
+    // sections lost valid pairs when their second bullish pivot was confirmed
+    // on the CHoCH bar that closed a DOWN (or UP) structure.
+    if section.dirty
+        f_deleteSectionLines(sectionId)
+        array<int> eligible = array.new_int()
+        int sectionEnd = section.active ? bar_index : section.endBar
+        if array.size(activeBullishPivotIds) > 0
+            for livePos = 0 to array.size(activeBullishPivotIds) - 1
+                int pivotId = array.get(activeBullishPivotIds, livePos)
+                Pivot p = array.get(candidates, pivotId)
+                if f_pivotIsEligible(p, section.startBar, sectionEnd)
+                    array.push(eligible, pivotId)
+        f_sortPivotIdsByCandle(eligible)
+        int eligibleCount = array.size(eligible)
+        if eligibleCount >= 2
+            array<bool> consumed = array.new_bool(eligibleCount, false)
+            for newerPos = eligibleCount - 1 to 1
+                if not array.get(consumed, newerPos)
+                    int newerId = array.get(eligible, newerPos)
+                    bool matched = false
+                    for olderPos = newerPos - 1 to 0
+                        if not matched and not array.get(consumed, olderPos)
+                            int olderId = array.get(eligible, olderPos)
+                            if f_pairIsValid(olderId, newerId)
+                                f_recordLiquidityLine(sectionId, olderId, newerId)
+                                array.set(consumed, olderPos, true)
+                                array.set(consumed, newerPos, true)
+                                matched := true
+        section.dirty := false
+        array.set(liquiditySections, sectionId, section)
+
+f_pruneLinesWithIneligiblePivots() =>
+    if array.size(liquidityLines) > 0
+        for lineId = array.size(liquidityLines) - 1 to 0
+            LiquidityLine liquidity = array.get(liquidityLines, lineId)
+            Pivot older = array.get(candidates, liquidity.olderPivotId)
+            Pivot newer = array.get(candidates, liquidity.newerPivotId)
+            bool olderEligible = (older.state == PENDING or older.state == ALIVE) and not older.hunted
+            bool newerEligible = (newer.state == PENDING or newer.state == ALIVE) and not newer.hunted
+            if not olderEligible or not newerEligible
+                if not na(liquidity.drawing)
+                    line.delete(liquidity.drawing)
+                if not na(liquidity.pivotConnector)
+                    line.delete(liquidity.pivotConnector)
+                array.remove(liquidityLines, lineId)
+//=============================================================================
+// MAIN: BoS/CHoCH DETECTION AND SECTION LIFECYCLE
+//=============================================================================
+
+if barstate.isconfirmed and not initialized and bar_index >= directionWindow - 1
+    int effective = math.min(directionWindow, bar_index + 1)
+    int score = 0
+    for absIndex = 0 to effective - 1
+        score += f_sideAt(absIndex)
+    int inferred = DIR_UP
+    if score > 0
+        inferred := DIR_UP
+    else if score < 0
+        inferred := DIR_DOWN
+    else
+        for absIndex = effective - 1 to 0
+            int side = f_sideAt(absIndex)
+            if side != 0
+                inferred := side > 0 ? DIR_UP : DIR_DOWN
+                break
+    direction := inferred
+    directionSinceIndex := effective - 1
+    anchorIndex := directionSinceIndex
+    initialized := true
+    dbgDirection := direction
+
+bool sectionDataChanged = false
+if barstate.isconfirmed and initialized and bar_index >= directionSinceIndex
+    bool isBull = close > open
+    bool isBear = close < open
+    bool reversedNow = false
+
+    if f_isOpposite(direction, isBull, isBear) and array.size(activeBosIds) > 0
+        int newestBosId = array.get(activeBosIds, array.size(activeBosIds) - 1)
+        bool newestHunted = false
+        for activeIdPos = 0 to array.size(activeBosIds) - 1
+            int bosId = array.get(activeBosIds, activeIdPos)
+            // Match the BoS/CHoCH detector's guard: a stale active ID must
+            // never be used as an array index.
+            if bosId >= 0 and bosId < array.size(chochTracks)
+                ChochTrack track = array.get(chochTracks, bosId)
+                if track.active and f_chochHunted(direction, track.level, huntModeInput)
+                    float newLevel = f_newChochLevel(direction, huntModeInput)
+                    if na(track.firstHuntCandleIndex)
+                        track.firstHuntCandleIndex := bar_index
+                    track.level := newLevel
+                    array.set(chochTracks, bosId, track)
+                    dbgLastChochLevel := newLevel
+                    dbgLastChochCandleIndex := bar_index
+                    // The reversal below emits the independent CHoCH for the
+                    // newest active BOS. Drawing this per-BOS marker as well
+                    // would create a redundant terminal CHoCH.
+                    if bosId == newestBosId
+                        newestHunted := true
+        if newestHunted
+            bool hasFormingIChochSection = (bosPhase == PHASE_FORMING or bosPhase == PHASE_AWAIT_HUNT) and not na(formingLevel) and not na(formingLevelLastUpdatedIndex)
+            if hasFormingIChochSection
+                f_addIndependentChochSection(formingLevelLastUpdatedIndex, bar_index)
+                sectionDataChanged := true
+            int newDirection = direction == DIR_UP ? DIR_DOWN : DIR_UP
+            BosRec newestBos = array.get(bosRecords, newestBosId)
+            [independentLevel, independentIndex] = f_rangeCounterTrendExtreme(newDirection, newestBos.startIndex, bar_index)
+            independentChochLevel := independentLevel
+            independentChochCandleIndex := independentIndex
+            independentChochDirection := newDirection
+            IndependentChochRec independentChoch = IndependentChochRec.new(candleIndex = independentIndex, level = independentLevel, direction = newDirection)
+            array.push(independentChochRecords, independentChoch)
+            hasIndependentChoch := true
+            f_drawIndependentChochLine(independentIndex, newDirection == DIR_DOWN)
+            direction := newDirection
+            directionSinceIndex := bar_index
+            dbgDirection := direction
+            f_clearIntArray(activeBosIds)
+            bosPhase := PHASE_WAIT_PULLBACK
+            formingStartIndex := na
+            formingLevel := na
+            formingLevelLastUpdatedIndex := na
+            formingCompleteIndex := na
+            anchorIndex := bar_index
+            reversedNow := true
+            f_closeActiveBosSections(bar_index)
+            sectionDataChanged := true
+
+    if not reversedNow and hasIndependentChoch and f_isOpposite(direction, isBull, isBear)
+        if f_chochHunted(direction, independentChochLevel, huntModeInput)
+            bool hasFormingIChochSection = (bosPhase == PHASE_FORMING or bosPhase == PHASE_AWAIT_HUNT) and not na(formingLevel) and not na(formingLevelLastUpdatedIndex)
+            if hasFormingIChochSection
+                f_addIndependentChochSection(formingLevelLastUpdatedIndex, bar_index)
+                sectionDataChanged := true
+            int newDirection = direction == DIR_UP ? DIR_DOWN : DIR_UP
+            [independentLevel, independentIndex] = f_rangeCounterTrendExtreme(newDirection, independentChochCandleIndex, bar_index)
+            independentChochLevel := independentLevel
+            independentChochCandleIndex := independentIndex
+            independentChochDirection := newDirection
+            IndependentChochRec independentChoch = IndependentChochRec.new(candleIndex = independentIndex, level = independentLevel, direction = newDirection)
+            array.push(independentChochRecords, independentChoch)
+            hasIndependentChoch := true
+            f_drawIndependentChochLine(independentIndex, newDirection == DIR_DOWN)
+            direction := newDirection
+            directionSinceIndex := bar_index
+            dbgDirection := direction
+            bosPhase := PHASE_WAIT_PULLBACK
+            formingStartIndex := na
+            formingLevel := na
+            formingLevelLastUpdatedIndex := na
+            formingCompleteIndex := na
+            anchorIndex := bar_index
+            reversedNow := true
+            f_closeActiveBosSections(bar_index)
+            sectionDataChanged := true
+
+    if not reversedNow
+        if bosPhase == PHASE_WAIT_PULLBACK
+            if f_isOpposite(direction, isBull, isBear)
+                int startScan = anchorIndex
+                int endScan = includePullbackInBosLevel ? bar_index : bar_index - 1
+                float level = f_extremeValue(direction, startScan)
+                int levelIndex = startScan
+                if endScan > startScan
+                    for absIndex = startScan + 1 to endScan
+                        float candidateLevel = f_extremeValue(direction, absIndex)
+                        bool isBetterLevel = direction == DIR_UP ? candidateLevel > level : candidateLevel < level
+                        if isBetterLevel
+                            level := candidateLevel
+                            levelIndex := absIndex
+                formingStartIndex := bar_index
+                formingLevel := level
+                formingLevelLastUpdatedIndex := levelIndex
+                formingCompleteIndex := na
+                bosPhase := PHASE_FORMING
+
+        else if bosPhase == PHASE_FORMING
+            if f_isResume(direction, isBull, isBear)
+                formingCompleteIndex := bar_index
+                bosPhase := PHASE_AWAIT_HUNT
+                if f_bosHunted(direction, formingLevel, huntModeInput)
+                    [chochLevel, chochIndex] = f_initialChoch(direction, formingLevelLastUpdatedIndex, bar_index, includeHuntCandleInChochRange)
+                    bool passFilter = true
+                    if minSwingPct > 0.0
+                        float swing = math.abs(formingLevel - chochLevel)
+                        float midpoint = (formingLevel + chochLevel) / 2.0
+                        passFilter := midpoint <= 0.0 or swing / midpoint * 100.0 >= minSwingPct
+                    if passFilter
+                        BosRec bos = BosRec.new(index = bosCounter, direction = direction, anchorIndex = anchorIndex, startIndex = formingStartIndex, level = formingLevel, levelLastUpdatedIndex = formingLevelLastUpdatedIndex, completeIndex = formingCompleteIndex, huntIndex = bar_index, state = BOS_CONFIRMED, hunted = true)
+                        array.push(bosRecords, bos)
+                        ChochTrack track = ChochTrack.new(bosIndex = bosCounter, candleIndex = chochIndex, level = chochLevel, firstHuntCandleIndex = na, direction = direction, active = true)
+                        array.push(chochTracks, track)
+                        array.push(activeBosIds, bosCounter)
+                        color bosClr = direction == DIR_UP ? bullBosColor : bearBosColor
+                        color chochClr = direction == DIR_UP ? bearChochColor : bullChochColor
+                        f_drawBosLine(formingLevelLastUpdatedIndex, bar_index, formingLevel, bosClr)
+                        f_drawMarkerLine(chochIndex, chochClr, line.style_solid, direction == DIR_DOWN)
+                        dbgLastBosLevel := formingLevel
+                        dbgLastBosStartIndex := formingStartIndex
+                        dbgLastBosHuntIndex := bar_index
+                        dbgLastChochLevel := chochLevel
+                        dbgLastChochCandleIndex := chochIndex
+                        f_addBosSection(formingLevelLastUpdatedIndex)
+                        sectionDataChanged := true
+                        bosCounter += 1
+                        hasIndependentChoch := false
+                    bosPhase := PHASE_WAIT_PULLBACK
+                    formingStartIndex := na
+                    formingLevel := na
+                    formingLevelLastUpdatedIndex := na
+                    formingCompleteIndex := na
+                    anchorIndex := bar_index
+            else if f_isOpposite(direction, isBull, isBear)
+                float candidateLevel = direction == DIR_UP ? high : low
+                bool isBetterLevel = direction == DIR_UP ? candidateLevel > formingLevel : candidateLevel < formingLevel
+                if isBetterLevel
+                    formingLevel := candidateLevel
+                    formingLevelLastUpdatedIndex := bar_index
+
+        else if bosPhase == PHASE_AWAIT_HUNT
+            if f_bosHunted(direction, formingLevel, huntModeInput)
+                [chochLevel, chochIndex] = f_initialChoch(direction, formingLevelLastUpdatedIndex, bar_index, includeHuntCandleInChochRange)
+                bool passFilter = true
+                if minSwingPct > 0.0
+                    float swing = math.abs(formingLevel - chochLevel)
+                    float midpoint = (formingLevel + chochLevel) / 2.0
+                    passFilter := midpoint <= 0.0 or swing / midpoint * 100.0 >= minSwingPct
+                if passFilter
+                    BosRec bos = BosRec.new(index = bosCounter, direction = direction, anchorIndex = anchorIndex, startIndex = formingStartIndex, level = formingLevel, levelLastUpdatedIndex = formingLevelLastUpdatedIndex, completeIndex = formingCompleteIndex, huntIndex = bar_index, state = BOS_CONFIRMED, hunted = true)
+                    array.push(bosRecords, bos)
+                    ChochTrack track = ChochTrack.new(bosIndex = bosCounter, candleIndex = chochIndex, level = chochLevel, firstHuntCandleIndex = na, direction = direction, active = true)
+                    array.push(chochTracks, track)
+                    array.push(activeBosIds, bosCounter)
+                    color bosClr = direction == DIR_UP ? bullBosColor : bearBosColor
+                    color chochClr = direction == DIR_UP ? bearChochColor : bullChochColor
+                    f_drawBosLine(formingLevelLastUpdatedIndex, bar_index, formingLevel, bosClr)
+                    f_drawMarkerLine(chochIndex, chochClr, line.style_solid, direction == DIR_DOWN)
+                    dbgLastBosLevel := formingLevel
+                    dbgLastBosStartIndex := formingStartIndex
+                    dbgLastBosHuntIndex := bar_index
+                    dbgLastChochLevel := chochLevel
+                    dbgLastChochCandleIndex := chochIndex
+                    f_addBosSection(formingLevelLastUpdatedIndex)
+                    sectionDataChanged := true
+                    bosCounter += 1
+                    hasIndependentChoch := false
+                bosPhase := PHASE_WAIT_PULLBACK
+                formingStartIndex := na
+                formingLevel := na
+                formingLevelLastUpdatedIndex := na
+                formingCompleteIndex := na
+                anchorIndex := bar_index
+
+//=============================================================================
+// MAIN: PIVOT DETECTION
+//=============================================================================
+
+bool green = close > open
+bool red = close < open
+bool pivotDataChanged = false
+
+if barstate.isconfirmed
+    if array.size(alivePivotIds) > 0
+        for alivePos = array.size(alivePivotIds) - 1 to 0
+            int pivotId = array.get(alivePivotIds, alivePos)
+            Pivot p = array.get(candidates, pivotId)
+            if bar_index > p.confirmedBar and f_lowHunted(low, p.pivotLow)
+                f_destroyPivot(pivotId)
+                array.remove(alivePivotIds, alivePos)
+                pivotDataChanged := true
+
+    if array.size(pendingBullishPivotIds) > 0
+        for pendingPos = array.size(pendingBullishPivotIds) - 1 to 0
+            int pivotId = array.get(pendingBullishPivotIds, pendingPos)
+            Pivot p = array.get(candidates, pivotId)
+            if p.state == PENDING and bar_index > p.createdBar
+                if low < p.runningMin
+                    int previousPivotBar = p.runningMinBar
+                    p.runningMin := low
+                    p.runningMinBar := bar_index
+                    f_markSectionsContainingPivotDirty(previousPivotBar)
+                    f_markSectionsContainingPivotDirty(p.runningMinBar)
+                    pivotDataChanged := true
+                bool confirm = false
+                bool invalidate = false
+                if p.phase == WAIT_NEXT
+                    if green
+                        p.phase := GREEN_RUN
+                        if f_highHunted(high, p.maxHigh)
+                            confirm := true
+                    else if red
+                        p.phase := NORMAL
+                else if p.phase == GREEN_RUN
+                    if green and f_highHunted(high, p.maxHigh)
+                        confirm := true
+                    else if red
+                        p.phase := NORMAL
+                else if p.phase == NORMAL
+                    bool highHunted = f_highHunted(high, p.maxHigh)
+                    bool lowHunted = f_lowHunted(low, p.minLow)
+                    if highHunted and lowHunted
+                        confirm := sameCandleRule == "High wins"
+                        invalidate := not confirm
+                    else if highHunted
+                        confirm := true
+                    else if lowHunted
+                        invalidate := true
+                array.set(candidates, pivotId, p)
+                if confirm
+                    f_confirmPivot(pivotId)
+                    pivotDataChanged := true
+                else if invalidate
+                    f_invalidatePivot(pivotId)
+                    pivotDataChanged := true
+
+if barstate.isconfirmed and green and redCount > 0
+    float minValue = math.min(redMin, low)
+    int minBar = low < redMin ? bar_index : redMinBar
+    Pivot p = Pivot.new(createdBar = bar_index, minLow = minValue, minLowBar = minBar, maxHigh = redMax, runningMin = minValue, runningMinBar = minBar, pivotLow = na, pivotBar = na, state = PENDING, phase = WAIT_NEXT, confirmedBar = na, hunted = false, marker = na)
+    int pivotId = array.size(candidates)
+    array.push(candidates, p)
+    array.push(pendingBullishPivotIds, pivotId)
+    array.push(activeBullishPivotIds, pivotId)
+    f_markSectionsContainingPivotDirty(p.runningMinBar)
+    pivotDataChanged := true
+    if f_highHunted(high, redMax)
+        f_confirmPivot(pivotId)
+
+if barstate.isconfirmed
+    if red
+        if redCount == 0
+            redMin := low
+            redMinBar := bar_index
+            redMax := na(precedingGreenMax) ? high : math.max(precedingGreenMax, high)
+            precedingGreenMax := na
+        else
+            if low < redMin
+                redMin := low
+                redMinBar := bar_index
+            redMax := math.max(redMax, high)
+        redCount += 1
+    else
+        redCount := 0
+        redMin := na
+        redMinBar := na
+        redMax := na
+        if green
+            precedingGreenMax := na(precedingGreenMax) ? high : math.max(precedingGreenMax, high)
+        else
+            precedingGreenMax := na
+
+//=============================================================================
+// MAIN: LIQUIDITY-LINE DETECTION
+//=============================================================================
+
+if barstate.isconfirmed and (pivotDataChanged or sectionDataChanged)
+    f_pruneLinesWithIneligiblePivots()
+
+if barstate.isconfirmed and array.size(liquiditySections) > 0
+    // Newest sections are processed first, as requested. Each section is
+    // rebuilt only if a live pivot inside that particular window changed.
+    for sectionId = array.size(liquiditySections) - 1 to 0
+        LiquiditySection section = array.get(liquiditySections, sectionId)
+        if section.dirty
+            f_rebuildSection(sectionId)
+
+float highestBullLiquidityLevel = na
+int activeLineCount = 0
+if array.size(liquidityLines) > 0
+    for lineId = 0 to array.size(liquidityLines) - 1
+        LiquidityLine liquidity = array.get(liquidityLines, lineId)
+        LiquiditySection section = array.get(liquiditySections, liquidity.sectionId)
+        if section.active
+            highestBullLiquidityLevel := na(highestBullLiquidityLevel) ? liquidity.level : math.max(highestBullLiquidityLevel, liquidity.level)
+            activeLineCount += 1
+
+plot(highestBullLiquidityLevel, "Highest active bullish liquidity level", display = display.data_window)
+plot(showDebug ? dbgDirection : na, "Direction (1 up / -1 down)", display = display.data_window)
+plot(showDebug ? dbgLastBosLevel : na, "Last BOS level", display = display.data_window)
+plot(showDebug and not na(dbgLastBosStartIndex) ? dbgLastBosStartIndex : na, "Last BOS start index", display = display.data_window)
+plot(showDebug and not na(dbgLastBosHuntIndex) ? dbgLastBosHuntIndex : na, "Last BOS hunt index", display = display.data_window)
+plot(showDebug ? dbgLastChochLevel : na, "Last CHoCH level", display = display.data_window)
+plot(showDebug and not na(dbgLastChochCandleIndex) ? dbgLastChochCandleIndex : na, "Last CHoCH candle index", display = display.data_window)
+plot(showDebug ? array.size(activeBosIds) : na, "Active BOS count", display = display.data_window)
+plot(showDebug ? array.size(bosRecords) : na, "All confirmed BOS records", display = display.data_window)
+plot(showDebug ? array.size(chochTracks) : na, "CHoCH tracks", display = display.data_window)
+plot(showDebug ? array.size(independentChochRecords) : na, "iCHoCH records", display = display.data_window)
+plot(showDebug ? bosPhase : na, "BOS phase", display = display.data_window)
+plot(showDebug ? activeLineCount : na, "Active within-section liquidity lines", display = display.data_window)
+plot(showDebug ? array.size(liquiditySections) : na, "BoS / iCHoCH sections", display = display.data_window)
+plot(showDebug ? array.size(alivePivotIds) : na, "Alive pivots", display = display.data_window)
+plot(showDebug ? array.size(pendingBullishPivotIds) : na, "Potential bullish pivots", display = display.data_window)
+plot(showDebug ? array.size(activeBullishPivotIds) : na, "Live bullish pivots (pending + alive)", display = display.data_window)
+plot(showDebug ? array.size(candidates) : na, "All pivot candidates", display = display.data_window)
