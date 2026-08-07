@@ -10,14 +10,13 @@ CORRECTIONS vs. the externally-submitted draft
    direction-inference window, so segments align with the BOS/CHoCH detector.
 
 2. CHECK_ZONE_HUNTED price boundaries were inverted in the draft:
-   • UPWARD  (support) zone is swept when price breaks BELOW the lower edge
-     → compare against zone.price_low   (draft incorrectly used price_high)
-   • DOWNWARD (resistance) zone is swept when price breaks ABOVE the upper
-     edge → compare against zone.price_high (draft incorrectly used price_low)
+   • UPWARD  (support) zone is swept when price breaks BELOW the bullish line
+     → compare against zone.line_price
+   • DOWNWARD (resistance) zone is swept when price breaks ABOVE the bearish
+     line → compare against zone.line_price
 
-3. intersection_method, slope_attribute, and zone_hunt_mode config params
-   were omitted in the draft (hardcoded body / close / wick).  They are all
-   real, configurable knobs documented in the CONFIG section below.
+3. intersection_method and slope_attribute config params were omitted in the
+   draft.  zone_hunt_mode is intentionally fixed to wick.
 
 4. STEP 2.3 CHoCH source assignment was in the wrong place in the draft:
    TRACE_CHOCH_SOURCE(reversal) was called inside the segment-build block
@@ -72,9 +71,9 @@ pivot_min_swing_pct                 default = 0.0
 
 # — Pivot filtering ——————————————————————————————————————————
 include_hunted_pivots               default = false
-up_pivot_filter                     default = BULLISH     (BULLISH | BEARISH | ALL)
-down_pivot_filter                   default = BEARISH     (BULLISH | BEARISH | ALL)
-pivot_grouping                      default = COMBINED    (COMBINED | SEPARATE_BY_TYPE)
+up_pivot_filter                     default = ALL         (BULLISH | BEARISH | ALL)
+down_pivot_filter                   default = ALL         (BULLISH | BEARISH | ALL)
+pivot_grouping                      fixed = SEPARATE_BY_TYPE
 
 # — Pairing ——————————————————————————————————————————————————
 scan_order                          default = NEWEST_TO_OLDEST
@@ -82,7 +81,7 @@ scan_order                          default = NEWEST_TO_OLDEST
 allow_reuse                         default = false
 
 # — Match thresholds —————————————————————————————————————————
-intersection_method                 default = body        (body | wick)
+intersection_method                 default = wick        (body | wick)
 slope_attribute                     default = close       (close | open | high | low)
 relaxed_slope                       default = false
 slope_epsilon                       default = 0.0
@@ -97,7 +96,14 @@ representative_include_hunted       default = false
 allow_representative_fallback       default = true
 
 # — Zone hunted ——————————————————————————————————————————————
-zone_hunt_mode                      default = wick        (wick | close)
+zone_hunt_mode                      fixed = wick
+
+# — Zone line ————————————————————————————————————————————————
+bullish_zone_line_method            fixed = pivot_low_min
+bearish_zone_line_method            fixed = pivot_high_max
+Definitions:
+   pivot_low_min          = min(low(pivots forming the zone))
+   pivot_high_max         = max(high(pivots forming the zone))
 
 
 ============================================================
@@ -229,7 +235,7 @@ STEP 3: LEVEL-1 ZONES  (within each segment)
 
          filtered = FILTER_PIVOTS(segment.pivots, segment.direction, config)
 
-         groups = SPLIT_BY_GROUPING(filtered, pivot_grouping)
+         groups = SPLIT_BY_GROUPING(filtered)
 
          For each group in groups:
 
@@ -279,17 +285,14 @@ OUTPUT: filtered list
 
 
 ============================================================
-FUNCTION: SPLIT_BY_GROUPING(pivots, pivot_grouping)
+FUNCTION: SPLIT_BY_GROUPING(pivots)
 ============================================================
 
-INPUT:  pivots, pivot_grouping
+INPUT:  pivots
 OUTPUT: list of groups
 
-    If pivot_grouping == COMBINED:
-        return [ all pivots as one group ]
-
-    If pivot_grouping == SEPARATE_BY_TYPE:
-        return [
+    Always return separate groups by pivot type:
+        [
             all bullish pivots (if any),
             all bearish pivots (if any)
         ]
@@ -342,6 +345,9 @@ OUTPUT: zones
             right_pivot = newer,
             price_low   = overlap.low,
             price_high  = overlap.high,
+            line_price  = COMPUTE_ZONE_LINE(older, newer, candles, direction, config),
+            line_method = pivot_low_min for UPWARD,
+                          pivot_high_max for DOWNWARD,
             start_index = older.index,
             end_index   = newer.index,
             is_hunted   = CHECK_ZONE_HUNTED(zone, candles, config)
@@ -445,20 +451,16 @@ OUTPUT: bool
     future_candles = candles[ zone.end_index + 1 : ]
 
     If zone.direction == UPWARD:
-        # Support zone — hunted when price breaks BELOW the lower edge.
+        # Support zone — hunted when price breaks BELOW the bullish line.
         For each candle in future_candles:
-            value = candle.low   (if zone_hunt_mode == wick)
-                  = candle.close (if zone_hunt_mode == close)
-            If value <= zone.price_low + epsilon:
-                return true              ← uses price_LOW (lower boundary)
+            If candle.low <= zone.line_price + epsilon:
+                return true              ← wick sweep of bullish line
 
     If zone.direction == DOWNWARD:
-        # Resistance zone — hunted when price breaks ABOVE the upper edge.
+        # Resistance zone — hunted when price breaks ABOVE the bearish line.
         For each candle in future_candles:
-            value = candle.high  (if zone_hunt_mode == wick)
-                  = candle.close (if zone_hunt_mode == close)
-            If value >= zone.price_high - epsilon:
-                return true              ← uses price_HIGH (upper boundary)
+            If candle.high >= zone.line_price - epsilon:
+                return true              ← wick sweep of bearish line
 
     return false
 
@@ -549,3 +551,53 @@ OUTPUT: (choch_source_candle_index, choch_source_level)
         initial_update = continuous_update      # graceful fallback
 
     return (initial_update.candle_index, initial_update.level)
+
+
+============================================================
+SCENARIO DETECTION EXPERIMENT
+============================================================
+
+Implemented in experiments/scenario_detection.py.
+
+The scenario detector is a layer above this liquidity-zone detector.  It does
+not rebuild liquidity zones and does not rerun BOS/CHoCH directly.  It accepts
+or creates a LiquidityZoneResult, keeps the flattened list of every zone with
+all zone specs, and uses liquidity_result.bos_choch_result.bos_records for BOS
+checks.
+
+Penetration semantics:
+
+    candle open below line AND candle high >= line  -> from_below
+    candle open above line AND candle low  <= line  -> from_above
+
+High/low are used for the penetration itself, so body and wick penetration
+both count.
+
+Bullish scenario:
+
+    current candle penetrates an UPWARD/bullish zone line from_below
+    AND a prior candle penetrated the same zone line from_above
+    AND no DOWNWARD BOS hunt_index exists between those two candle indexes.
+
+Bearish scenario:
+
+    current candle penetrates a DOWNWARD/bearish zone line from_above
+    AND a prior candle penetrated the same zone line from_below
+    AND no UPWARD BOS hunt_index exists between those two candle indexes.
+
+On a confirmed scenario, the matched liquidity zone is marked hunted/haunted
+through the LiquidityZone alias, and scenario metadata is attached to the zone.
+
+Public entry points:
+
+    detect_scenarios(candles, config=None, liquidity_zone_result=None,
+                     current_index=None)
+
+        Batch mode when current_index is None.
+        New-candle mode when current_index points to the latest candle.
+
+    ScenarioDetector(config).on_new_candle(candle)
+
+        Stateful wrapper for the "on new candle" workflow.  It recomputes the
+        canonical liquidity-zone result, keeps the latest full zone list and
+        penetration history, and returns only scenarios not previously emitted.
