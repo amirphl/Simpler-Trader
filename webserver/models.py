@@ -127,7 +127,9 @@ class StochasticFsmParams(BaseModel):
             raise ValueError("symbols must not be empty")
         return normalized
 
-    @field_validator("base_timeframe", "higher_timeframe", "higher_timeframe_2", mode="before")
+    @field_validator(
+        "base_timeframe", "higher_timeframe", "higher_timeframe_2", mode="before"
+    )
     @classmethod
     def _normalize_timeframe_fields(cls, value: Any) -> Any:
         if value is None:
@@ -136,7 +138,9 @@ class StochasticFsmParams(BaseModel):
 
     @field_validator("martingale_multipliers", "martingale_leverages")
     @classmethod
-    def _validate_non_empty_sequences(cls, value: List[float], info: Any) -> List[float]:
+    def _validate_non_empty_sequences(
+        cls, value: List[float], info: Any
+    ) -> List[float]:
         if not value:
             raise ValueError(f"{info.field_name} must not be empty")
         return value
@@ -218,21 +222,29 @@ class EmaAvwapPullbackParams(BaseModel):
 
     symbol: str = Field(default="ETHUSDT")
     timeframe: str = Field(default="1h")
-    leverage: float = Field(default=1.0, gt=0.0)
-    equity_risk_pct: float = Field(default=1.0, gt=0.0)
+    leverage: float = Field(default=10.0, gt=0.0)
+    max_entry_notional_usdt: float = Field(default=15.0, gt=0.0)
+    max_position_size_pct: float = Field(default=10.0, gt=0.0, le=100.0)
+    position_notional_pct: float = Field(default=1.0, gt=0.0, le=100.0)
+    minimum_balance_usdt: float = Field(default=0.0, ge=0.0)
     ema_length: int = Field(default=55, ge=1)
     consecutive_count: int = Field(default=4, ge=1)
     ema_validation_mode: Literal["body", "wick"] = "body"
     setup_waiting_replacement_mode: Literal["keep_waiting", "replace_waiting"] = (
         "keep_waiting"
     )
-    position_sizing_mode: Literal["risk_distance", "risk_amount_per_price"] = (
-        "risk_distance"
-    )
+    max_setup_age_bars: int = Field(default=3, ge=1)
+    max_entry_deviation_pct: float = Field(default=1.0, ge=0.0)
+    position_sizing_mode: Literal["risk_amount_per_price"] = "risk_amount_per_price"
+    # The web panel submits historical OHLCV backtests.  Default to the
+    # completed-candle contract; live is an explicitly selected approximation.
+    entry_mode: Literal["close", "live"] = "close"
+    exit_mode: Literal["close", "live"] = "close"
+    exit_band: Literal["band_1", "band_2"] = "band_1"
     avwap_multiplier_1: float = Field(default=1.0, gt=0.0)
     avwap_multiplier_2: float = Field(default=2.0, gt=0.0)
     avwap_multiplier_3: float = Field(default=3.0, gt=0.0)
-    rigid_stop_loss_pct: float = Field(default=0.0, ge=0.0)
+    rigid_stop_loss_pct: float = Field(default=3.0, gt=0.0)
     trailing_activation_threshold_pct: float = Field(default=0.0, ge=0.0)
     trailing_gap_pct: float = Field(default=1.0, ge=0.0)
     maker_fee_pct: float = Field(default=0.0002, ge=0.0)
@@ -246,10 +258,23 @@ class EmaAvwapPullbackParams(BaseModel):
     https_proxy: str | None = None
     risk_free_rate: float = 0.0
 
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_entry_exit_mode(cls, values: Any) -> Any:
+        if isinstance(values, dict) and "entry_exit_mode" in values:
+            raise ValueError(
+                "entry_exit_mode has been removed. Use entry_mode, exit_mode, "
+                "and exit_band instead."
+            )
+        return values
+
     @field_validator(
         "ema_validation_mode",
         "setup_waiting_replacement_mode",
         "position_sizing_mode",
+        "entry_mode",
+        "exit_mode",
+        "exit_band",
         mode="before",
     )
     @classmethod
@@ -271,6 +296,50 @@ class EmaAvwapPullbackParams(BaseModel):
         if isinstance(value, str):
             return _require_non_empty_text(value, "timeframe")
         return value
+
+
+class BacktestAnalysisRequest(BaseModel):
+    """Optional robust-analysis work requested by the web UI."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    include_monte_carlo: bool = False
+    monte_carlo_iterations: int = Field(default=1000, ge=1, le=20000)
+    monte_carlo_seed: int | None = None
+    monte_carlo_block_size: int = Field(default=5, ge=1, le=500)
+    monte_carlo_drawdown_threshold_pct: float = Field(default=30.0, ge=0.0)
+    monte_carlo_missed_fill_probability: float = Field(default=0.0, ge=0.0, le=1.0)
+    monte_carlo_extra_spread_min_pct: float = Field(default=0.0, ge=0.0)
+    monte_carlo_extra_spread_max_pct: float = Field(default=0.001, ge=0.0)
+
+    include_walk_forward: bool = False
+    walk_forward_train_days: int = Field(default=90, ge=1, le=5000)
+    walk_forward_test_days: int = Field(default=30, ge=1, le=2000)
+    walk_forward_step_days: int | None = Field(default=None, ge=1, le=2000)
+    walk_forward_anchored: bool = False
+
+    include_out_of_sample: bool = False
+    oos_training_fraction: float = Field(default=0.6, gt=0.0, lt=1.0)
+    oos_validation_fraction: float = Field(default=0.2, gt=0.0, lt=1.0)
+
+    include_parameter_perturbation: bool = False
+    parameter_perturbation_samples: int = Field(default=25, ge=1, le=250)
+    parameter_perturbation_seed: int | None = None
+
+    @model_validator(mode="after")
+    def _validate_analysis_ranges(self) -> "BacktestAnalysisRequest":
+        if (
+            self.monte_carlo_extra_spread_max_pct
+            < self.monte_carlo_extra_spread_min_pct
+        ):
+            raise ValueError(
+                "monte_carlo_extra_spread_max_pct must be greater than or equal to min"
+            )
+        if self.oos_training_fraction + self.oos_validation_fraction >= 1.0:
+            raise ValueError(
+                "OOS training + validation fractions must leave a final period"
+            )
+        return self
 
 
 class StrongTrendStairParams(BaseModel):
@@ -409,7 +478,11 @@ class PivotV2Request(BaseModel):
     @field_validator("symbol", "timeframe", mode="before")
     @classmethod
     def _normalize_v2_text_fields(cls, value: Any, info: Any) -> Any:
-        return _require_non_empty_text(str(value), info.field_name) if value is not None else value
+        return (
+            _require_non_empty_text(str(value), info.field_name)
+            if value is not None
+            else value
+        )
 
     @field_validator("source", mode="before")
     @classmethod
@@ -471,7 +544,11 @@ class PivotRequest(BaseModel):
     @field_validator("symbol", "timeframe", mode="before")
     @classmethod
     def _normalize_pivot_text_fields(cls, value: Any, info: Any) -> Any:
-        return _require_non_empty_text(str(value), info.field_name) if value is not None else value
+        return (
+            _require_non_empty_text(str(value), info.field_name)
+            if value is not None
+            else value
+        )
 
     @field_validator("source", mode="before")
     @classmethod
@@ -555,7 +632,6 @@ class BOSCHoCHRequest(BaseModel):
     pivot_min_swing_pct: float = Field(default=0.0, ge=0.0)
     use_structural_left_bound: bool = False
     include_reference_candle: bool = True
-    choch_display_mode: Literal["all", "first", "last"] = Field(default="all")
     pivot_version: Literal["v1", "v2"] = Field(default="v1")
     source: Literal["binance", "csv"] = Field(default="binance")
     csv_path: str | None = None
@@ -570,7 +646,9 @@ class BOSCHoCHRequest(BaseModel):
         text = _require_non_empty_text(str(value), info.field_name)
         return text.upper() if info.field_name == "symbol" else text
 
-    @field_validator("hunt_mode", "source", "choch_display_mode", "pivot_version", mode="before")
+    @field_validator(
+        "hunt_mode", "source", "pivot_version", mode="before"
+    )
     @classmethod
     def _normalize_bos_choch_enums(cls, value: Any) -> Any:
         if isinstance(value, str):
@@ -620,12 +698,14 @@ class DirectionReversalEvent(BaseModel):
     details: str
 
 
-class CHoCHUpdatePayload(BaseModel):
+class CHoCHRecordPayload(BaseModel):
     bos_index: int
     candle_index: int
     time: datetime
     level: float
-    reason: str
+    current_level: float
+    first_hunt_candle_index: int | None = None
+    first_hunt_time: datetime | None = None
     direction: Literal["UPWARD", "DOWNWARD"]
 
 
@@ -644,7 +724,7 @@ class BOSCHoCHResponse(BaseModel):
     pivots: List[PivotPoint] = Field(default_factory=list)
     pivot_v2_entries: List[PivotV2EntryPayload] = Field(default_factory=list)
     direction_reversals: List[DirectionReversalEvent] = Field(default_factory=list)
-    choch_updates: List[CHoCHUpdatePayload] = Field(default_factory=list)
+    choch_records: List[CHoCHRecordPayload] = Field(default_factory=list)
     detection_events: List[DetectionEventPayload] = Field(default_factory=list)
 
 
@@ -665,11 +745,12 @@ class LiquidityZoneRequest(BaseModel):
     include_pullback_in_bos_level: bool = True
     # Pivot-specific params forwarded to detect_pivots_v2
     pivot_min_swing_pct: float = Field(default=0.0, ge=0.0)
-    up_pivot_filter: Literal["BULLISH", "BEARISH", "ALL"] = Field(default="BULLISH")
-    down_pivot_filter: Literal["BULLISH", "BEARISH", "ALL"] = Field(default="BEARISH")
+    up_pivot_filter: Literal["BULLISH", "BEARISH", "ALL"] = Field(default="ALL")
+    down_pivot_filter: Literal["BULLISH", "BEARISH", "ALL"] = Field(default="ALL")
     include_hunted_pivots: bool = False
-    pivot_grouping: Literal["combined", "separate_by_type"] = Field(default="combined")
-    pair_scan_order: Literal["newest_to_oldest", "oldest_to_newest"] = Field(default="newest_to_oldest")
+    pair_scan_order: Literal["newest_to_oldest", "oldest_to_newest"] = Field(
+        default="newest_to_oldest"
+    )
     representative_include_hunted: bool = False
     representative_mode: Literal["choch", "latest_eligible"] = Field(default="choch")
     allow_representative_fallback: bool = True
@@ -680,8 +761,7 @@ class LiquidityZoneRequest(BaseModel):
     relaxed_slope: bool = False
     slope_epsilon: float = Field(default=0.0, ge=0.0)
     epsilon: float = Field(default=1e-9, gt=0.0)
-    zone_hunt_mode: Literal["wick", "close"] = Field(default="wick")
-    intersection_method: Literal["body", "wick"] = Field(default="body")
+    intersection_method: Literal["body", "wick"] = Field(default="wick")
     slope_attribute: Literal["close", "open", "high", "low"] = Field(default="close")
     source: Literal["binance", "csv"] = Field(default="binance")
     csv_path: str | None = None
@@ -696,18 +776,13 @@ class LiquidityZoneRequest(BaseModel):
         text = _require_non_empty_text(str(value), info.field_name)
         return text.upper() if info.field_name == "symbol" else text
 
-    choch_display_mode: Literal["all", "first", "last"] = Field(default="all")
-
     @field_validator(
         "hunt_mode",
         "source",
-        "pivot_grouping",
         "pair_scan_order",
         "representative_mode",
-        "zone_hunt_mode",
         "intersection_method",
         "slope_attribute",
-        "choch_display_mode",
         mode="before",
     )
     @classmethod
@@ -772,6 +847,13 @@ class LiquidityZonePayload(BaseModel):
     end_time: datetime
     price_low: float
     price_high: float
+    line_price: float
+    line_method: Literal[
+        "pivot_high_max",
+        "pivot_low_min",
+        "zone_candle_high_max",
+        "zone_candle_low_min",
+    ]
     is_hunted: bool
     left_pivot_index: int
     right_pivot_index: int
@@ -789,6 +871,115 @@ class LiquidityZoneResponse(BaseModel):
     zones: List[LiquidityZonePayload]
     markers: List[BOSCHoCHMarker] = Field(default_factory=list)
     direction_reversals: List[DirectionReversalEvent] = Field(default_factory=list)
+
+
+class ScenarioDetectionRequest(LiquidityZoneRequest):
+    """Parameters for scenario detection on top of liquidity zones."""
+
+    scenario_epsilon: float = Field(default=1e-9, ge=0.0)
+    zone_selection: Literal["all", "level_1", "level_2"] = Field(default="all")
+    bullish_pivot_selection: Literal["non_hunted_only", "ignore_hunted_status"] = Field(
+        default="non_hunted_only"
+    )
+    bearish_pivot_selection: Literal["non_hunted_only", "ignore_hunted_status"] = Field(
+        default="non_hunted_only"
+    )
+    mark_zone_hunted: bool = True
+    deduplicate_by_zone_and_current: bool = True
+    current_candle_only: bool = False
+    current_index: int | None = Field(default=None, ge=0)
+
+    @field_validator(
+        "zone_selection",
+        "bullish_pivot_selection",
+        "bearish_pivot_selection",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_scenario_lowercase_enums(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+
+class ScenarioPenetrationPayload(BaseModel):
+    zone_key: str
+    zone_id: str
+    zone_level: Literal[1, 2]
+    zone_direction: Literal["UPWARD", "DOWNWARD"]
+    candle_index: int
+    previous_candle_index: int | None
+    side: Literal["from_below", "from_above"]
+    line_price: float
+    candle_open: float
+    candle_high: float
+    candle_low: float
+    candle_close: float
+    time: datetime | None = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ScenarioBOSPayload(BaseModel):
+    index: int
+    direction: Literal["UPWARD", "DOWNWARD"]
+    hunt_index: int
+    hunt_time: datetime | None = None
+    level: float
+    label: str
+
+
+class ScenarioPivotSnapshotPayload(BaseModel):
+    pivot_index: int
+    pivot_type: Literal["bullish", "bearish"]
+    price: float
+    activation_index: int
+    first_hunt_index: int | None = None
+    hunted_at_zone_hunt: bool
+    selection_mode: Literal["non_hunted_only", "ignore_hunted_status"]
+    time: datetime | None = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ScenarioPivotHuntPayload(BaseModel):
+    pivot_index: int
+    pivot_type: Literal["bullish", "bearish"]
+    candle_index: int
+    side: Literal["from_below", "from_above"]
+    price: float
+    candle_open: float
+    candle_high: float
+    candle_low: float
+    candle_close: float
+    time: datetime | None = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ScenarioPayload(BaseModel):
+    id: str
+    direction: Literal["BULLISH", "BEARISH"]
+    zone_key: str
+    zone_id: str
+    zone_direction: Literal["UPWARD", "DOWNWARD"]
+    zone_level: Literal[1, 2]
+    line_price: float
+    zone_hunt: ScenarioPenetrationPayload
+    confirming_pivot_hunt: ScenarioPivotHuntPayload
+    cancelling_pivot_hunt: ScenarioPivotHuntPayload | None = None
+    relevant_bullish_pivot: ScenarioPivotSnapshotPayload | None = None
+    relevant_bearish_pivot: ScenarioPivotSnapshotPayload | None = None
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class ScenarioDetectionResponse(BaseModel):
+    candles: List[CandleForPivot]
+    pivots: List[LiquidityZonePivot]
+    segments: List[LiquidityDirectionSegment]
+    zones: List[LiquidityZonePayload]
+    markers: List[BOSCHoCHMarker] = Field(default_factory=list)
+    direction_reversals: List[DirectionReversalEvent] = Field(default_factory=list)
+    penetrations: List[ScenarioPenetrationPayload] = Field(default_factory=list)
+    scenarios: List[ScenarioPayload] = Field(default_factory=list)
+    current_index: int | None = None
 
 
 BACKTEST_PARAM_MODELS = {
@@ -819,6 +1010,7 @@ class BacktestSubmission(BaseModel):
     initial_capital: float = Field(default=10_000.0, gt=0)
     override_download: bool = True
     warmup_days: int = Field(default=30, ge=0)
+    analysis: BacktestAnalysisRequest = Field(default_factory=BacktestAnalysisRequest)
     params: (
         EngulfingStrategyParams
         | PinbarStrategyParams
