@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, cast
 
@@ -12,12 +13,26 @@ from backtest import (
     EngulfingStrategyConfig,
     EmaAvwapPullbackStrategy,
     EmaAvwapPullbackStrategyConfig,
+    EntryMode,
+    ExitBand,
+    ExitMode,
+    MonteCarloConfig,
+    ParameterCandidate,
     PinBarMagicStrategyConfigV3,
     PinBarMagicStrategyV3,
     PinbarStrategy,
     PinbarStrategyConfig,
     StrongTrendStairStrategy,
     StrongTrendStairStrategyConfig,
+    WalkForwardConfig,
+    build_three_way_oos_plan,
+    classify_regime_segments,
+    default_ema_avwap_parameter_perturbation_rules,
+    label_trades_by_regime,
+    run_monte_carlo_suite,
+    run_out_of_sample_evaluation,
+    run_parameter_perturbation,
+    run_walk_forward,
 )
 
 from backtest.stochastic_fsm_strategy import (
@@ -134,31 +149,9 @@ def run_backtest_job(
         )
     elif submission.strategy == "ema_avwap_pullback":
         ema_avwap_params = cast(EmaAvwapPullbackParams, params)
-        strategy = EmaAvwapPullbackStrategy(
-            EmaAvwapPullbackStrategyConfig(
-                symbol=ema_avwap_params.symbol,
-                timeframe=ema_avwap_params.timeframe,
-                initial_equity=submission.initial_capital,
-                leverage=ema_avwap_params.leverage,
-                equity_risk_pct=ema_avwap_params.equity_risk_pct,
-                ema_length=ema_avwap_params.ema_length,
-                consecutive_count=ema_avwap_params.consecutive_count,
-                ema_validation_mode=ema_avwap_params.ema_validation_mode,
-                setup_waiting_replacement_mode=ema_avwap_params.setup_waiting_replacement_mode,
-                position_sizing_mode=ema_avwap_params.position_sizing_mode,
-                avwap_multiplier_1=ema_avwap_params.avwap_multiplier_1,
-                avwap_multiplier_2=ema_avwap_params.avwap_multiplier_2,
-                avwap_multiplier_3=ema_avwap_params.avwap_multiplier_3,
-                rigid_stop_loss_pct=ema_avwap_params.rigid_stop_loss_pct,
-                trailing_activation_threshold_pct=ema_avwap_params.trailing_activation_threshold_pct,
-                trailing_gap_pct=ema_avwap_params.trailing_gap_pct,
-                maker_fee_pct=ema_avwap_params.maker_fee_pct,
-                taker_fee_pct=ema_avwap_params.taker_fee_pct,
-                entry_slippage_pct=ema_avwap_params.entry_slippage_pct,
-                exit_slippage_pct=ema_avwap_params.exit_slippage_pct,
-                use_gap_cross_detection=ema_avwap_params.use_gap_cross_detection,
-                max_decision_log_entries=ema_avwap_params.max_decision_log_entries,
-            )
+        strategy = _build_ema_avwap_pullback_strategy(
+            ema_avwap_params,
+            initial_equity=submission.initial_capital,
         )
     elif submission.strategy == "pinbar":
         pinbar_params = cast(PinbarStrategyParams, params)
@@ -245,14 +238,196 @@ def run_backtest_job(
 
     try:
         report = backtester.run(run_config)
-        return {
+        payload: Dict[str, Any] = {
             "job_id": job_id,
             "strategy": submission.strategy,
             "report": report.as_dict(),
         }
+        if submission.strategy == "ema_avwap_pullback":
+            payload["robust_analysis"] = _run_ema_avwap_robust_analysis(
+                params=cast(EmaAvwapPullbackParams, params),
+                analysis=submission.analysis,
+                report=report,
+                run_config=run_config,
+                downloader=downloader,
+                store=store,
+            )
+        return payload
     finally:
         store.close()
         client.close()
+
+
+def _build_ema_avwap_pullback_strategy(
+    params: EmaAvwapPullbackParams,
+    *,
+    initial_equity: float,
+    overrides: Dict[str, Any] | None = None,
+) -> EmaAvwapPullbackStrategy:
+    values = params.model_dump()
+    values.update(overrides or {})
+    return EmaAvwapPullbackStrategy(
+        EmaAvwapPullbackStrategyConfig(
+            symbol=str(values["symbol"]),
+            timeframe=str(values["timeframe"]),
+            initial_equity=initial_equity,
+            leverage=float(values["leverage"]),
+            max_entry_notional_usdt=float(values["max_entry_notional_usdt"]),
+            max_position_size_pct=float(values["max_position_size_pct"]),
+            position_notional_pct=float(values["position_notional_pct"]),
+            minimum_balance_usdt=float(values["minimum_balance_usdt"]),
+            ema_length=int(values["ema_length"]),
+            consecutive_count=int(values["consecutive_count"]),
+            ema_validation_mode=str(values["ema_validation_mode"]),
+            setup_waiting_replacement_mode=str(
+                values["setup_waiting_replacement_mode"]
+            ),
+            max_setup_age_bars=int(values["max_setup_age_bars"]),
+            max_entry_deviation_pct=float(values["max_entry_deviation_pct"]),
+            position_sizing_mode=str(values["position_sizing_mode"]),
+            entry_mode=EntryMode(str(values["entry_mode"])),
+            exit_mode=ExitMode(str(values["exit_mode"])),
+            exit_band=ExitBand(str(values["exit_band"])),
+            avwap_multiplier_1=float(values["avwap_multiplier_1"]),
+            avwap_multiplier_2=float(values["avwap_multiplier_2"]),
+            avwap_multiplier_3=float(values["avwap_multiplier_3"]),
+            rigid_stop_loss_pct=float(values["rigid_stop_loss_pct"]),
+            trailing_activation_threshold_pct=float(
+                values["trailing_activation_threshold_pct"]
+            ),
+            trailing_gap_pct=float(values["trailing_gap_pct"]),
+            maker_fee_pct=float(values["maker_fee_pct"]),
+            taker_fee_pct=float(values["taker_fee_pct"]),
+            entry_slippage_pct=float(values["entry_slippage_pct"]),
+            exit_slippage_pct=float(values["exit_slippage_pct"]),
+            use_gap_cross_detection=bool(values["use_gap_cross_detection"]),
+            max_decision_log_entries=int(values["max_decision_log_entries"]),
+        )
+    )
+
+
+def _run_ema_avwap_robust_analysis(
+    *,
+    params: EmaAvwapPullbackParams,
+    analysis: Any,
+    report: Any,
+    run_config: BacktestRunConfig,
+    downloader: CandleDownloader,
+    store: Any,
+) -> Dict[str, Any]:
+    robust: Dict[str, Any] = {}
+    enabled = any(
+        (
+            analysis.include_monte_carlo,
+            analysis.include_walk_forward,
+            analysis.include_out_of_sample,
+            analysis.include_parameter_perturbation,
+        )
+    )
+    if not enabled:
+        return robust
+
+    analysis_run_config = replace(run_config, override_download=False)
+
+    def build_backtester(
+        parameter_overrides: Any,
+        initial_capital: float,
+    ) -> BaseBacktester:
+        overrides = dict(parameter_overrides or {})
+        strategy = _build_ema_avwap_pullback_strategy(
+            params,
+            initial_equity=initial_capital,
+            overrides=overrides,
+        )
+        return BaseBacktester(strategy=strategy, downloader=downloader, store=store)
+
+    if analysis.include_monte_carlo:
+        mc_config = MonteCarloConfig(
+            iterations=analysis.monte_carlo_iterations,
+            seed=analysis.monte_carlo_seed,
+            initial_capital=run_config.initial_capital,
+            block_size=analysis.monte_carlo_block_size,
+            drawdown_threshold_pct=analysis.monte_carlo_drawdown_threshold_pct,
+            missed_fill_probability=analysis.monte_carlo_missed_fill_probability,
+            extra_spread_slippage_pct_range=(
+                analysis.monte_carlo_extra_spread_min_pct,
+                analysis.monte_carlo_extra_spread_max_pct,
+            ),
+        )
+        trade_regimes = None
+        try:
+            candles = store.load(
+                params.symbol,
+                params.timeframe,
+                run_config.start,
+                run_config.end,
+            )
+            segments = classify_regime_segments(candles)
+            if segments:
+                trade_regimes = label_trades_by_regime(report.trades, segments)
+                robust["regime_segments"] = [segment.as_dict() for segment in segments]
+        except Exception as exc:
+            robust["regime_classification_error"] = str(exc)
+        robust["monte_carlo"] = run_monte_carlo_suite(
+            trades=report.trades,
+            config=mc_config,
+            start=run_config.start,
+            end=run_config.end,
+            risk_free_rate=run_config.risk_free_rate,
+            trade_regimes=trade_regimes,
+        )
+
+    if analysis.include_out_of_sample:
+        plan = build_three_way_oos_plan(
+            start=run_config.start,
+            end=run_config.end,
+            training_fraction=analysis.oos_training_fraction,
+            validation_fraction=analysis.oos_validation_fraction,
+        )
+        oos_result = run_out_of_sample_evaluation(
+            build_backtester=build_backtester,
+            run_config=analysis_run_config,
+            plan=plan,
+            candidates=[ParameterCandidate("current", {})],
+            selection_metric="performance.net_profit_pct",
+        )
+        robust["out_of_sample"] = oos_result.as_dict(include_reports=False)
+
+    if analysis.include_walk_forward:
+        wf_config = WalkForwardConfig(
+            start=run_config.start,
+            end=run_config.end,
+            train_window=timedelta(days=analysis.walk_forward_train_days),
+            test_window=timedelta(days=analysis.walk_forward_test_days),
+            step=(
+                timedelta(days=analysis.walk_forward_step_days)
+                if analysis.walk_forward_step_days
+                else None
+            ),
+            anchored=analysis.walk_forward_anchored,
+        )
+        wf_result = run_walk_forward(
+            build_backtester=build_backtester,
+            run_config=analysis_run_config,
+            walk_forward_config=wf_config,
+            candidates=[ParameterCandidate("current", {})],
+            selection_metric="performance.net_profit_pct",
+        )
+        robust["walk_forward"] = wf_result.as_dict(include_reports=False)
+
+    if analysis.include_parameter_perturbation:
+        perturbation = run_parameter_perturbation(
+            build_backtester=build_backtester,
+            run_config=analysis_run_config,
+            base_parameters=params.model_dump(),
+            rules=default_ema_avwap_parameter_perturbation_rules(),
+            samples=analysis.parameter_perturbation_samples,
+            seed=analysis.parameter_perturbation_seed,
+            score_metric="performance.net_profit_pct",
+        )
+        robust["parameter_perturbation"] = perturbation
+
+    return robust
 
 
 def _ensure_utc(moment: datetime) -> datetime:
