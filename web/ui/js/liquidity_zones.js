@@ -199,7 +199,7 @@
         fill: zone.is_hunted
           ? "rgba(49, 209, 124, 0.09)"
           : "rgba(49, 209, 124, 0.16)",
-        midline: "rgba(199, 255, 224, 0.68)",
+        zoneLine: "rgba(199, 255, 224, 0.68)",
         badge: "L1 UP",
         dash: [],
       };
@@ -210,7 +210,7 @@
         fill: zone.is_hunted
           ? "rgba(255, 107, 87, 0.09)"
           : "rgba(255, 107, 87, 0.16)",
-        midline: "rgba(255, 226, 220, 0.68)",
+        zoneLine: "rgba(255, 226, 220, 0.68)",
         badge: "L1 DOWN",
         dash: [],
       };
@@ -221,7 +221,7 @@
         fill: zone.is_hunted
           ? "rgba(79, 179, 255, 0.08)"
           : "rgba(79, 179, 255, 0.14)",
-        midline: "rgba(214, 238, 255, 0.72)",
+        zoneLine: "rgba(214, 238, 255, 0.72)",
         badge: "L2 UP",
         dash: [8, 4],
       };
@@ -231,7 +231,7 @@
       fill: zone.is_hunted
         ? "rgba(245, 181, 31, 0.08)"
         : "rgba(245, 181, 31, 0.14)",
-      midline: "rgba(255, 244, 201, 0.72)",
+      zoneLine: "rgba(255, 244, 201, 0.72)",
       badge: "L2 DOWN",
       dash: [8, 4],
     };
@@ -337,60 +337,28 @@
       if (zone.level === 2 && !showL2) return;
       const x0 = timeToX(zone.start_time);
       const x1 = timeToX(zone.end_time);
-      const yTop = priceToY(zone.price_high);
-      const yBottom = priceToY(zone.price_low);
-      if (x0 == null || x1 == null || yTop == null || yBottom == null) return;
+      if (x0 == null || x1 == null) return;
 
       const style = zoneStyle(zone);
       const left = Math.min(x0, x1);
       const right = Math.max(x0, x1);
-      const top = Math.min(yTop, yBottom);
-      const bottom = Math.max(yTop, yBottom);
       const width = Math.max(right - left, 2);
-      const height = Math.max(bottom - top, 2);
-      const midY = (top + bottom) / 2;
+      const linePrice =
+        zone.line_price != null
+          ? Number(zone.line_price)
+          : (Number(zone.price_low) + Number(zone.price_high)) / 2;
+      const lineY = Number.isFinite(linePrice) ? priceToY(linePrice) : null;
+      if (lineY == null) return;
 
       overlayCtx.save();
-      overlayCtx.fillStyle = style.fill;
-      overlayCtx.fillRect(left, top, width, height);
-
-      overlayCtx.strokeStyle = style.stroke;
-      overlayCtx.lineWidth = zone.level === 2 ? 2.4 : 2;
+      overlayCtx.strokeStyle = style.zoneLine;
+      overlayCtx.lineWidth = zone.level === 2 ? 2.2 : 1.7;
       overlayCtx.setLineDash(style.dash);
-      overlayCtx.strokeRect(
-        left + 0.5,
-        top + 0.5,
-        Math.max(width - 1, 1),
-        Math.max(height - 1, 1),
-      );
-      overlayCtx.setLineDash([]);
-
-      overlayCtx.strokeStyle = style.stroke;
-      overlayCtx.lineWidth = zone.level === 2 ? 2.2 : 1.8;
       overlayCtx.beginPath();
-      overlayCtx.moveTo(left, top);
-      overlayCtx.lineTo(right, top);
-      overlayCtx.moveTo(left, bottom);
-      overlayCtx.lineTo(right, bottom);
-      overlayCtx.stroke();
-
-      overlayCtx.strokeStyle = style.midline;
-      overlayCtx.lineWidth = 1.2;
-      overlayCtx.setLineDash([5, 4]);
-      overlayCtx.beginPath();
-      overlayCtx.moveTo(left, midY);
-      overlayCtx.lineTo(right, midY);
+      overlayCtx.moveTo(left, lineY);
+      overlayCtx.lineTo(right, lineY);
       overlayCtx.stroke();
       overlayCtx.setLineDash([]);
-
-      overlayCtx.strokeStyle = style.stroke;
-      overlayCtx.lineWidth = 1;
-      overlayCtx.beginPath();
-      overlayCtx.moveTo(left, top);
-      overlayCtx.lineTo(left, bottom);
-      overlayCtx.moveTo(right, top);
-      overlayCtx.lineTo(right, bottom);
-      overlayCtx.stroke();
 
       const leftPivot = pivotByIndex.get(zone.left_pivot_index);
       const rightPivot = pivotByIndex.get(zone.right_pivot_index);
@@ -403,24 +371,13 @@
         if (y != null) drawPivotAnchor(right, y, style.stroke);
       }
 
-      if (zone.is_hunted) {
-        overlayCtx.strokeStyle = "rgba(255, 255, 255, 0.34)";
-        overlayCtx.lineWidth = 1;
-        overlayCtx.beginPath();
-        overlayCtx.moveTo(left + 4, top + 4);
-        overlayCtx.lineTo(right - 4, bottom - 4);
-        overlayCtx.moveTo(left + 4, bottom - 4);
-        overlayCtx.lineTo(right - 4, top + 4);
-        overlayCtx.stroke();
-      }
-
       overlayCtx.restore();
 
       if (showZoneLabelsInput?.checked) {
         const huntedText = zone.is_hunted ? " H" : "";
         const label = `${style.badge} ${zone.id}${huntedText}`;
-        const labelY = top + 6;
-        if (height > 26 && width > 120) {
+        const labelY = Math.max(lineY - 24, 24);
+        if (width > 120) {
           drawTag(
             label,
             left + 6,
@@ -432,7 +389,7 @@
           drawTag(
             label,
             left + 6,
-            Math.max(top - 22, 24),
+            labelY,
             style.stroke,
             "rgba(8, 18, 25, 0.96)",
           );
@@ -750,6 +707,10 @@
       );
       appendCell(row, zone.price_low.toFixed(4));
       appendCell(row, zone.price_high.toFixed(4));
+      appendCell(
+        row,
+        zone.line_price != null ? zone.line_price.toFixed(4) : "—",
+      );
       appendCell(row, thickPct, { className: "td-muted" });
       appendCell(row, zone.is_hunted ? "hunted" : "active", {
         color: zone.is_hunted ? "var(--down)" : "var(--up)",
@@ -935,7 +896,6 @@
       direction_window: Number(formData.get("direction_window") || 3),
       hunt_mode: formData.get("hunt_mode"),
       min_swing_pct: Number(formData.get("min_swing_pct") ?? 0),
-      choch_display_mode: formData.get("choch_display_mode") || "all",
       include_pullback_in_bos_level: formData.has(
         "include_pullback_in_bos_level",
       ),
@@ -948,13 +908,11 @@
       pivot_min_swing_pct: Number(formData.get("pivot_min_swing_pct") ?? 0),
 
       // ── Zone matching ────────────────────────────────────────────
-      intersection_method: formData.get("intersection_method"),
+      intersection_method: formData.get("intersection_method") || "wick",
       slope_attribute: formData.get("slope_attribute"),
-      up_pivot_filter: formData.get("up_pivot_filter"),
-      down_pivot_filter: formData.get("down_pivot_filter"),
-      pivot_grouping: formData.get("pivot_grouping"),
+      up_pivot_filter: formData.get("up_pivot_filter") || "ALL",
+      down_pivot_filter: formData.get("down_pivot_filter") || "ALL",
       pair_scan_order: formData.get("pair_scan_order"),
-      zone_hunt_mode: formData.get("zone_hunt_mode"),
       maximum_pivot_distance: maxPivotDistanceRaw
         ? Number(maxPivotDistanceRaw)
         : null,
