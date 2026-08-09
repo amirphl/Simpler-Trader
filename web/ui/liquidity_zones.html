@@ -539,6 +539,7 @@
       <div class="nav">
         <a href="/static/pivots.html">Pivots</a>
         <a href="/static/bos_choch.html">BOS / CHoCH</a>
+        <a href="/static/scenario_detection.html">Scenarios</a>
         <span class="tag">Level 1 + Level 2 Zones</span>
       </div>
     </header>
@@ -641,16 +642,6 @@
                     value="0"
                   />
                 </div>
-                <div>
-                  <label class="field-label" for="choch_display_mode"
-                    >CHoCH Display</label
-                  >
-                  <select id="choch_display_mode" name="choch_display_mode">
-                    <option value="all">All</option>
-                    <option value="first">First per BOS</option>
-                    <option value="last">Last per BOS</option>
-                  </select>
-                </div>
                 <label class="check wide">
                   <input
                     name="include_pullback_in_bos_level"
@@ -713,7 +704,7 @@
                   >
                   <select id="intersection_method" name="intersection_method">
                     <option value="body">Body</option>
-                    <option value="wick">Wick</option>
+                    <option value="wick" selected>Wick</option>
                   </select>
                 </div>
                 <div>
@@ -734,7 +725,7 @@
                   <select id="up_pivot_filter" name="up_pivot_filter">
                     <option value="BULLISH">Bullish</option>
                     <option value="BEARISH">Bearish</option>
-                    <option value="ALL">All</option>
+                    <option value="ALL" selected>All</option>
                   </select>
                 </div>
                 <div>
@@ -744,16 +735,7 @@
                   <select id="down_pivot_filter" name="down_pivot_filter">
                     <option value="BEARISH">Bearish</option>
                     <option value="BULLISH">Bullish</option>
-                    <option value="ALL">All</option>
-                  </select>
-                </div>
-                <div>
-                  <label class="field-label" for="pivot_grouping"
-                    >Pivot Grouping</label
-                  >
-                  <select id="pivot_grouping" name="pivot_grouping">
-                    <option value="combined">Combined</option>
-                    <option value="separate_by_type">Separate by type</option>
+                    <option value="ALL" selected>All</option>
                   </select>
                 </div>
                 <div>
@@ -763,15 +745,6 @@
                   <select id="pair_scan_order" name="pair_scan_order">
                     <option value="newest_to_oldest">Newest → Oldest</option>
                     <option value="oldest_to_newest">Oldest → Newest</option>
-                  </select>
-                </div>
-                <div>
-                  <label class="field-label" for="zone_hunt_mode"
-                    >Zone Hunt Mode</label
-                  >
-                  <select id="zone_hunt_mode" name="zone_hunt_mode">
-                    <option value="wick">Wick</option>
-                    <option value="close">Close</option>
                   </select>
                 </div>
                 <div>
@@ -1027,9 +1000,8 @@
               <div class="overlay-note">
                 <strong>Reading The Overlay</strong>
                 <span
-                  >Filled bands = full price range of a zone. Dashed midline =
-                  actionable level. BOS/CHoCH lines span their detected
-                  range.</span
+                  >Liquidity zones draw as their selected line only.
+                  BOS/CHoCH lines span their detected range.</span
                 >
               </div>
             </div>
@@ -1054,6 +1026,7 @@
                     <th>Pivots</th>
                     <th>Low</th>
                     <th>High</th>
+                    <th>Line</th>
                     <th>Thick%</th>
                     <th>Status</th>
                   </tr>
