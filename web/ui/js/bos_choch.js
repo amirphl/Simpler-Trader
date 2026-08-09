@@ -18,8 +18,8 @@
   const reversalCountEl = document.getElementById("reversal-count");
   const detailEl = document.getElementById("event-detail");
   const showReversalsInput = document.getElementById("show-reversals");
-  const chochUpdatesListEl = document.getElementById("choch-updates-list");
-  const chochUpdateDetailEl = document.getElementById("choch-update-detail");
+  const chochRecordsListEl = document.getElementById("choch-records-list");
+  const chochRecordDetailEl = document.getElementById("choch-record-detail");
   const detectionEventsListEl = document.getElementById(
     "detection-events-list",
   );
@@ -75,7 +75,7 @@
   let lastPivots = [];
   let lastPivotV2Entries = [];
   let lastReversals = [];
-  let lastChochUpdates = [];
+  let lastChochRecords = [];
   let lastDetectionEvents = [];
   let lastCandleData = [];
 
@@ -788,7 +788,7 @@
     directionState,
     pivots = [],
     reversals = [],
-    chochUpdates = [],
+    chochRecords = [],
     detectionEvents = [],
     pivotV2Entries = [],
   ) {
@@ -815,9 +815,10 @@
       ...rev,
       time: unixTime(rev.time),
     }));
-    lastChochUpdates = chochUpdates.map((u) => ({
+    lastChochRecords = chochRecords.map((u) => ({
       ...u,
       time: unixTime(u.time),
+      first_hunt_time: u.first_hunt_time ? unixTime(u.first_hunt_time) : null,
     }));
     lastDetectionEvents = detectionEvents.map((ev) => ({
       ...ev,
@@ -892,15 +893,21 @@
     }
     drawStructureMarkers();
     buildSubList({
-      listEl: chochUpdatesListEl,
-      detailEl: chochUpdateDetailEl,
-      items: lastChochUpdates,
+      listEl: chochRecordsListEl,
+      detailEl: chochRecordDetailEl,
+      items: lastChochRecords,
       rowText: (u) => {
         const date = new Date(u.time * 1000)
           .toISOString()
           .replace("T", " ")
           .slice(0, 16);
-        return `BOS #${String(u.bos_index).padEnd(4)} · ${u.reason.padEnd(16)} · ${Number(u.level).toPrecision(6)} · ${date}`;
+        const firstHunt = u.first_hunt_time
+          ? new Date(u.first_hunt_time * 1000)
+              .toISOString()
+              .replace("T", " ")
+              .slice(0, 16)
+          : "pending";
+        return `BOS #${String(u.bos_index).padEnd(4)} · ${Number(u.level).toPrecision(6)} · first hunt: ${firstHunt} · ${date}`;
       },
       rowColor: (u) =>
         u.direction === "UPWARD" ? COLORS.chochUp : COLORS.chochDown,
@@ -945,7 +952,6 @@
       end,
       direction_window: Number(formData.get("direction_window") ?? 3) || 3,
       hunt_mode: formData.get("hunt_mode"),
-      choch_display_mode: formData.get("choch_display_mode") || "all",
       include_hunt_candle_in_choch_range: formData.has(
         "include_hunt_candle_in_choch_range",
       ),
@@ -977,7 +983,7 @@
         json.direction_state,
         json.pivots || [],
         json.direction_reversals || [],
-        json.choch_updates || [],
+        json.choch_records || [],
         json.detection_events || [],
         json.pivot_v2_entries || [],
       );
