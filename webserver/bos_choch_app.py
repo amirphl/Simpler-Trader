@@ -8,7 +8,6 @@ from fastapi.responses import FileResponse  # type: ignore[import-not-found]
 
 from candle_downloader.models import to_milliseconds
 from experiments.bos_choch_detection import (
-    CHoCHUpdate,
     DetectionConfig,
     detect_bos_choch,
     get_candles,
@@ -29,7 +28,7 @@ from .models import (
     BOSCHoCHMarker,
     BOSCHoCHRequest,
     BOSCHoCHResponse,
-    CHoCHUpdatePayload,
+    CHoCHRecordPayload,
     DetectionEventPayload,
     DirectionReversalEvent,
     PivotPoint,
@@ -162,57 +161,30 @@ async def compute_bos_choch(payload: BOSCHoCHRequest) -> BOSCHoCHResponse:
             )
         )
 
-    # Filter choch_updates to first, last, or all per BOS.
-    choch_mode = payload.choch_display_mode
-    if choch_mode == "first":
-        seen_bos: set[int] = set()
-        filtered_updates = []
-        for update in result.choch_updates:
-            if update.bos_index not in seen_bos:
-                filtered_updates.append(update)
-                seen_bos.add(update.bos_index)
-    elif choch_mode == "last":
-        last_per_bos: dict[int, CHoCHUpdate] = {}
-        for update in result.choch_updates:
-            last_per_bos[update.bos_index] = update
-        filtered_updates = list(last_per_bos.values())
-    else:
-        filtered_updates = list(result.choch_updates)
-
-    # Deduplicate: if multiple BOSes produced the same (candle_index, level),
-    # keep only the first occurrence so overlapping CHoCHs appear once.
-    seen_choch: set[tuple[int, float]] = set()
-    deduped_updates = []
-    for update in filtered_updates:
-        key = (update.candle_index, update.level)
-        if key not in seen_choch:
-            seen_choch.add(key)
-            deduped_updates.append(update)
-
     bos_by_index = {bos.index: bos for bos in result.bos_records}
-    for choch_index, update in enumerate(deduped_updates):
-        if not 0 <= update.candle_index < len(candles):
+    for choch_index, choch in enumerate(result.choch_records_by_bos.values()):
+        if not 0 <= choch.candle_index < len(candles):
             continue
-        bos = bos_by_index.get(update.bos_index)
+        bos = bos_by_index.get(choch.bos_index)
         if bos is None:
             continue
-        candle = candles[update.candle_index]
-        line_end_index = min(update.candle_index + 3, len(candles) - 1)
+        candle = candles[choch.candle_index]
+        line_end_index = min(choch.candle_index + 3, len(candles) - 1)
         choch_direction = bos.direction
         markers.append(
             BOSCHoCHMarker(
                 type="CHoCH",
                 index=choch_index,
                 direction=choch_direction,
-                candle_index=update.candle_index,
+                candle_index=choch.candle_index,
                 time=candle.open_time,
-                price=update.level,
+                price=choch.level,
                 high=candle.high,
                 low=candle.low,
                 label=f"CHoCH {choch_index}",
                 line_start_time=candle.open_time,
                 line_end_time=candles[line_end_index].open_time,
-                bos_index=update.bos_index,
+                bos_index=choch.bos_index,
             )
         )
 
@@ -319,19 +291,26 @@ async def compute_bos_choch(payload: BOSCHoCHRequest) -> BOSCHoCHResponse:
         if ev.event == "DIRECTION_REVERSED" and 0 <= ev.candle_index < len(candles)
     ]
 
-    choch_update_payloads = [
-        CHoCHUpdatePayload(
-            bos_index=u.bos_index,
-            candle_index=u.candle_index,
-            time=candles[u.candle_index].open_time,
-            level=u.level,
-            reason=u.reason,
-            direction=bos_by_index[u.bos_index].direction
-            if u.bos_index in bos_by_index
+    choch_record_payloads = [
+        CHoCHRecordPayload(
+            bos_index=choch.bos_index,
+            candle_index=choch.candle_index,
+            time=candles[choch.candle_index].open_time,
+            level=choch.level,
+            current_level=choch.current_level,
+            first_hunt_candle_index=choch.first_hunt_candle_index,
+            first_hunt_time=(
+                candles[choch.first_hunt_candle_index].open_time
+                if choch.first_hunt_candle_index is not None
+                and 0 <= choch.first_hunt_candle_index < len(candles)
+                else None
+            ),
+            direction=bos_by_index[choch.bos_index].direction
+            if choch.bos_index in bos_by_index
             else "UPWARD",
         )
-        for u in result.choch_updates
-        if 0 <= u.candle_index < len(candles)
+        for choch in result.choch_records_by_bos.values()
+        if 0 <= choch.candle_index < len(candles)
     ]
 
     detection_event_payloads = [
@@ -356,6 +335,6 @@ async def compute_bos_choch(payload: BOSCHoCHRequest) -> BOSCHoCHResponse:
         pivots=pivot_points,
         pivot_v2_entries=pivot_v2_entry_payloads,
         direction_reversals=reversal_events,
-        choch_updates=choch_update_payloads,
+        choch_records=choch_record_payloads,
         detection_events=detection_event_payloads,
     )
