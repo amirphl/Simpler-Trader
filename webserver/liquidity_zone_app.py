@@ -224,8 +224,6 @@ async def compute_liquidity_zones(
 
     # Build BOS/CHoCH markers from the result already computed inside detect_liquidity_zones
     bc = result.bos_choch_result
-    choch_mode = payload.choch_display_mode
-
     markers: list[BOSCHoCHMarker] = []
     for bos in bc.bos_records:
         if not 0 <= bos.hunt_index < len(candles):
@@ -248,52 +246,29 @@ async def compute_liquidity_zones(
             )
         )
 
-    if choch_mode == "first":
-        seen_bos_ids: set[int] = set()
-        filtered_updates = []
-        for update in bc.choch_updates:
-            if update.bos_index not in seen_bos_ids:
-                filtered_updates.append(update)
-                seen_bos_ids.add(update.bos_index)
-    elif choch_mode == "last":
-        last_per_bos: dict[int, object] = {}
-        for update in bc.choch_updates:
-            last_per_bos[update.bos_index] = update
-        filtered_updates = list(last_per_bos.values())
-    else:
-        filtered_updates = list(bc.choch_updates)
-
-    seen_choch: set[tuple[int, float]] = set()
-    deduped_updates = []
-    for update in filtered_updates:
-        key = (update.candle_index, update.level)
-        if key not in seen_choch:
-            seen_choch.add(key)
-            deduped_updates.append(update)
-
     bos_by_index = {bos.index: bos for bos in bc.bos_records}
-    for choch_index, update in enumerate(deduped_updates):
-        if not 0 <= update.candle_index < len(candles):
+    for choch_index, choch in enumerate(bc.choch_records_by_bos.values()):
+        if not 0 <= choch.candle_index < len(candles):
             continue
-        bos = bos_by_index.get(update.bos_index)
+        bos = bos_by_index.get(choch.bos_index)
         if bos is None:
             continue
-        candle = candles[update.candle_index]
-        line_end_index = min(update.candle_index + 3, len(candles) - 1)
+        candle = candles[choch.candle_index]
+        line_end_index = min(choch.candle_index + 3, len(candles) - 1)
         markers.append(
             BOSCHoCHMarker(
                 type="CHoCH",
                 index=choch_index,
                 direction=bos.direction,
-                candle_index=update.candle_index,
+                candle_index=choch.candle_index,
                 time=candle.open_time,
-                price=update.level,
+                price=choch.level,
                 high=candle.high,
                 low=candle.low,
                 label=f"CHoCH {choch_index}",
                 line_start_time=candle.open_time,
                 line_end_time=candles[line_end_index].open_time,
-                bos_index=update.bos_index,
+                bos_index=choch.bos_index,
             )
         )
 
