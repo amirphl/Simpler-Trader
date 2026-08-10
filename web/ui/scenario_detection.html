@@ -1,0 +1,1193 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Scenario Detection Explorer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #09131a;
+        --panel: rgba(11, 26, 36, 0.88);
+        --panel-2: rgba(8, 18, 25, 0.96);
+        --panel-3: rgba(15, 29, 39, 0.94);
+        --text: #e7f6ef;
+        --muted: #8cb0a4;
+        --border: rgba(231, 246, 239, 0.08);
+        --border-hard: rgba(231, 246, 239, 0.18);
+        --up: #31d17c;
+        --down: #ff6b57;
+        --level-2-up: #4fb3ff;
+        --level-2-down: #f5b51f;
+        --segment-up: rgba(49, 209, 124, 0.12);
+        --segment-down: rgba(255, 107, 87, 0.12);
+        --reversal: #e879f9;
+        --shadow-strong: 0 18px 56px rgba(0, 0, 0, 0.34);
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        font-family: "Space Grotesk", system-ui, sans-serif;
+        background:
+          radial-gradient(
+            circle at 15% 15%,
+            rgba(49, 209, 124, 0.1),
+            transparent 24%
+          ),
+          radial-gradient(
+            circle at 85% 10%,
+            rgba(79, 179, 255, 0.1),
+            transparent 28%
+          ),
+          radial-gradient(
+            circle at 70% 90%,
+            rgba(255, 107, 87, 0.1),
+            transparent 24%
+          ),
+          linear-gradient(180deg, #071118, #09131a 38%, #081018);
+        color: var(--text);
+        min-height: 100vh;
+      }
+
+      /* ── Header ───────────────────────────────────────────────────── */
+      header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 18px;
+        padding: 14px 22px;
+        border-bottom: 1px solid var(--border);
+        background: rgba(9, 19, 26, 0.8);
+        backdrop-filter: blur(14px);
+        position: sticky;
+        top: 0;
+        z-index: 20;
+      }
+      header h1 {
+        font-size: 18px;
+        letter-spacing: 0.02em;
+      }
+      .nav {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      .nav a,
+      .tag {
+        color: var(--text);
+        text-decoration: none;
+        font-size: 11px;
+        font-family: "IBM Plex Mono", monospace;
+        padding: 5px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.03);
+      }
+
+      /* ── Main layout (vertical stack) ────────────────────────────── */
+      main {
+        max-width: 1920px;
+        margin: 0 auto;
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      /* ── Panels ────────────────────────────────────────────────────── */
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--border);
+        border-radius: 18px;
+        box-shadow: var(--shadow-strong);
+      }
+
+      /* ── Controls (top config bar) ───────────────────────────────── */
+      .controls {
+        padding: 14px;
+      }
+      .controls::-webkit-scrollbar {
+        width: 4px;
+      }
+      .controls::-webkit-scrollbar-thumb {
+        background: var(--border-hard);
+        border-radius: 4px;
+      }
+
+      /* form: vertical flex with sections + footer */
+      form {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      /* fieldsets arranged horizontally */
+      .form-sections {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        align-items: start;
+      }
+      .form-sections > fieldset {
+        flex: 1 1 200px;
+        min-width: 0;
+      }
+      .form-sections > fieldset.fs-wide {
+        flex: 2 1 380px;
+      }
+
+      /* footer row: submit + status + stats */
+      .form-footer {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        flex-wrap: wrap;
+        padding-top: 10px;
+        border-top: 1px solid var(--border);
+      }
+
+      /* fieldset sections */
+      fieldset {
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 10px 12px 12px;
+      }
+      legend {
+        font-size: 10px;
+        letter-spacing: 0.07em;
+        text-transform: uppercase;
+        font-family: "IBM Plex Mono", monospace;
+        color: var(--muted);
+        padding: 0 6px;
+      }
+      .form-row {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+        margin-top: 8px;
+      }
+      .form-row .wide {
+        grid-column: 1 / -1;
+      }
+
+      label.field-label {
+        display: block;
+        margin-bottom: 3px;
+        font-size: 10px;
+        letter-spacing: 0.04em;
+        color: var(--muted);
+        text-transform: uppercase;
+        font-family: "IBM Plex Mono", monospace;
+      }
+      input,
+      select {
+        width: 100%;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+        color: var(--text);
+        padding: 8px 10px;
+        font: inherit;
+        font-size: 13px;
+      }
+      input:focus,
+      select:focus {
+        outline: none;
+        border-color: rgba(49, 209, 124, 0.4);
+      }
+      .check {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        min-height: 36px;
+        padding: 0 10px;
+        border-radius: 10px;
+        border: 1px solid var(--border);
+        background: var(--panel-2);
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .check input {
+        width: auto;
+        margin: 0;
+      }
+
+      button[type="submit"] {
+        flex-shrink: 0;
+        border-radius: 12px;
+        border: 0;
+        background: linear-gradient(135deg, #31d17c, #4fb3ff);
+        color: #041118;
+        font-weight: 700;
+        padding: 11px 28px;
+        font: inherit;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      button[type="submit"]:hover {
+        filter: brightness(1.04);
+      }
+
+      .status {
+        flex: 1 1 200px;
+        min-height: 18px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.4;
+        font-family: "IBM Plex Mono", monospace;
+      }
+      .stats {
+        display: flex;
+        gap: 8px;
+        flex-shrink: 0;
+        flex-wrap: wrap;
+      }
+      .stat {
+        padding: 8px 14px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.03);
+        text-align: center;
+        white-space: nowrap;
+      }
+      .stat strong {
+        display: block;
+        font-size: 18px;
+        margin-bottom: 2px;
+      }
+      .stat span {
+        font-size: 10px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: var(--muted);
+        font-family: "IBM Plex Mono", monospace;
+      }
+
+      /* ── Chart + info column ──────────────────────────────────────── */
+      .right-col {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        min-width: 0;
+      }
+
+      /* ── Chart viewport ───────────────────────────────────────────── */
+      .viewport {
+        overflow: hidden;
+      }
+      .viewport-top {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 16px;
+        border-bottom: 1px solid var(--border);
+        background: linear-gradient(
+          180deg,
+          rgba(255, 255, 255, 0.02),
+          transparent
+        );
+        flex-wrap: wrap;
+      }
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .legend span {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 11px;
+        font-family: "IBM Plex Mono", monospace;
+        color: var(--muted);
+      }
+      .dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 999px;
+        display: inline-block;
+      }
+      .line {
+        width: 18px;
+        height: 0;
+        border-top: 2px solid currentColor;
+        display: inline-block;
+      }
+      .line.dashed {
+        border-top-style: dashed;
+      }
+
+      .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+      .chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        padding: 6px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--border);
+        background: rgba(255, 255, 255, 0.03);
+        font-size: 11px;
+        font-family: "IBM Plex Mono", monospace;
+        cursor: pointer;
+      }
+      .chip input {
+        width: auto;
+        margin: 0;
+      }
+
+      /* Full-width chart area */
+      .chart-wrap {
+        position: relative;
+        height: 560px;
+        background:
+          linear-gradient(
+            180deg,
+            rgba(255, 255, 255, 0.015),
+            rgba(255, 255, 255, 0)
+          ),
+          linear-gradient(180deg, rgba(8, 18, 25, 0.3), rgba(8, 18, 25, 0));
+      }
+      #chart {
+        position: absolute;
+        inset: 0;
+      }
+
+      .overlay-panel {
+        position: absolute;
+        top: 12px;
+        left: 12px;
+        right: 12px;
+        z-index: 8;
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: flex-start;
+        pointer-events: none;
+      }
+      .overlay-panel > * {
+        pointer-events: auto;
+      }
+      .overlay-note {
+        max-width: min(360px, 42%);
+        padding: 9px 12px;
+        border-radius: 12px;
+        border: 1px solid var(--border);
+        background: rgba(8, 18, 25, 0.82);
+        backdrop-filter: blur(12px);
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+      }
+      .overlay-note strong {
+        display: block;
+        margin-bottom: 3px;
+        font-size: 10px;
+        font-family: "IBM Plex Mono", monospace;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: var(--text);
+      }
+      .overlay-note span {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.4;
+      }
+
+      /* ── Below-chart info panels ──────────────────────────────────── */
+      .below-chart {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 16px;
+      }
+      .info-panel {
+        padding: 0;
+        overflow: hidden;
+      }
+      .info-panel h2 {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+        font-family: "IBM Plex Mono", monospace;
+        padding: 12px 14px 10px;
+        border-bottom: 1px solid var(--border);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .info-panel h2 .badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 20px;
+        height: 18px;
+        padding: 0 6px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.07);
+        font-size: 11px;
+        color: var(--text);
+        font-weight: 700;
+      }
+      .table-wrap {
+        overflow-x: auto;
+        overflow-y: auto;
+        max-height: 240px;
+      }
+      .table-wrap::-webkit-scrollbar {
+        width: 4px;
+        height: 4px;
+      }
+      .table-wrap::-webkit-scrollbar-thumb {
+        background: var(--border-hard);
+        border-radius: 4px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 11px;
+        font-family: "IBM Plex Mono", monospace;
+      }
+      thead th {
+        text-align: left;
+        padding: 7px 10px;
+        color: var(--muted);
+        font-weight: 500;
+        border-bottom: 1px solid var(--border);
+        position: sticky;
+        top: 0;
+        background: var(--panel);
+        white-space: nowrap;
+        font-size: 10px;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+      }
+      tbody td {
+        padding: 5px 10px;
+        border-bottom: 1px solid rgba(231, 246, 239, 0.04);
+        white-space: nowrap;
+        color: var(--text);
+      }
+      tbody tr:hover td {
+        background: rgba(255, 255, 255, 0.04);
+        cursor: pointer;
+      }
+      tbody tr.selected td {
+        background: rgba(49, 209, 124, 0.08);
+      }
+      .td-up {
+        color: var(--up);
+      }
+      .td-down {
+        color: var(--down);
+      }
+      .td-l2up {
+        color: var(--level-2-up);
+      }
+      .td-l2down {
+        color: var(--level-2-down);
+      }
+      .td-muted {
+        color: var(--muted);
+      }
+      .td-hunted {
+        opacity: 0.55;
+        text-decoration: line-through;
+      }
+
+      /* ── Responsive ───────────────────────────────────────────────── */
+      @media (max-width: 820px) {
+        .below-chart {
+          grid-template-columns: 1fr;
+        }
+        .chart-wrap {
+          height: 420px;
+        }
+      }
+      @media (max-width: 560px) {
+        .form-row {
+          grid-template-columns: 1fr;
+        }
+        .form-sections > fieldset {
+          flex: 1 1 100%;
+        }
+        .stats {
+          flex-wrap: wrap;
+        }
+      }
+    </style>
+    <script src="https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js"></script>
+    <script defer src="/static/js/scenario_detection.js"></script>
+  </head>
+  <body>
+    <header>
+      <div><h1>Scenario Detection Lab</h1></div>
+      <div class="nav">
+        <a href="/static/pivots.html">Pivots</a>
+        <a href="/static/bos_choch.html">BOS / CHoCH</a>
+        <a href="/static/liquidity_zones.html">Liquidity Zones</a>
+        <span class="tag">Liquidity Reclaim Scenarios</span>
+      </div>
+    </header>
+
+    <main>
+      <!-- ── Top: Config ─────────────────────────────────────────────── -->
+      <section class="panel controls">
+        <form id="scenario-form">
+          <div class="form-sections">
+            <!-- Data Source -->
+            <fieldset>
+              <legend>Data Source</legend>
+              <div class="form-row">
+                <div>
+                  <label class="field-label" for="symbol">Symbol</label>
+                  <input id="symbol" name="symbol" value="ETHUSDT" />
+                </div>
+                <div>
+                  <label class="field-label" for="timeframe">Timeframe</label>
+                  <input id="timeframe" name="timeframe" value="1h" />
+                </div>
+                <div>
+                  <label class="field-label" for="start">Start (UTC)</label>
+                  <input id="start" name="start" type="datetime-local" />
+                </div>
+                <div>
+                  <label class="field-label" for="end">End (UTC)</label>
+                  <input id="end" name="end" type="datetime-local" />
+                </div>
+                <div>
+                  <label class="field-label" for="source">Source</label>
+                  <select id="source" name="source">
+                    <option value="binance">Binance</option>
+                    <option value="csv">CSV</option>
+                  </select>
+                </div>
+                <div id="csv-path-field" hidden>
+                  <label class="field-label" for="csv_path">CSV Path</label>
+                  <input
+                    id="csv_path"
+                    name="csv_path"
+                    placeholder="/abs/path/to/candles.csv"
+                  />
+                </div>
+                <div>
+                  <label class="field-label" for="http_proxy">HTTP Proxy</label>
+                  <input
+                    id="http_proxy"
+                    name="http_proxy"
+                    placeholder="http://127.0.0.1:7890"
+                  />
+                </div>
+                <div>
+                  <label class="field-label" for="https_proxy"
+                    >HTTPS Proxy</label
+                  >
+                  <input
+                    id="https_proxy"
+                    name="https_proxy"
+                    placeholder="http://127.0.0.1:7890"
+                  />
+                </div>
+              </div>
+            </fieldset>
+
+            <!-- BOS / CHoCH Detection -->
+            <fieldset>
+              <legend>BOS / CHoCH Detection</legend>
+              <div class="form-row">
+                <div>
+                  <label class="field-label" for="direction_window"
+                    >Direction Window</label
+                  >
+                  <input
+                    id="direction_window"
+                    name="direction_window"
+                    type="number"
+                    min="1"
+                    value="3"
+                  />
+                </div>
+                <div>
+                  <label class="field-label" for="hunt_mode">Hunt Mode</label>
+                  <select id="hunt_mode" name="hunt_mode">
+                    <option value="wick">Wick</option>
+                    <option value="close">Close</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="field-label" for="min_swing_pct"
+                    >Min BOS Swing %
+                    <span style="opacity: 0.55">(0=off)</span></label
+                  >
+                  <input
+                    id="min_swing_pct"
+                    name="min_swing_pct"
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value="0"
+                  />
+                </div>
+                <label class="check wide">
+                  <input
+                    name="include_pullback_in_bos_level"
+                    type="checkbox"
+                    checked
+                  />
+                  Include pullback in BOS level
+                </label>
+                <label class="check">
+                  <input
+                    name="include_hunt_candle_in_choch_range"
+                    type="checkbox"
+                    checked
+                  />
+                  Include hunt candle
+                </label>
+              </div>
+            </fieldset>
+
+            <!-- Pivot Detection -->
+            <fieldset>
+              <legend>Pivot Detection</legend>
+              <div class="form-row">
+                <div>
+                  <label class="field-label" for="scan_length"
+                    >Scan Length</label
+                  >
+                  <input
+                    id="scan_length"
+                    name="scan_length"
+                    type="number"
+                    min="1"
+                    value="5000"
+                  />
+                </div>
+                <div>
+                  <label class="field-label" for="pivot_min_swing_pct"
+                    >Pivot Swing %
+                    <span style="opacity: 0.55">(0=off)</span></label
+                  >
+                  <input
+                    id="pivot_min_swing_pct"
+                    name="pivot_min_swing_pct"
+                    type="number"
+                    min="0"
+                    step="0.1"
+                    value="0"
+                  />
+                </div>
+              </div>
+            </fieldset>
+
+            <!-- Zone Matching (wider) -->
+            <fieldset class="fs-wide">
+              <legend>Zone Matching</legend>
+              <div class="form-row">
+                <div>
+                  <label class="field-label" for="intersection_method"
+                    >Intersection</label
+                  >
+                  <select id="intersection_method" name="intersection_method">
+                    <option value="body">Body</option>
+                    <option value="wick" selected>Wick</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="field-label" for="slope_attribute"
+                    >Slope Attribute</label
+                  >
+                  <select id="slope_attribute" name="slope_attribute">
+                    <option value="close">Close</option>
+                    <option value="open">Open</option>
+                    <option value="high">High</option>
+                    <option value="low">Low</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="field-label" for="up_pivot_filter"
+                    >UP Pivot Filter</label
+                  >
+                  <select id="up_pivot_filter" name="up_pivot_filter">
+                    <option value="BULLISH">Bullish</option>
+                    <option value="BEARISH">Bearish</option>
+                    <option value="ALL" selected>All</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="field-label" for="down_pivot_filter"
+                    >DOWN Pivot Filter</label
+                  >
+                  <select id="down_pivot_filter" name="down_pivot_filter">
+                    <option value="BEARISH">Bearish</option>
+                    <option value="BULLISH">Bullish</option>
+                    <option value="ALL" selected>All</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="field-label" for="pair_scan_order"
+                    >Scan Order</label
+                  >
+                  <select id="pair_scan_order" name="pair_scan_order">
+                    <option value="newest_to_oldest">Newest → Oldest</option>
+                    <option value="oldest_to_newest">Oldest → Newest</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="field-label" for="maximum_pivot_distance"
+                    >Max Pivot Distance</label
+                  >
+                  <input
+                    id="maximum_pivot_distance"
+                    name="maximum_pivot_distance"
+                    type="number"
+                    min="1"
+                    placeholder="No limit"
+                  />
+                </div>
+                <div>
+                  <label class="field-label" for="minimum_overlap"
+                    >Min Overlap</label
+                  >
+                  <input
+                    id="minimum_overlap"
+                    name="minimum_overlap"
+                    type="number"
+                    min="0"
+                    step="0.00000001"
+                    value="0"
+                  />
+                </div>
+                <div>
+                  <label class="field-label" for="minimum_overlap_ratio"
+                    >Min Overlap Ratio</label
+                  >
+                  <input
+                    id="minimum_overlap_ratio"
+                    name="minimum_overlap_ratio"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.0001"
+                    value="0"
+                  />
+                </div>
+                <div>
+                  <label class="field-label" for="slope_epsilon"
+                    >Slope Epsilon</label
+                  >
+                  <input
+                    id="slope_epsilon"
+                    name="slope_epsilon"
+                    type="number"
+                    min="0"
+                    step="0.00000001"
+                    value="0"
+                  />
+                </div>
+                <div>
+                  <label class="field-label" for="epsilon">Epsilon</label>
+                  <input
+                    id="epsilon"
+                    name="epsilon"
+                    type="number"
+                    min="0.0000000001"
+                    step="0.0000000001"
+                    value="0.0000000001"
+                  />
+                </div>
+                <label class="check">
+                  <input name="include_hunted_pivots" type="checkbox" checked />
+                  Include hunted pivots
+                </label>
+                <label class="check">
+                  <input name="allow_reuse" type="checkbox" checked />
+                  Allow pivot reuse
+                </label>
+                <label class="check">
+                  <input name="relaxed_slope" type="checkbox" />
+                  Relax slope check
+                </label>
+              </div>
+            </fieldset>
+
+            <!-- Representative Pivots -->
+            <fieldset>
+              <legend>Representative Pivots</legend>
+              <div class="form-row">
+                <div class="wide">
+                  <label class="field-label" for="representative_mode"
+                    >Mode</label
+                  >
+                  <select id="representative_mode" name="representative_mode">
+                    <option value="choch">CHoCH (structural)</option>
+                    <option value="latest_eligible">Latest eligible</option>
+                  </select>
+                </div>
+                <label class="check">
+                  <input
+                    name="representative_include_hunted"
+                    type="checkbox"
+                    checked
+                  />
+                  Allow hunted reps
+                </label>
+                <label class="check">
+                  <input
+                    name="allow_representative_fallback"
+                    type="checkbox"
+                    checked
+                  />
+                  Fallback to latest
+                </label>
+              </div>
+            </fieldset>
+
+            <!-- Scenario Detection -->
+            <fieldset>
+              <legend>Scenario Detection</legend>
+              <div class="form-row">
+                <div>
+                  <label class="field-label" for="zone_selection"
+                    >Zone Selection</label
+                  >
+                  <select id="zone_selection" name="zone_selection">
+                    <option value="all">All zones</option>
+                    <option value="level_1">Level 1 only</option>
+                    <option value="level_2">Level 2 only</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="field-label" for="scenario_epsilon"
+                    >Scenario Epsilon</label
+                  >
+                  <input
+                    id="scenario_epsilon"
+                    name="scenario_epsilon"
+                    type="number"
+                    min="0"
+                    step="0.0000000001"
+                    value="0.000000001"
+                  />
+                </div>
+                <div>
+                  <label class="field-label" for="bullish_pivot_selection"
+                    >Bullish Pivot Use</label
+                  >
+                  <select
+                    id="bullish_pivot_selection"
+                    name="bullish_pivot_selection"
+                  >
+                    <option value="non_hunted_only" selected>
+                      Non-hunted only
+                    </option>
+                    <option value="ignore_hunted_status">Ignore status</option>
+                  </select>
+                </div>
+                <div>
+                  <label class="field-label" for="bearish_pivot_selection"
+                    >Bearish Pivot Use</label
+                  >
+                  <select
+                    id="bearish_pivot_selection"
+                    name="bearish_pivot_selection"
+                  >
+                    <option value="non_hunted_only" selected>
+                      Non-hunted only
+                    </option>
+                    <option value="ignore_hunted_status">Ignore status</option>
+                  </select>
+                </div>
+                <div class="wide">
+                  <label class="field-label" for="current_index"
+                    >Current Candle Index</label
+                  >
+                  <input
+                    id="current_index"
+                    name="current_index"
+                    type="number"
+                    min="0"
+                    placeholder="Blank scans full history"
+                  />
+                </div>
+                <label class="check">
+                  <input name="current_candle_only" type="checkbox" />
+                  Latest candle only
+                </label>
+                <label class="check">
+                  <input name="mark_zone_hunted" type="checkbox" checked />
+                  Mark zone hunted
+                </label>
+                <label class="check wide">
+                  <input
+                    name="deduplicate_by_zone_and_current"
+                    type="checkbox"
+                    checked
+                  />
+                  Deduplicate per zone/current candle
+                </label>
+              </div>
+            </fieldset>
+          </div>
+          <!-- .form-sections -->
+
+          <div class="form-footer">
+            <button type="submit">Run Scenario Scan</button>
+            <div id="status" class="status"></div>
+            <div class="stats">
+              <div class="stat">
+                <strong id="scenario-count">—</strong>
+                <span>Scenarios</span>
+              </div>
+              <div class="stat">
+                <strong id="penetration-count">—</strong>
+                <span>Penetrations</span>
+              </div>
+              <div class="stat">
+                <strong id="segment-count">—</strong>
+                <span>Segments</span>
+              </div>
+              <div class="stat">
+                <strong id="zone-count">—</strong>
+                <span>Lines</span>
+              </div>
+              <div class="stat">
+                <strong id="pivot-count">—</strong>
+                <span>Pivots</span>
+              </div>
+            </div>
+          </div>
+        </form>
+      </section>
+
+      <!-- ── Below: Chart + Info ─────────────────────────────────────── -->
+      <div class="right-col">
+        <!-- Chart viewport (full width) -->
+        <section class="panel viewport">
+          <div class="viewport-top">
+            <div class="legend">
+              <span
+                ><i class="dot" style="background: var(--up)"></i>L1 UP</span
+              >
+              <span
+                ><i class="dot" style="background: var(--down)"></i>L1
+                DOWN</span
+              >
+              <span
+                ><i class="dot" style="background: var(--level-2-up)"></i>L2
+                UP</span
+              >
+              <span
+                ><i class="dot" style="background: var(--level-2-down)"></i>L2
+                DOWN</span
+              >
+              <span style="color: var(--up)"><i class="line"></i>BOS</span>
+              <span style="color: var(--level-2-up)"
+                ><i class="line dashed"></i>CHoCH</span
+              >
+              <span style="color: var(--reversal)"
+                ><i class="line dashed"></i>Reversal</span
+              >
+              <span style="color: #f8d66d"
+                ><i class="dot" style="background: #f8d66d"></i>Bullish
+                scenario</span
+              >
+              <span style="color: #ff8a7a"
+                ><i class="dot" style="background: #ff8a7a"></i>Bearish
+                scenario</span
+              >
+            </div>
+            <div class="toolbar">
+              <label class="chip">
+                <input id="show-scenarios" type="checkbox" checked />
+                Scenarios
+              </label>
+              <label class="chip">
+                <input id="show-structure-lines" type="checkbox" checked />
+                BOS/CHoCH
+              </label>
+              <label class="chip">
+                <input id="show-l1-zones" type="checkbox" checked />
+                L1 Lines
+              </label>
+              <label class="chip">
+                <input id="show-l2-zones" type="checkbox" checked />
+                L2 Lines
+              </label>
+              <label class="chip">
+                <input id="show-pivot-markers" type="checkbox" checked />
+                Pivots
+              </label>
+              <label class="chip" style="gap: 5px; cursor: default">
+                <span style="font-size: 10px; color: var(--muted)">type</span>
+                <select
+                  id="pivot-type-filter"
+                  style="
+                    width: auto;
+                    padding: 0 2px;
+                    background: transparent;
+                    border: none;
+                    color: var(--text);
+                    font: inherit;
+                    font-size: 11px;
+                    cursor: pointer;
+                    outline: none;
+                  "
+                >
+                  <option value="all">All</option>
+                  <option value="bullish">Bullish</option>
+                  <option value="bearish">Bearish</option>
+                </select>
+              </label>
+              <label class="chip">
+                <input id="show-representatives" type="checkbox" checked />
+                Reps
+              </label>
+              <label class="chip">
+                <input id="show-zone-labels" type="checkbox" checked />
+                Line labels
+              </label>
+              <label class="chip">
+                <input id="show-segment-bands" type="checkbox" checked />
+                Seg bands
+              </label>
+              <label class="chip">
+                <input id="show-candle-labels" type="checkbox" />
+                Candle labels
+              </label>
+              <label
+                class="chip"
+                style="gap: 4px; cursor: default"
+                title="Show labels when at most N candles are visible"
+              >
+                <span style="font-size: 10px; color: var(--muted)"
+                  >&#8804;</span
+                >
+                <input
+                  id="candle-label-threshold"
+                  type="number"
+                  min="10"
+                  max="500"
+                  value="150"
+                  style="
+                    width: 38px;
+                    padding: 0 2px;
+                    background: transparent;
+                    border: none;
+                    color: var(--text);
+                    font: inherit;
+                    font-size: 11px;
+                    text-align: center;
+                    cursor: text;
+                    outline: none;
+                  "
+                />
+              </label>
+              <span class="tag">Hunt-order</span>
+            </div>
+          </div>
+          <div class="chart-wrap">
+            <div class="overlay-panel">
+              <div></div>
+              <div class="overlay-note">
+                <strong>Reading The Overlay</strong>
+                <span
+                  >Scenario lines start at the liquidity-line hunt candle and
+                  end at the confirming pivot hunt.</span
+                >
+              </div>
+            </div>
+            <div id="chart"></div>
+          </div>
+        </section>
+
+        <!-- Below-chart info panels -->
+        <div class="below-chart">
+          <section class="panel info-panel">
+            <h2>
+              Scenarios
+              <span class="badge" id="scenario-count-badge">0</span>
+            </h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Dir</th>
+                    <th>Zone</th>
+                    <th>Hunt</th>
+                    <th>Confirm</th>
+                    <th>Pivot</th>
+                    <th>Price</th>
+                  </tr>
+                </thead>
+                <tbody id="scenario-tbody"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel info-panel">
+            <h2>
+              Liquidity Lines
+              <span class="badge" id="zone-count-badge">0</span>
+            </h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Dir</th>
+                    <th>Lvl</th>
+                    <th>Pivots</th>
+                    <th>Line</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="zone-tbody"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="panel info-panel">
+            <h2>
+              Direction Segments
+              <span class="badge" id="segment-count-badge">0</span>
+            </h2>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>Dir</th>
+                    <th>Start</th>
+                    <th>End</th>
+                    <th>Pivots</th>
+                    <th>L1 Lines</th>
+                    <th>Rep Idx</th>
+                  </tr>
+                </thead>
+                <tbody id="segment-tbody"></tbody>
+              </table>
+            </div>
+          </section>
+        </div>
+        <!-- .below-chart -->
+      </div>
+      <!-- .right-col -->
+    </main>
+  </body>
+</html>
