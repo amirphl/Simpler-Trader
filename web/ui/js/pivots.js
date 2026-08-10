@@ -102,7 +102,13 @@
       if (x == null || y == null) return;
 
       const label = document.createElement("div");
-      label.className = `pivot-marker-label ${marker.position === "belowBar" ? "below" : "above"}`;
+      label.className = [
+        "pivot-marker-label",
+        marker.position === "belowBar" ? "below" : "above",
+        marker.hunted ? "hunted" : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
       label.textContent = marker.text;
       label.style.color = marker.color;
       label.style.left = `${x}px`;
@@ -154,7 +160,10 @@
       const trgTime = Math.floor(new Date(p.trigger_time).getTime() / 1000);
 
       pushLabel(refTime, "Ref", p, idx);
-      pushLabel(pivotTime, "Pivot", p, idx, { shape: "square" });
+      pushLabel(pivotTime, "Pivot", p, idx, {
+        shape: "square",
+        hunted: p.haunted,
+      });
       pushLabel(trgTime, "Target", p, idx);
       pivotMarkerTimes[idx] = pivotTime;
     });
@@ -167,6 +176,7 @@
         group.text = `${group.text}\n${marker.text}`;
         group.size = Math.max(group.size || 1, marker.size || 1);
         if (marker.shape === "square") group.shape = "square";
+        if (marker.hunted) group.hunted = true;
       } else {
         groupedMarkers.set(key, { ...marker });
       }
