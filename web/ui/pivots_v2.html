@@ -273,13 +273,15 @@
       <section class="panel legend" aria-label="Algorithm legend">
         <div class="legend-item">
           <strong>Bullish candle</strong>: finds previous valid bullish candle
-          (separated by &ge;1 bearish), scans forward — if range low taken out
-          first, bearish pivot is at argmax high.
+          (separated by &ge;1 bearish), scans forward — if a later candle
+          crosses up from below the range low through the range high, the
+          hunted bearish pivot is at argmax high.
         </div>
         <div class="legend-item">
           <strong>Bearish candle</strong>: reverse — finds previous valid
-          bearish candle (separated by &ge;1 bullish), scans forward — if range
-          high taken out first, bullish pivot is at argmin low.
+          bearish candle (separated by &ge;1 bullish), scans forward — if a
+          later candle crosses down from above the range high through the range
+          low, the hunted bullish pivot is at argmin low.
         </div>
         <div class="legend-item">
           <strong>Candle labels</strong>: shown when &le; threshold candles are
@@ -294,6 +296,9 @@
           <strong>Bull pivot</strong>:
           <span style="color: var(--bull)">green</span> triangle below the pivot
           candle's low.
+        </div>
+        <div class="legend-item">
+          <strong>Hunted mark</strong>: rose dot attached to the pivot triangle.
         </div>
         <div class="legend-item">
           <strong>Min swing %</strong>: discard pivots whose range
