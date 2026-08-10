@@ -43,6 +43,7 @@
   const LABEL_BORDER_BEAR = "#fbbf24";
   const LABEL_BORDER_BULL = "#6ee7b7";
   const LABEL_NONE = "rgba(156,163,175,0.6)";
+  const HUNTED_MARK_COLOR = "#fb7185";
 
   let chart;
   let candleSeries;
@@ -182,6 +183,20 @@
                 overlayCtx.lineTo(pivotX - 7, triY + 2);
               }
               overlayCtx.closePath();
+              overlayCtx.fill();
+              overlayCtx.stroke();
+
+              overlayCtx.fillStyle = HUNTED_MARK_COLOR;
+              overlayCtx.strokeStyle = "#ffffff";
+              overlayCtx.lineWidth = 1.2;
+              overlayCtx.beginPath();
+              overlayCtx.arc(
+                pivotX + 9,
+                isBear ? triY - 9 : triY + 9,
+                4,
+                0,
+                Math.PI * 2,
+              );
               overlayCtx.fill();
               overlayCtx.stroke();
               overlayCtx.restore();
