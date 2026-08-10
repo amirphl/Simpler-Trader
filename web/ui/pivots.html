@@ -22,6 +22,7 @@
         --bear-even: #f59e0b;
         --bull-odd: #93c5fd;
         --bull-even: #86efac;
+        --hunted-mark: #fb7185;
       }
       * {
         box-sizing: border-box;
@@ -155,6 +156,18 @@
       }
       .pivot-marker-label.below {
         transform: translate(-50%, 0);
+      }
+      .pivot-marker-label.hunted::after {
+        content: "";
+        position: absolute;
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: var(--hunted-mark);
+        border: 1px solid #ffffff;
+        box-shadow: 0 0 0 2px rgba(251, 113, 133, 0.28);
+        right: -4px;
+        top: -4px;
       }
       select#pivot-list {
         width: 100%;
@@ -301,6 +314,10 @@
         <div class="legend-item">
           <strong>Pivot / P</strong>: confirmed swing pivot before the trigger
           candle.
+        </div>
+        <div class="legend-item">
+          <strong>Hunted mark</strong>: rose dot on the pivot label when that
+          pivot has been swept.
         </div>
         <div class="legend-item">
           <strong>Target</strong>: trigger candle that breaks the candidate
