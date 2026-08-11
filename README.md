@@ -6,10 +6,10 @@ This repository is a Python workspace for testing trading ideas against Binance 
 
 ## What Is Included
 
-- Backtesting for `engulfing`, `pinbar_magic_v3`, `stochastic_fsm`, and `strong_trend_stair`.
+- Backtesting for `engulfing`, `ema_avwap_pullback`, `pinbar_magic_v3`, `stochastic_fsm`, and `strong_trend_stair`.
 - Binance candle ingestion with PostgreSQL-backed storage.
 - A local web control panel for submitting and monitoring backtests.
-- Live trading coordinators for `heiken_ashi`, `pinbar_magic_v3`, and `strong_trend_stair`.
+- Live trading coordinators for `heiken_ashi`, `ema_avwap_pullback`, `pinbar_magic_v3`, and `strong_trend_stair`.
 - Bitunix futures adapter code plus helper scripts for positions, orders, and TP/SL management.
 - Telegram signal notification for live engulfing-pattern scans.
 - Experimental market-structure tools for pivots, BOS/CHOCH, and liquidity zones.
@@ -105,6 +105,7 @@ python -m cmd.backtest.main \
 Supported strategy names:
 
 - `engulfing`
+- `ema_avwap_pullback`
 - `pinbar_magic_v3`
 - `stochastic_fsm`
 - `strong_trend_stair`
@@ -121,10 +122,26 @@ Strategy settings can be supplied with CLI flags or environment variables. Run a
 
 ```bash
 python -m cmd.backtest.main --strategy engulfing --help
+python -m cmd.backtest.main --strategy ema_avwap_pullback --help
 python -m cmd.backtest.main --strategy pinbar_magic_v3 --help
 python -m cmd.backtest.main --strategy stochastic_fsm --help
 python -m cmd.backtest.main --strategy strong_trend_stair --help
 ```
+
+EMA + AVWAP backtests use the same setup, sizing, EMA, expiry, and
+protective-stop rules as live trading. Their default execution contract is
+`--entry-mode close --exit-mode close`: every entry signal and AVWAP target is
+decided from a completed candle, which is the only like-for-like comparison
+available from ordinary OHLCV history. Their environment counterparts are
+`STRATEGY_ENTRY_MODE`, `STRATEGY_EXIT_MODE`, and `STRATEGY_EXIT_BAND`; see
+`configs/backtest.ema_avwap_pullback.env.example` for a complete example.
+
+`live` remains available for scenario analysis, but it is clearly marked in
+the result metadata as an OHLC approximation: a forming-candle AVWAP and the
+sequence of live quotes cannot be reconstructed from a bar's final OHLCV.
+Rigid stops and trailing protection remain simulated over the documented
+deterministic OHLC path in either target mode, because production enforces
+those protections live.
 
 ## Web Control Panel
 
@@ -200,6 +217,7 @@ Create a strategy config from a template:
 
 ```bash
 cp configs/live_trading.heiken_ashi.env.example configs/live_trading.heiken_ashi.env
+cp configs/live_trading.ema_avwap_pullback.env.example configs/live_trading.ema_avwap_pullback.env
 cp configs/live_trading.pinbar_magic_v3.env.example configs/live_trading.pinbar_magic_v3.env
 cp configs/live_trading.strong_trend_stair.env.example configs/live_trading.strong_trend_stair.env
 ```
@@ -216,9 +234,23 @@ Or run a strategy module directly:
 
 ```bash
 python -m cmd.live_trading.heiken_ashi_main --config-file configs/live_trading.heiken_ashi.env
+python -m cmd.live_trading.ema_avwap_pullback_main --config-file configs/live_trading.ema_avwap_pullback.env
 python -m cmd.live_trading.pinbar_magic_v3_main --config-file configs/live_trading.pinbar_magic_v3.env
 python -m cmd.live_trading.strong_trend_stair_main --config-file configs/live_trading.strong_trend_stair.env
 ```
+
+Run EMA + AVWAP for multiple independent symbols from one shared config:
+
+```bash
+scripts/run_ema_avwap_pullback_live_multi.sh \
+  --config-file configs/live_trading.ema_avwap_pullback.env \
+  --symbols ETHUSDT,BTCUSDT,SOLUSDT \
+  --mode blocking
+```
+
+Use `--mode async` to start each symbol in the background with separate state,
+positions DB, kline DB, and log files under `./data/ema_avwap_pullback/<SYMBOL>/`
+and `./logs/ema_avwap_pullback/<SYMBOL>/`.
 
 Config precedence for live trading is:
 
@@ -244,6 +276,7 @@ Common live-trading settings include:
 Use `--help` on a specific module before changing live settings:
 
 ```bash
+python -m cmd.live_trading.ema_avwap_pullback_main --help
 python -m cmd.live_trading.pinbar_magic_v3_main --help
 ```
 
@@ -306,10 +339,10 @@ Run the unit test suite:
 python -m pytest
 ```
 
-Run the existing type checker configuration if Pyright is installed:
+Run the type checker:
 
 ```bash
-pyright
+ty check --exit-zero-on-warning
 ```
 
 Run npm tooling:
