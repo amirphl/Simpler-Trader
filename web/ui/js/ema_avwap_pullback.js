@@ -4,9 +4,17 @@ window.addEventListener("DOMContentLoaded", () => {
     baseline: {
       symbol: "ETHUSDT",
       timeframe: "1h",
-      leverage: "1",
-      equity_risk_pct: "1",
-      position_sizing_mode: "risk_distance",
+      leverage: "10",
+      position_notional_pct: "1",
+      minimum_balance_usdt: "0",
+      max_position_size_pct: "10",
+      max_setup_age_bars: "3",
+      max_entry_deviation_pct: "1",
+      position_sizing_mode: "risk_amount_per_price",
+      entry_mode: "close",
+      exit_mode: "close",
+      exit_band: "band_1",
+      max_entry_notional_usdt: "15",
       ema_length: "55",
       consecutive_count: "4",
       ema_validation_mode: "body",
@@ -14,7 +22,7 @@ window.addEventListener("DOMContentLoaded", () => {
       avwap_multiplier_1: "1",
       avwap_multiplier_2: "2",
       avwap_multiplier_3: "3",
-      rigid_stop_loss_pct: "0",
+      rigid_stop_loss_pct: "3",
       trailing_activation_threshold_pct: "0",
       trailing_gap_pct: "1",
       maker_fee_pct: "0.0002",
@@ -27,17 +35,35 @@ window.addEventListener("DOMContentLoaded", () => {
       initial_capital: "10000",
       warmup_days: "30",
       override_download: "false",
+      analysis_include_monte_carlo: "false",
+      monte_carlo_iterations: "1000",
+      monte_carlo_seed: "",
+      monte_carlo_block_size: "5",
+      monte_carlo_drawdown_threshold_pct: "30",
+      monte_carlo_missed_fill_probability: "0",
+      monte_carlo_extra_spread_min_pct: "0",
+      monte_carlo_extra_spread_max_pct: "0.001",
+      analysis_include_out_of_sample: "false",
+      oos_training_fraction: "0.6",
+      oos_validation_fraction: "0.2",
+      analysis_include_walk_forward: "false",
+      walk_forward_train_days: "90",
+      walk_forward_test_days: "30",
+      walk_forward_step_days: "",
+      walk_forward_anchored: "false",
+      analysis_include_parameter_perturbation: "false",
+      parameter_perturbation_samples: "25",
+      parameter_perturbation_seed: "",
     },
     trend_hunter: {
       ema_length: "89",
       consecutive_count: "5",
       ema_validation_mode: "wick",
       setup_waiting_replacement_mode: "keep_waiting",
-      position_sizing_mode: "risk_distance",
       rigid_stop_loss_pct: "0.8",
       trailing_activation_threshold_pct: "0.2",
       trailing_gap_pct: "0.8",
-      equity_risk_pct: "0.75",
+      position_notional_pct: "0.75",
       avwap_multiplier_2: "2.2",
     },
     faster_retests: {
@@ -46,7 +72,6 @@ window.addEventListener("DOMContentLoaded", () => {
       consecutive_count: "3",
       ema_validation_mode: "body",
       setup_waiting_replacement_mode: "replace_waiting",
-      position_sizing_mode: "risk_amount_per_price",
       rigid_stop_loss_pct: "0.5",
       trailing_activation_threshold_pct: "0",
       trailing_gap_pct: "1.4",
@@ -55,9 +80,8 @@ window.addEventListener("DOMContentLoaded", () => {
       warmup_days: "14",
     },
     defensive_costs: {
-      equity_risk_pct: "0.5",
+      position_notional_pct: "0.5",
       setup_waiting_replacement_mode: "keep_waiting",
-      position_sizing_mode: "risk_distance",
       rigid_stop_loss_pct: "0.4",
       maker_fee_pct: "0.0004",
       taker_fee_pct: "0.0008",
@@ -137,6 +161,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const host = document.getElementById("quick-metrics");
     if (!host) return;
     const stats = result?.report?.statistics || {};
+    const performance = stats.performance || {};
     const summary = [
       ["Trades", stats.total_trades],
       [
@@ -167,6 +192,18 @@ window.addEventListener("DOMContentLoaded", () => {
         "CAGR",
         typeof stats.cagr_pct === "number"
           ? `${stats.cagr_pct.toFixed(2)}%`
+          : "n/a",
+      ],
+      [
+        "Sortino",
+        typeof performance.sortino_ratio === "number"
+          ? performance.sortino_ratio.toFixed(2)
+          : "n/a",
+      ],
+      [
+        "Calmar",
+        typeof performance.calmar_ratio === "number"
+          ? performance.calmar_ratio.toFixed(2)
           : "n/a",
       ],
     ];
@@ -222,6 +259,145 @@ window.addEventListener("DOMContentLoaded", () => {
       : "n/a";
   }
 
+  function formatPct(value, digits = 2) {
+    return typeof value === "number" && Number.isFinite(value)
+      ? `${value.toFixed(digits)}%`
+      : "n/a";
+  }
+
+  function clearAndRenderTiles(host, items) {
+    if (!host) return;
+    host.innerHTML = "";
+    items.forEach(([label, value]) => {
+      const tile = document.createElement("div");
+      tile.className = "metric-tile";
+      const labelEl = document.createElement("span");
+      labelEl.className = "label";
+      labelEl.textContent = label;
+      const valueEl = document.createElement("span");
+      valueEl.className = "value";
+      valueEl.textContent = value;
+      tile.appendChild(labelEl);
+      tile.appendChild(valueEl);
+      host.appendChild(tile);
+    });
+  }
+
+  function renderDetailedPerformance(result) {
+    const host = document.getElementById("performance-metrics");
+    const output = document.getElementById("performance-details-output");
+    const stats = result?.report?.statistics || {};
+    const performance = stats.performance || {};
+
+    clearAndRenderTiles(host, [
+      ["Trades", performance.number_of_trades ?? stats.total_trades ?? "n/a"],
+      ["Expectancy", formatFloat(performance.expectancy_per_trade, 2)],
+      ["Avg Win", formatFloat(performance.average_win, 2)],
+      ["Avg Loss", formatFloat(performance.average_loss, 2)],
+      ["Profit Factor", formatFloat(performance.profit_factor, 2)],
+      ["Sharpe", formatFloat(performance.sharpe_ratio, 2)],
+      ["Sortino", formatFloat(performance.sortino_ratio, 2)],
+      ["Calmar", formatFloat(performance.calmar_ratio, 2)],
+      ["Max DD", formatPct(performance.maximum_drawdown_pct)],
+      ["Avg DD", formatPct(performance.average_drawdown_pct)],
+      ["Time Under Water", formatPct(performance.time_under_water_pct)],
+      ["Losing Streak", performance.longest_losing_streak ?? "n/a"],
+      ["Skew", formatFloat(performance.return_skewness, 3)],
+      ["Kurtosis", formatFloat(performance.return_excess_kurtosis, 3)],
+      ["Exposure Adj.", formatPct(performance.exposure_adjusted_return_pct)],
+      ["Turnover", formatFloat(performance.turnover, 2)],
+      ["Fee Drag", formatFloat(performance.fee_drag, 2)],
+      ["Slippage Drag", formatFloat(performance.slippage_drag, 2)],
+      ["Deflated Sharpe", formatFloat(performance.deflated_sharpe_ratio, 3)],
+    ]);
+
+    if (output) {
+      output.textContent = Object.keys(performance).length
+        ? JSON.stringify(performance, null, 2)
+        : "No detailed statistics yet.";
+    }
+  }
+
+  function renderRobustAnalysis(result) {
+    const host = document.getElementById("robust-analysis-metrics");
+    const output = document.getElementById("robust-analysis-output");
+    const robust = result?.robust_analysis || {};
+    const monteCarlo = robust.monte_carlo || {};
+    const reshuffle = monteCarlo.trade_reshuffling || {};
+    const block = monteCarlo.block_bootstrap || {};
+    const walkForward = robust.walk_forward || {};
+    const oos = robust.out_of_sample || {};
+    const perturbation = robust.parameter_perturbation || {};
+    const finalStats = oos.final_statistics || {};
+
+    clearAndRenderTiles(host, [
+      [
+        "MC DD p95",
+        typeof block.max_drawdown_pct_p95 === "number"
+          ? formatPct(block.max_drawdown_pct_p95)
+          : "n/a",
+      ],
+      [
+        "MC DD p99",
+        typeof block.max_drawdown_pct_p99 === "number"
+          ? formatPct(block.max_drawdown_pct_p99)
+          : "n/a",
+      ],
+      [
+        "MC Loss Prob",
+        typeof reshuffle.probability_of_loss === "number"
+          ? formatPct(reshuffle.probability_of_loss * 100)
+          : "n/a",
+      ],
+      [
+        "MC Threshold Prob",
+        typeof reshuffle.probability_of_drawdown_ge_threshold === "number"
+          ? formatPct(reshuffle.probability_of_drawdown_ge_threshold * 100)
+          : "n/a",
+      ],
+      [
+        "WF Folds",
+        Array.isArray(walkForward.folds) ? walkForward.folds.length : "n/a",
+      ],
+      [
+        "WF Net",
+        walkForward.combined_statistics
+          ? formatPct(walkForward.combined_statistics.net_profit_pct)
+          : "n/a",
+      ],
+      [
+        "Final OOS Net",
+        typeof finalStats.net_profit_pct === "number"
+          ? formatPct(finalStats.net_profit_pct)
+          : "n/a",
+      ],
+      [
+        "Perturb p05",
+        typeof perturbation.score_p05 === "number"
+          ? formatPct(perturbation.score_p05)
+          : "n/a",
+      ],
+      [
+        "Perturb p50",
+        typeof perturbation.score_p50 === "number"
+          ? formatPct(perturbation.score_p50)
+          : "n/a",
+      ],
+      [
+        "Perturb p95",
+        typeof perturbation.score_p95 === "number"
+          ? formatPct(perturbation.score_p95)
+          : "n/a",
+      ],
+    ]);
+
+    if (output) {
+      output.textContent = Object.keys(robust).length
+        ? JSON.stringify(robust, null, 2)
+        : "No robust analysis requested yet.";
+    }
+  }
+
   initBacktestPage({
     serializeForm(form) {
       const data = new FormData(form);
@@ -264,6 +440,14 @@ window.addEventListener("DOMContentLoaded", () => {
         const parsed = parseInt(normalizeNumeric(value), 10);
         return Number.isFinite(parsed) ? parsed : fallback;
       };
+      const optionalInt = (value) => {
+        const parsed = parseInt(normalizeNumeric(value), 10);
+        return Number.isFinite(parsed) ? parsed : null;
+      };
+      const optionalNum = (value) => {
+        const parsed = parseFloat(normalizeNumeric(value));
+        return Number.isFinite(parsed) ? parsed : null;
+      };
       const bool = (value, fallback) => {
         if (value === "true") return true;
         if (value === "false") return false;
@@ -283,15 +467,78 @@ window.addEventListener("DOMContentLoaded", () => {
         initial_capital: num(data.get("initial_capital"), 10000),
         override_download: bool(data.get("override_download"), false),
         warmup_days: int(data.get("warmup_days"), 30),
+        analysis: {
+          include_monte_carlo: bool(
+            data.get("analysis_include_monte_carlo"),
+            false,
+          ),
+          monte_carlo_iterations: int(data.get("monte_carlo_iterations"), 1000),
+          monte_carlo_seed: optionalInt(data.get("monte_carlo_seed")),
+          monte_carlo_block_size: int(data.get("monte_carlo_block_size"), 5),
+          monte_carlo_drawdown_threshold_pct: num(
+            data.get("monte_carlo_drawdown_threshold_pct"),
+            30,
+          ),
+          monte_carlo_missed_fill_probability: num(
+            data.get("monte_carlo_missed_fill_probability"),
+            0,
+          ),
+          monte_carlo_extra_spread_min_pct: num(
+            data.get("monte_carlo_extra_spread_min_pct"),
+            0,
+          ),
+          monte_carlo_extra_spread_max_pct: num(
+            data.get("monte_carlo_extra_spread_max_pct"),
+            0.001,
+          ),
+          include_out_of_sample: bool(
+            data.get("analysis_include_out_of_sample"),
+            false,
+          ),
+          oos_training_fraction: num(data.get("oos_training_fraction"), 0.6),
+          oos_validation_fraction: num(
+            data.get("oos_validation_fraction"),
+            0.2,
+          ),
+          include_walk_forward: bool(
+            data.get("analysis_include_walk_forward"),
+            false,
+          ),
+          walk_forward_train_days: int(data.get("walk_forward_train_days"), 90),
+          walk_forward_test_days: int(data.get("walk_forward_test_days"), 30),
+          walk_forward_step_days: optionalInt(
+            data.get("walk_forward_step_days"),
+          ),
+          walk_forward_anchored: bool(data.get("walk_forward_anchored"), false),
+          include_parameter_perturbation: bool(
+            data.get("analysis_include_parameter_perturbation"),
+            false,
+          ),
+          parameter_perturbation_samples: int(
+            data.get("parameter_perturbation_samples"),
+            25,
+          ),
+          parameter_perturbation_seed: optionalInt(
+            data.get("parameter_perturbation_seed"),
+          ),
+        },
         params: {
           symbol: text(data.get("symbol"), "ETHUSDT"),
           timeframe: text(data.get("timeframe"), "1h"),
-          leverage: num(data.get("leverage"), 1),
-          equity_risk_pct: num(data.get("equity_risk_pct"), 1),
+          leverage: num(data.get("leverage"), 10),
+          max_entry_notional_usdt: num(data.get("max_entry_notional_usdt"), 15),
+          max_position_size_pct: num(data.get("max_position_size_pct"), 10),
+          position_notional_pct: num(data.get("position_notional_pct"), 1),
+          minimum_balance_usdt: num(data.get("minimum_balance_usdt"), 0),
+          max_setup_age_bars: int(data.get("max_setup_age_bars"), 3),
+          max_entry_deviation_pct: num(data.get("max_entry_deviation_pct"), 1),
           position_sizing_mode: text(
             data.get("position_sizing_mode"),
-            "risk_distance",
+            "risk_amount_per_price",
           ),
+          entry_mode: text(data.get("entry_mode"), "close"),
+          exit_mode: text(data.get("exit_mode"), "close"),
+          exit_band: text(data.get("exit_band"), "band_1"),
           ema_length: int(data.get("ema_length"), 55),
           consecutive_count: int(data.get("consecutive_count"), 4),
           ema_validation_mode: text(data.get("ema_validation_mode"), "body"),
@@ -302,7 +549,7 @@ window.addEventListener("DOMContentLoaded", () => {
           avwap_multiplier_1: num(data.get("avwap_multiplier_1"), 1),
           avwap_multiplier_2: num(data.get("avwap_multiplier_2"), 2),
           avwap_multiplier_3: num(data.get("avwap_multiplier_3"), 3),
-          rigid_stop_loss_pct: num(data.get("rigid_stop_loss_pct"), 0),
+          rigid_stop_loss_pct: num(data.get("rigid_stop_loss_pct"), 3),
           trailing_activation_threshold_pct: num(
             data.get("trailing_activation_threshold_pct"),
             0,
@@ -397,6 +644,8 @@ window.addEventListener("DOMContentLoaded", () => {
         : [];
 
       renderQuickMetrics(result);
+      renderDetailedPerformance(result);
+      renderRobustAnalysis(result);
       renderConfigSnapshot(result);
       renderDecisionLog();
 
