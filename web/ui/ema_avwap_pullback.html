@@ -430,8 +430,8 @@
               <p class="eyebrow">Backtest Experiment Lab</p>
               <h1>EMA + AVWAP Pullback</h1>
               <p>
-                Tune the EMA gate, consecutive-candle trigger, AVWAP deviation
-                bands, and trailing rules, then inspect the exact decision log
+                Tune the EMA gate, consecutive-candle trigger, entry/exit mode,
+                and AVWAP target bands, then inspect the exact decision log
                 behind every fill and exit.
               </p>
             </div>
@@ -449,14 +449,14 @@
               <strong>Entry Logic</strong>
               <span
                 >Anchor VWAP at the first candle in the sequence and trigger on
-                the first pullback through the middle line.</span
+                either a live middle touch or a closed-candle pullback.</span
               >
             </div>
             <div class="hero-card">
               <strong>Risk Logic</strong>
               <span
-                >Stop lives on AVWAP band 2. Trailing can activate once price
-                penetrates band 1 by your chosen threshold.</span
+                >Profit exits use live AVWAP band 1 or 2 by mode. Protection is
+                the fixed rigid stop configured at entry.</span
               >
             </div>
             <div class="hero-card">
@@ -644,7 +644,7 @@
                   <h3>AVWAP Bands</h3>
                   <p>
                     These control the standard-deviation structure used for
-                    trailing activation and stop placement.
+                    live AVWAP profit targets and indicator reporting.
                   </p>
                   <div class="field-grid">
                     <label>
@@ -697,14 +697,14 @@
                 <div class="field-group">
                   <h3>Execution & Risk</h3>
                   <p>
-                    Model sizing, slippage, fees, and how aggressively trailing
-                    kicks in.
+                    Model entry policy, sizing, rigid-stop protection,
+                    slippage, and fees.
                   </p>
                   <div class="field-grid">
                     <label>
-                      Equity Risk %
+                      Position Notional %
                       <input
-                        name="equity_risk_pct"
+                        name="position_notional_pct"
                         type="text"
                         inputmode="decimal"
                         value="1"
@@ -715,18 +715,117 @@
                     <label>
                       Position Sizing Mode
                       <select name="position_sizing_mode">
-                        <option value="risk_distance" selected>
-                          Risk by Stop Distance
-                        </option>
-                        <option value="risk_amount_per_price">
-                          Risk Amount / Current Price
+                        <option value="risk_amount_per_price" selected>
+                          Live Notional Budget
                         </option>
                       </select>
                       <span class="hint"
-                        >`risk_distance` matches the original stop-distance
-                        sizing. `risk_amount_per_price` ignores stop distance
-                        for quantity, does not multiply by leverage, and
-                        reserves a small buffer for slippage and fees.</span
+                        >The live strategy sizes from a capped entry-notional
+                        budget, not stop distance, with a slippage and taker
+                        fee buffer.</span
+                      >
+                    </label>
+                    <label>
+                      Entry Mode
+                      <select name="entry_mode">
+                        <option value="close" selected>Candle-Close Pullback</option>
+                        <option value="live">Live AVWAP Middle (OHLC approximation)</option>
+                      </select>
+                      <span class="hint"
+                        >Use Candle-Close for comparable historical results.
+                        Live requires the first observed price to already be
+                        at or past the AVWAP middle and can only be approximated
+                        from OHLC data.</span
+                      >
+                    </label>
+                    <label>
+                      Target Exit Mode
+                      <select name="exit_mode">
+                        <option value="close" selected>Candle-Close Target</option>
+                        <option value="live">Live Target Touch (OHLC approximation)</option>
+                      </select>
+                      <span class="hint"
+                        >Protective rigid and trailing stops remain live in
+                        both modes; this setting controls the AVWAP target.
+                        Use Candle-Close for comparable historical results.</span
+                      >
+                    </label>
+                    <label>
+                      Target Exit Band
+                      <select name="exit_band">
+                        <option value="band_1" selected>AVWAP Band 1</option>
+                        <option value="band_2">AVWAP Band 2</option>
+                      </select>
+                    </label>
+                    <label>
+                      Max Entry Notional (USDT)
+                      <input
+                        name="max_entry_notional_usdt"
+                        type="number"
+                        value="15"
+                        step="0.01"
+                        min="0.01"
+                        required
+                      />
+                      <span class="hint"
+                        >Absolute cap on the entry-notional budget.</span
+                      >
+                    </label>
+                    <label>
+                      Minimum Balance (USDT)
+                      <input
+                        name="minimum_balance_usdt"
+                        type="number"
+                        value="0"
+                        step="0.01"
+                        min="0"
+                        required
+                      />
+                      <span class="hint"
+                        >Skip entries when available equity is at or below
+                        this live-trading safety floor.</span
+                      >
+                    </label>
+                    <label>
+                      Max Position Size %
+                      <input
+                        name="max_position_size_pct"
+                        type="number"
+                        value="10"
+                        step="0.1"
+                        min="0.01"
+                        max="100"
+                        required
+                      />
+                      <span class="hint"
+                        >Caps the entry-notional budget as a percent of
+                        available equity.</span
+                      >
+                    </label>
+                    <label>
+                      Max Setup Age (Bars)
+                      <input
+                        name="max_setup_age_bars"
+                        type="number"
+                        value="3"
+                        step="1"
+                        min="1"
+                        required
+                      />
+                    </label>
+                    <label>
+                      Max Entry Deviation %
+                      <input
+                        name="max_entry_deviation_pct"
+                        type="number"
+                        value="1"
+                        step="0.1"
+                        min="0"
+                        required
+                      />
+                      <span class="hint"
+                        >Reject a live-price proxy that is too far from
+                        AVWAP.</span
                       >
                     </label>
                     <label>
@@ -745,14 +844,14 @@
                       <input
                         name="rigid_stop_loss_pct"
                         type="number"
-                        value="0"
+                        value="3"
                         step="0.1"
-                        min="0"
+                        min="0.01"
                         required
                       />
                       <span class="hint"
-                        >A fixed stop from executed entry price. `0` disables
-                        it. Once set on entry, it never updates.</span
+                        >A required fixed protective stop from executed entry
+                        price. AVWAP bands are profit targets, not stops.</span
                       >
                     </label>
                     <label>
@@ -765,6 +864,11 @@
                         min="0"
                         required
                       />
+                      <span class="hint"
+                        >After activation, trails the best favourable price.
+                        The backtest uses its documented OHLC path proxy for
+                        live tick behaviour.</span
+                      >
                     </label>
                     <label>
                       Risk Free Rate
@@ -834,6 +938,197 @@
                         </option>
                         <option value="true">Force Refresh</option>
                       </select>
+                    </label>
+                  </div>
+                </div>
+
+                <div class="field-group">
+                  <h3>Robust Analysis</h3>
+                  <p>
+                    Optional validation jobs run after the main backtest and use
+                    cached candles from the first pass.
+                  </p>
+                  <div class="field-grid">
+                    <label>
+                      Monte Carlo
+                      <select name="analysis_include_monte_carlo">
+                        <option value="false" selected>Off</option>
+                        <option value="true">On</option>
+                      </select>
+                    </label>
+                    <label>
+                      MC Iterations
+                      <input
+                        name="monte_carlo_iterations"
+                        type="number"
+                        value="1000"
+                        step="100"
+                        min="1"
+                        max="20000"
+                      />
+                    </label>
+                    <label>
+                      MC Seed
+                      <input
+                        name="monte_carlo_seed"
+                        type="number"
+                        value=""
+                        step="1"
+                        placeholder="optional"
+                      />
+                    </label>
+                    <label>
+                      MC Block Size
+                      <input
+                        name="monte_carlo_block_size"
+                        type="number"
+                        value="5"
+                        step="1"
+                        min="1"
+                      />
+                    </label>
+                    <label>
+                      MC Drawdown Threshold %
+                      <input
+                        name="monte_carlo_drawdown_threshold_pct"
+                        type="number"
+                        value="30"
+                        step="1"
+                        min="0"
+                      />
+                    </label>
+                    <label>
+                      Missed Fill Probability
+                      <input
+                        name="monte_carlo_missed_fill_probability"
+                        type="number"
+                        value="0"
+                        step="0.01"
+                        min="0"
+                        max="1"
+                      />
+                    </label>
+                    <label>
+                      Extra Spread Min
+                      <input
+                        name="monte_carlo_extra_spread_min_pct"
+                        type="number"
+                        value="0"
+                        step="0.0001"
+                        min="0"
+                      />
+                    </label>
+                    <label>
+                      Extra Spread Max
+                      <input
+                        name="monte_carlo_extra_spread_max_pct"
+                        type="number"
+                        value="0.001"
+                        step="0.0001"
+                        min="0"
+                      />
+                    </label>
+                    <label>
+                      Out-of-Sample Split
+                      <select name="analysis_include_out_of_sample">
+                        <option value="false" selected>Off</option>
+                        <option value="true">On</option>
+                      </select>
+                    </label>
+                    <label>
+                      Train Fraction
+                      <input
+                        name="oos_training_fraction"
+                        type="number"
+                        value="0.6"
+                        step="0.05"
+                        min="0.05"
+                        max="0.9"
+                      />
+                    </label>
+                    <label>
+                      Validation Fraction
+                      <input
+                        name="oos_validation_fraction"
+                        type="number"
+                        value="0.2"
+                        step="0.05"
+                        min="0.05"
+                        max="0.9"
+                      />
+                    </label>
+                    <label>
+                      Walk Forward
+                      <select name="analysis_include_walk_forward">
+                        <option value="false" selected>Off</option>
+                        <option value="true">On</option>
+                      </select>
+                    </label>
+                    <label>
+                      WF Train Days
+                      <input
+                        name="walk_forward_train_days"
+                        type="number"
+                        value="90"
+                        step="1"
+                        min="1"
+                      />
+                    </label>
+                    <label>
+                      WF Test Days
+                      <input
+                        name="walk_forward_test_days"
+                        type="number"
+                        value="30"
+                        step="1"
+                        min="1"
+                      />
+                    </label>
+                    <label>
+                      WF Step Days
+                      <input
+                        name="walk_forward_step_days"
+                        type="number"
+                        value=""
+                        step="1"
+                        min="1"
+                        placeholder="defaults to test days"
+                      />
+                    </label>
+                    <label>
+                      WF Mode
+                      <select name="walk_forward_anchored">
+                        <option value="false" selected>Rolling</option>
+                        <option value="true">Anchored</option>
+                      </select>
+                    </label>
+                    <label>
+                      Parameter Perturbation
+                      <select name="analysis_include_parameter_perturbation">
+                        <option value="false" selected>Off</option>
+                        <option value="true">On</option>
+                      </select>
+                    </label>
+                    <label>
+                      Perturbation Samples
+                      <input
+                        name="parameter_perturbation_samples"
+                        type="number"
+                        value="25"
+                        step="1"
+                        min="1"
+                        max="250"
+                      />
+                    </label>
+                    <label>
+                      Perturbation Seed
+                      <input
+                        name="parameter_perturbation_seed"
+                        type="number"
+                        value=""
+                        step="1"
+                        placeholder="optional"
+                      />
                     </label>
                   </div>
                 </div>
@@ -932,6 +1227,34 @@
 
           <section class="panel">
             <div class="panel-header">
+              <h2>Performance Statistics</h2>
+              <p>
+                The detailed statistics block is calculated from closed trades
+                and included in every EMA + AVWAP report.
+              </p>
+            </div>
+            <div class="panel-body">
+              <div id="performance-metrics" class="summary-grid"></div>
+              <pre id="performance-details-output" style="margin-top: 1rem">No detailed statistics yet.</pre>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
+              <h2>Robust Analysis</h2>
+              <p>
+                Monte Carlo, out-of-sample, walk-forward, and perturbation
+                outputs appear here when requested.
+              </p>
+            </div>
+            <div class="panel-body">
+              <div id="robust-analysis-metrics" class="summary-grid"></div>
+              <pre id="robust-analysis-output" style="margin-top: 1rem">No robust analysis requested yet.</pre>
+            </div>
+          </section>
+
+          <section class="panel">
+            <div class="panel-header">
               <h2>Run Breakdown</h2>
               <p>
                 View the exact config that ran, raw stats, and the recorded
@@ -961,7 +1284,7 @@
               <h2>Decision Log</h2>
               <p>
                 Filter the per-decision metadata emitted by the strategy to
-                validate setups, entries, trailing changes, and exits.
+                validate setups, entries, target/stop exits, and execution assumptions.
               </p>
             </div>
             <div class="panel-body">
