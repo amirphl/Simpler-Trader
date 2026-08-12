@@ -39,6 +39,8 @@ export BACKTEST_BASIC_AUTH_PASSWORD
 The password must be at least 16 characters. If omitted on the first run, the
 deployer creates a strong password and prints it once at the end. On later runs
 it preserves the existing credential file unless a new password is supplied.
+The password file is owned by `root:www-data` with mode `0640`, allowing Nginx
+workers to authenticate requests without exposing it to other local users.
 
 ## Deploy
 

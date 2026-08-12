@@ -16,6 +16,7 @@ umask 077
 
 readonly APP_USER="debian"
 readonly APP_GROUP="debian"
+readonly NGINX_GROUP="www-data"
 readonly PROJECT_ROOT="/home/debian/Simpler-Trader"
 readonly DOMAIN="jzbe.jazebeh.ir"
 readonly HTTPS_PORT="15443"
@@ -104,6 +105,7 @@ check_project() {
     [[ -f "$PROJECT_ROOT/cmd/web/main.py" ]] || die "The backtest web module is missing from $PROJECT_ROOT"
     id "$APP_USER" >/dev/null 2>&1 || die "Application user does not exist: $APP_USER"
     getent group "$APP_GROUP" >/dev/null || die "Application group does not exist: $APP_GROUP"
+    getent group "$NGINX_GROUP" >/dev/null || die "Nginx group does not exist: $NGINX_GROUP"
 }
 
 check_certificates() {
@@ -290,6 +292,8 @@ configure_basic_auth() {
 
     if [[ -z "$auth_password" && -f "$HTPASSWD_FILE" ]]; then
         log "Keeping existing Nginx basic-auth credentials."
+        chown "root:${NGINX_GROUP}" "$HTPASSWD_FILE"
+        chmod 0640 "$HTPASSWD_FILE"
         return
     fi
     if [[ -z "$auth_password" ]]; then
@@ -298,7 +302,9 @@ configure_basic_auth() {
     fi
     [[ ${#auth_password} -ge 16 ]] || die "BACKTEST_BASIC_AUTH_PASSWORD must be at least 16 characters."
     printf '%s\n' "$auth_password" | htpasswd -iB -c "$HTPASSWD_FILE" "$auth_user" >/dev/null
-    chown root:root "$HTPASSWD_FILE"
+    # Authentication is evaluated by unprivileged Nginx worker processes.
+    # Keep the file root-owned while granting only Nginx's service group read access.
+    chown "root:${NGINX_GROUP}" "$HTPASSWD_FILE"
     chmod 0640 "$HTPASSWD_FILE"
 }
 
