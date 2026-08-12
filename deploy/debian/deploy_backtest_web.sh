@@ -163,6 +163,12 @@ run_as_app() {
     runuser --user "$APP_USER" -- "$@"
 }
 
+run_as_postgres() {
+    # runuser preserves the caller's working directory. The application
+    # checkout is deliberately not traversable by the postgres account.
+    runuser --user postgres -- sh -c 'cd / && exec "$@"' sh "$@"
+}
+
 prepare_virtualenv() {
     install -d -o "$APP_USER" -g "$APP_GROUP" -m 0750 \
         "$PROJECT_ROOT/data" "$PROJECT_ROOT/results" "$PROJECT_ROOT/logs"
@@ -208,18 +214,18 @@ provision_local_database() {
 
     systemctl enable --now postgresql
     log "Provisioning local PostgreSQL database $db_name."
-    if ! runuser --user postgres -- psql --tuples-only --no-align \
+    if ! run_as_postgres psql --tuples-only --no-align \
         --command "SELECT 1 FROM pg_roles WHERE rolname = $(sql_literal "$db_user")" | grep -qx '1'; then
-        runuser --user postgres -- psql --set=ON_ERROR_STOP=1 \
+        run_as_postgres psql --set=ON_ERROR_STOP=1 \
             --command "CREATE ROLE \"${db_user}\" LOGIN PASSWORD $(sql_literal "$db_password")"
     else
         # Keep a supplied/generated password in sync on repeat deployments.
-        runuser --user postgres -- psql --set=ON_ERROR_STOP=1 \
+        run_as_postgres psql --set=ON_ERROR_STOP=1 \
             --command "ALTER ROLE \"${db_user}\" PASSWORD $(sql_literal "$db_password")"
     fi
-    if ! runuser --user postgres -- psql --tuples-only --no-align \
+    if ! run_as_postgres psql --tuples-only --no-align \
         --command "SELECT 1 FROM pg_database WHERE datname = $(sql_literal "$db_name")" | grep -qx '1'; then
-        runuser --user postgres -- createdb --owner="$db_user" "$db_name"
+        run_as_postgres createdb --owner="$db_user" "$db_name"
     fi
 
     install -d -o "$APP_USER" -g "$APP_GROUP" -m 0750 "$(dirname "$POSTGRES_ENV")"
@@ -308,8 +314,7 @@ install_service_and_nginx() {
         journalctl --no-pager -u "$SERVICE_NAME" -n 80 >&2 || true
         die "The backtest service did not start."
     fi
-    curl --fail --silent --show-error --max-time 15 \
-        -H 'X-Forwarded-Proto: https' "http://${BACKEND_HOST}:${BACKEND_PORT}/" >/dev/null
+    wait_for_backtest_backend
 
     nginx -t
     nginx -T 2>&1 | grep -Fq "configuration file ${NGINX_ENABLED}:" \
@@ -320,6 +325,24 @@ install_service_and_nginx() {
     curl --silent --show-error --max-time 15 --resolve \
         "${DOMAIN}:${HTTPS_PORT}:127.0.0.1" \
         -o /dev/null -w '%{http_code}' "https://${DOMAIN}:${HTTPS_PORT}/" | grep -qx '401'
+}
+
+wait_for_backtest_backend() {
+    local attempt
+    for ((attempt = 1; attempt <= 30; attempt++)); do
+        if curl --fail --silent --show-error --max-time 2 \
+            -H 'X-Forwarded-Proto: https' "http://${BACKEND_HOST}:${BACKEND_PORT}/" >/dev/null; then
+            log "Backtest service is ready on ${BACKEND_HOST}:${BACKEND_PORT}."
+            return
+        fi
+        if ! systemctl is-active --quiet "$SERVICE_NAME"; then
+            journalctl --no-pager -u "$SERVICE_NAME" -n 80 >&2 || true
+            die "The backtest service stopped before it became ready."
+        fi
+        sleep 1
+    done
+    journalctl --no-pager -u "$SERVICE_NAME" -n 80 >&2 || true
+    die "The backtest service did not listen on ${BACKEND_HOST}:${BACKEND_PORT} within 30 seconds."
 }
 
 configure_certificate_reload_hook() {
