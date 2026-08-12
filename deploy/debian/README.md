@@ -21,8 +21,10 @@ consume CPU, bandwidth, and database space.
    `git pull` or change branches.
 2. Confirm that DNS for `jzbe.jazebeh.ir` reaches this server and that the
    certificate files already exist at the paths above.
-3. Allow inbound TCP `15443` in the hosting-provider firewall. If UFW is active,
-   the script adds that rule automatically.
+3. Allow inbound TCP `15443` in the hosting-provider firewall. The script uses
+   your Debian **nftables** firewall (not UFW or iptables), persists an allow
+   rule for that port, and adds an explicit inbound `DROP` rule for PostgreSQL
+   TCP 5432.
 4. Use Debian 12 or later (Python 3.10+ is mandatory). The script installs the
    remaining OS and Python dependencies.
 
@@ -49,6 +51,11 @@ By default, the script provisions a local PostgreSQL database and writes its
 generated credential to `configs/postgres.env` with restrictive permissions. It
 then checks database access by opening the actual candle store, which also
 creates the `candles` table/index when needed.
+
+PostgreSQL is never exposed by this deployment: the generated connection uses
+`127.0.0.1`, the deployer rejects a local PostgreSQL listener other than
+`127.0.0.1`/`::1`, and it persists an nftables `DROP` rule for inbound TCP
+`5432`. Do not create a cloud-provider firewall rule for 5432.
 
 To use an already-managed PostgreSQL server instead, create the real,
 non-template `configs/postgres.env` first (copy

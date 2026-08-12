@@ -32,6 +32,10 @@ readonly NGINX_ENABLED="/etc/nginx/sites-enabled/${DOMAIN}-backtest.conf"
 readonly HTPASSWD_FILE="/etc/nginx/.htpasswd-simpler-trader-backtest"
 readonly RUNTIME_ENV_DIR="/etc/simpler-trader"
 readonly RUNTIME_ENV="${RUNTIME_ENV_DIR}/backtest-web.env"
+readonly NFTABLES_MAIN_CONFIG="/etc/nftables.conf"
+readonly NFTABLES_DROPIN_DIR="/etc/nftables.d"
+readonly NFTABLES_DROPIN="${NFTABLES_DROPIN_DIR}/simpler-trader-backtest.nft"
+readonly NFTABLES_DROPIN_INCLUDE="include \"${NFTABLES_DROPIN_DIR}/*.nft\""
 readonly CERT_DIR="/etc/letsencrypt/live/${DOMAIN}"
 readonly CERT_FILE="${CERT_DIR}/fullchain.pem"
 readonly KEY_FILE="${CERT_DIR}/privkey.pem"
@@ -146,7 +150,7 @@ check_port_conflict() {
 }
 
 install_packages() {
-    local -a packages=(ca-certificates curl openssl python3 python3-venv python3-pip nginx apache2-utils)
+    local -a packages=(ca-certificates curl openssl python3 python3-venv python3-pip nginx apache2-utils iproute2 nftables)
     if [[ "$DATABASE_MODE" == "local" ]]; then
         packages+=(postgresql postgresql-client)
     fi
@@ -345,13 +349,58 @@ check_binance_connectivity() {
     fi
 }
 
-open_ufw_port_if_needed() {
-    if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then
-        log "Allowing TCP ${HTTPS_PORT} through UFW."
-        ufw allow "${HTTPS_PORT}/tcp"
-    else
-        warn "UFW is not active. Ensure any provider or host firewall allows TCP ${HTTPS_PORT}."
+ensure_local_postgres_is_loopback_only() {
+    [[ "$DATABASE_MODE" == "local" ]] || return
+    local listeners
+    listeners="$(ss -ltn "sport = :5432" | awk 'NR > 1 { print $4 }')"
+    [[ -n "$listeners" ]] || die "PostgreSQL is not listening on TCP port 5432."
+    if printf '%s\n' "$listeners" | grep -Evq '^(127\.0\.0\.1|\[::1\]):5432$'; then
+        die "PostgreSQL has a non-loopback listener (${listeners}). Set listen_addresses to localhost/127.0.0.1 before continuing."
     fi
+}
+
+check_nftables_firewall() {
+    command -v nft >/dev/null || die "nftables is required."
+    [[ -f "$NFTABLES_MAIN_CONFIG" ]] || die "nftables config is missing: $NFTABLES_MAIN_CONFIG"
+    [[ -f "$NFTABLES_DROPIN" ]] || die "nftables backtest rule file is missing: $NFTABLES_DROPIN"
+    grep -Fq "$NFTABLES_DROPIN_INCLUDE" "$NFTABLES_MAIN_CONFIG" \
+        || die "${NFTABLES_MAIN_CONFIG} does not include ${NFTABLES_DROPIN_DIR}."
+    nft list chain inet filter input | grep -Fq 'tcp dport 5432 drop' \
+        || die "Missing nftables inbound PostgreSQL deny rule."
+    nft list chain inet filter input | grep -Fq "tcp dport ${HTTPS_PORT} accept" \
+        || die "Missing nftables TCP ${HTTPS_PORT} allow rule."
+}
+
+configure_nftables_firewall() {
+    command -v nft >/dev/null || die "nftables is required."
+    [[ -f "$NFTABLES_MAIN_CONFIG" ]] \
+        || die "Expected nftables configuration is missing: $NFTABLES_MAIN_CONFIG"
+    grep -Fq 'table inet filter' "$NFTABLES_MAIN_CONFIG" \
+        || die "Expected table inet filter is not defined in $NFTABLES_MAIN_CONFIG"
+    grep -Eq '^[[:space:]]*chain[[:space:]]+input[[:space:]]*\{' "$NFTABLES_MAIN_CONFIG" \
+        || die "Expected input chain is not defined in $NFTABLES_MAIN_CONFIG"
+
+    install -d -o root -g root -m 0755 "$NFTABLES_DROPIN_DIR"
+    install -o root -g root -m 0644 /dev/null "$NFTABLES_DROPIN"
+    cat >"$NFTABLES_DROPIN" <<EOF
+# Managed by Simpler-Trader's Debian deployment.
+# PostgreSQL remains local-only; deny the port explicitly even though the
+# input chain's policy is drop, so later broad ACCEPT rules cannot expose it.
+add rule inet filter input tcp dport 5432 drop comment "simpler-trader-backtest: deny PostgreSQL"
+add rule inet filter input tcp dport ${HTTPS_PORT} accept comment "simpler-trader-backtest: allow HTTPS"
+EOF
+
+    if ! grep -Fq "$NFTABLES_DROPIN_INCLUDE" "$NFTABLES_MAIN_CONFIG"; then
+        printf '\n%s\n' "$NFTABLES_DROPIN_INCLUDE" >>"$NFTABLES_MAIN_CONFIG"
+    fi
+
+    # Check the complete persisted ruleset before replacing the active one.
+    nft --check --file "$NFTABLES_MAIN_CONFIG"
+    systemctl enable nftables
+    systemctl reload-or-restart nftables
+    systemctl is-active --quiet nftables || die "nftables did not start."
+    check_nftables_firewall
+    log "nftables configured: TCP ${HTTPS_PORT} allowed; inbound PostgreSQL TCP 5432 denied."
 }
 
 check_running_deployment() {
@@ -386,7 +435,9 @@ run_check_only() {
     command -v htpasswd >/dev/null || die "apache2-utils (htpasswd) is not installed. Run without --check to install it."
     [[ -x "$PYTHON_BIN" ]] || die "Virtual environment is missing: $VENV_DIR. Run without --check to create it."
     [[ -s "$POSTGRES_ENV" ]] || die "PostgreSQL config is missing: $POSTGRES_ENV. Run without --check to create it."
+    ensure_local_postgres_is_loopback_only
     verify_database_connection_only
+    check_nftables_firewall
     check_running_deployment
     log "All non-mutating deployment checks passed."
 }
@@ -414,16 +465,17 @@ main() {
     check_port_conflict
     if [[ "$DATABASE_MODE" == "local" ]]; then
         systemctl enable --now postgresql
+        ensure_local_postgres_is_loopback_only
     fi
     prepare_virtualenv
     ensure_database_config
     verify_database
     write_runtime_environment
     configure_basic_auth
+    configure_nftables_firewall
     install_service_and_nginx
     configure_certificate_reload_hook
     check_binance_connectivity
-    open_ufw_port_if_needed
 
     log "Deployment complete."
     log "EMA + AVWAP panel: https://${DOMAIN}:${HTTPS_PORT}/static/ema_avwap_pullback.html"
