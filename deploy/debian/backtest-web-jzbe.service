@@ -1,0 +1,22 @@
+[Unit]
+Description=Simpler-Trader backtest web control panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=debian
+Group=debian
+WorkingDirectory=/home/debian/Simpler-Trader
+EnvironmentFile=/etc/simpler-trader/backtest-web.env
+ExecStart=/home/debian/Simpler-Trader/.venv/bin/python -m cmd.web.main --host 127.0.0.1 --port 9092 --postgres-config-file /home/debian/Simpler-Trader/configs/postgres.env
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGINT
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
