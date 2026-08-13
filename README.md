@@ -354,12 +354,14 @@ npm exec eslint .
 
 ## Deployment Notes
 
-The `deploy/` directory contains example service configuration:
+For the Debian deployment at `jzbe.jazebeh.ir:15443`, use the checked-in
+end-to-end deployer and guide in [deploy/debian/README.md](deploy/debian/README.md).
+It creates a systemd service, configures Nginx TLS and WebSocket proxying,
+creates or validates the PostgreSQL candle store, and requires HTTP Basic
+Authentication before exposing the panel.
 
-- `deploy/systemd/backtest-web.service`
-- `deploy/nginx/balut.jaazebeh.ir.conf`
-
-Treat these as starting points. Before exposing the web panel, review trusted hosts, CORS, HTTPS settings, firewall rules, process supervision, logs, and credential storage.
+The older files in `deploy/systemd/` and `deploy/nginx/` are example templates
+for other hosts; do not apply them unchanged to this deployment.
 
 ## License
 
