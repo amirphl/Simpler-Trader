@@ -4,17 +4,18 @@ window.addEventListener("DOMContentLoaded", () => {
     baseline: {
       symbol: "ETHUSDT",
       timeframe: "1h",
-      leverage: "10",
-      position_notional_pct: "1",
+      start: "2025-01-01T00:00",
+      leverage: "1",
+      position_notional_pct: "100",
       minimum_balance_usdt: "0",
-      max_position_size_pct: "10",
+      max_position_size_pct: "100",
       max_setup_age_bars: "3",
       max_entry_deviation_pct: "1",
       position_sizing_mode: "risk_amount_per_price",
       entry_mode: "close",
-      exit_mode: "close",
+      exit_mode: "live",
       exit_band: "band_1",
-      max_entry_notional_usdt: "15",
+      max_entry_notional_usdt: "100",
       ema_length: "55",
       consecutive_count: "4",
       ema_validation_mode: "body",
@@ -32,7 +33,7 @@ window.addEventListener("DOMContentLoaded", () => {
       use_gap_cross_detection: "true",
       max_decision_log_entries: "20000",
       risk_free_rate: "0",
-      initial_capital: "10000",
+      initial_capital: "100",
       warmup_days: "30",
       override_download: "false",
       analysis_include_monte_carlo: "false",
@@ -94,9 +95,8 @@ window.addEventListener("DOMContentLoaded", () => {
 
   let latestDecisionLog = [];
 
-  function isoLocalInputValue(date) {
-    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
-    return local.toISOString().slice(0, 16);
+  function isoUtcInputValue(date) {
+    return date.toISOString().slice(0, 16);
   }
 
   function setDefaultDates(form) {
@@ -108,13 +108,14 @@ window.addEventListener("DOMContentLoaded", () => {
     ) {
       return;
     }
-    if (startInput.value && endInput.value) {
-      return;
-    }
     const end = new Date();
     const start = new Date(end.getTime() - 90 * 24 * 60 * 60 * 1000);
-    endInput.value = isoLocalInputValue(end);
-    startInput.value = isoLocalInputValue(start);
+    if (!endInput.value) {
+      endInput.value = isoUtcInputValue(end);
+    }
+    if (!startInput.value) {
+      startInput.value = isoUtcInputValue(start);
+    }
   }
 
   function applyValues(form, values) {
@@ -462,8 +463,8 @@ window.addEventListener("DOMContentLoaded", () => {
 
       return {
         strategy: "ema_avwap_pullback",
-        start: new Date(start).toISOString(),
-        end: new Date(end).toISOString(),
+        start: new Date(`${start}Z`).toISOString(),
+        end: new Date(`${end}Z`).toISOString(),
         initial_capital: num(data.get("initial_capital"), 10000),
         override_download: bool(data.get("override_download"), false),
         warmup_days: int(data.get("warmup_days"), 30),
@@ -618,10 +619,10 @@ window.addEventListener("DOMContentLoaded", () => {
           const startInput = form.elements.namedItem("start");
           const endInput = form.elements.namedItem("end");
           if (startInput instanceof HTMLInputElement) {
-            startInput.value = isoLocalInputValue(start);
+            startInput.value = isoUtcInputValue(start);
           }
           if (endInput instanceof HTMLInputElement) {
-            endInput.value = isoLocalInputValue(end);
+            endInput.value = isoUtcInputValue(end);
           }
           saveDraft(form);
         });
