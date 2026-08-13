@@ -540,7 +540,12 @@
                     </label>
                     <label>
                       Start (UTC)
-                      <input name="start" type="datetime-local" required />
+                      <input
+                        name="start"
+                        type="datetime-local"
+                        value="2025-01-01T00:00"
+                        required
+                      />
                     </label>
                     <label>
                       End (UTC)
@@ -552,7 +557,7 @@
                         name="initial_capital"
                         type="text"
                         inputmode="numeric"
-                        value="10000"
+                        value="100"
                         placeholder="10000 or 10,000"
                         required
                       />
@@ -707,7 +712,7 @@
                         name="position_notional_pct"
                         type="text"
                         inputmode="decimal"
-                        value="1"
+                        value="100"
                         placeholder="1 or 1.5"
                         required
                       />
@@ -741,8 +746,8 @@
                     <label>
                       Target Exit Mode
                       <select name="exit_mode">
-                        <option value="close" selected>Candle-Close Target</option>
-                        <option value="live">Live Target Touch (OHLC approximation)</option>
+                        <option value="close">Candle-Close Target</option>
+                        <option value="live" selected>Live Target Touch (OHLC approximation)</option>
                       </select>
                       <span class="hint"
                         >Protective rigid and trailing stops remain live in
@@ -762,7 +767,7 @@
                       <input
                         name="max_entry_notional_usdt"
                         type="number"
-                        value="15"
+                        value="100"
                         step="0.01"
                         min="0.01"
                         required
@@ -791,8 +796,8 @@
                       <input
                         name="max_position_size_pct"
                         type="number"
-                        value="10"
-                        step="0.1"
+                        value="100"
+                        step="0.01"
                         min="0.01"
                         max="100"
                         required
@@ -845,7 +850,7 @@
                         name="rigid_stop_loss_pct"
                         type="number"
                         value="3"
-                        step="0.1"
+                        step="0.01"
                         min="0.01"
                         required
                       />
@@ -962,7 +967,7 @@
                         name="monte_carlo_iterations"
                         type="number"
                         value="1000"
-                        step="100"
+                        step="1"
                         min="1"
                         max="20000"
                       />
