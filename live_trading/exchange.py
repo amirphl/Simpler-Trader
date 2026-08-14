@@ -53,6 +53,7 @@ class ExchangeConfig:
     passphrase: Optional[str] = None
     locale: str = "en-US"
     base_url: Optional[str] = None
+    trading_mode: str = "futures"
 
 
 @dataclass(frozen=True)
