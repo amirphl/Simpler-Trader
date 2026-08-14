@@ -7,6 +7,7 @@ fastapi>=0.110.0
 uvicorn[standard]>=0.30.0,<1.0.0
 requests>=2.31.0
 websocket-client>=1.8.0
+ccxt>=4.5.52
 psycopg[binary]>=3.2.0
 psycopg_pool>=3.2.0
 
