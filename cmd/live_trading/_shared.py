@@ -240,6 +240,9 @@ def _load_ema_avwap_pullback_env_config(read_env: Callable[..., str]) -> Dict[st
         "api_key": read_env("API_KEY"),
         "api_secret": read_env("API_SECRET"),
         "api_passphrase": read_env("API_PASSPHRASE", "PASS_PHRASE"),
+        "weex_api_key": read_env("WEEX_API_KEY"),
+        "weex_api_secret": read_env("WEEX_API_SECRET"),
+        "weex_api_passphrase": read_env("WEEX_API_PASSPHRASE"),
         "deprecated_testnet": read_env("TESTNET"),
         "timeframe": read_env("TIMEFRAME"),
         "strategy_name": read_env("STRATEGY_NAME", "LIVE_STRATEGY_NAME"),
@@ -705,6 +708,12 @@ def _apply_ema_avwap_pullback_env_defaults(
         args.api_secret = config["api_secret"]
     if config["api_passphrase"]:
         args.api_passphrase = config["api_passphrase"]
+    if config["weex_api_key"]:
+        args.weex_api_key = config["weex_api_key"]
+    if config["weex_api_secret"]:
+        args.weex_api_secret = config["weex_api_secret"]
+    if config["weex_api_passphrase"]:
+        args.weex_api_passphrase = config["weex_api_passphrase"]
     if config["deprecated_testnet"]:
         raise ValueError(
             "TESTNET is not supported for EMA+AVWAP. This strategy is mainnet-only; "
@@ -712,8 +721,8 @@ def _apply_ema_avwap_pullback_env_defaults(
         )
     if config["deprecated_exchange_base_url"]:
         raise ValueError(
-            "EXCHANGE_BASE_URL is not supported for EMA+AVWAP. This strategy uses "
-            "the Bitunix mainnet endpoint only; remove EXCHANGE_BASE_URL from its config."
+            "EXCHANGE_BASE_URL is not supported for EMA+AVWAP. Exchange endpoints "
+            "are selected by their adapters; remove EXCHANGE_BASE_URL from its config."
         )
     if config["timeframe"]:
         args.timeframe = config["timeframe"].strip().lower()
@@ -1103,6 +1112,19 @@ def create_exchange(args: argparse.Namespace, logger: logging.Logger):
     api_key = args.api_key or ""
     api_secret = args.api_secret or ""
     api_passphrase = args.api_passphrase or ""
+    strategy_name = str(getattr(args, "strategy_name", "")).strip().lower()
+    trading_mode = str(getattr(args, "trading_mode", "futures")).strip().lower()
+
+    if strategy_name == "ema_avwap_pullback" and trading_mode not in {
+        "future",
+        "futures",
+        "swap",
+        "perpetual",
+    }:
+        raise ValueError(
+            "EMA+AVWAP requires TRADING_MODE=futures so its native protective "
+            "stop policy can be enforced"
+        )
 
     if not api_key:
         raise ValueError("API key is required (--api-key or API_KEY env var)")
@@ -1133,6 +1155,7 @@ def create_exchange(args: argparse.Namespace, logger: logging.Logger):
         proxies=proxies,
         passphrase=api_passphrase or None,
         base_url=getattr(args, "exchange_base_url", "") or None,
+        trading_mode=getattr(args, "trading_mode", "futures"),
     )
 
     # Import and instantiate exchange client
@@ -1149,10 +1172,61 @@ def create_exchange(args: argparse.Namespace, logger: logging.Logger):
         )
         raise NotImplementedError("Bybit exchange not yet implemented")
     elif args.exchange == "bitunix":
-        from live_trading.exchanges import BitunixExchange
+        from live_trading.exchanges import (
+            BitunixExchange,
+            WeexExchange,
+            ZecWeexRoutedExchange,
+        )
 
         logger.info("Using Bitunix exchange")
-        return BitunixExchange(exchange_config, logger)
+        bitunix = BitunixExchange(exchange_config, logger)
+        symbols = _parse_symbols_csv(str(getattr(args, "symbols", "")))
+        if (
+            strategy_name == "ema_avwap_pullback"
+            and ZecWeexRoutedExchange.WEEX_SYMBOL in symbols
+        ):
+            weex_api_key = str(getattr(args, "weex_api_key", "") or "").strip()
+            weex_api_secret = str(
+                getattr(args, "weex_api_secret", "") or ""
+            ).strip()
+            weex_passphrase = str(
+                getattr(args, "weex_api_passphrase", "") or ""
+            ).strip()
+            missing = [
+                name
+                for name, value in (
+                    ("WEEX_API_KEY", weex_api_key),
+                    ("WEEX_API_SECRET", weex_api_secret),
+                    ("WEEX_API_PASSPHRASE", weex_passphrase),
+                )
+                if not value
+            ]
+            if missing:
+                bitunix.close()
+                raise ValueError(
+                    "EMA+AVWAP routes ZECUSDT to Weex when EXCHANGE=bitunix; "
+                    f"missing {', '.join(missing)}"
+                )
+            weex_config = ExchangeConfig(
+                api_key=weex_api_key,
+                api_secret=weex_api_secret,
+                passphrase=weex_passphrase,
+                testnet=testnet,
+                proxies=proxies,
+                trading_mode=getattr(args, "trading_mode", "futures"),
+            )
+            logger.info("Routing EMA+AVWAP ZECUSDT execution to Weex")
+            return ZecWeexRoutedExchange(
+                bitunix,
+                WeexExchange(weex_config, logger, symbols=["ZECUSDT"]),
+            )
+        return bitunix
+    elif args.exchange == "weex":
+        from live_trading.exchanges import WeexExchange
+
+        symbols = _parse_symbols_csv(str(getattr(args, "symbols", "")))
+        logger.info("Using Weex exchange (mode=%s)", exchange_config.trading_mode)
+        return WeexExchange(exchange_config, logger, symbols=symbols)
     else:
         raise ValueError(f"Unknown exchange: {args.exchange}")
 
@@ -1229,6 +1303,8 @@ def build_ema_avwap_pullback_config(
 ) -> EmaAvwapPullbackLiveConfig:
     symbols = _parse_symbols_csv(str(_arg(args, "symbols", ""))) or ("ETHUSDT",)
     account_lock_file = _arg(args, "ema_avwap_account_lock_file", None)
+    raw_account_lock_files = _arg(args, "ema_avwap_account_lock_files", ())
+    account_lock_files = tuple(Path(path) for path in raw_account_lock_files)
     return EmaAvwapPullbackLiveConfig(
         symbols=symbols,
         timeframe=config.timeframe,
@@ -1297,6 +1373,7 @@ def build_ema_avwap_pullback_config(
         account_lock_file=(
             Path(account_lock_file) if account_lock_file is not None else None
         ),
+        account_lock_files=account_lock_files,
         positions_db=config.positions_db,
         klines_db=config.klines_db,
         log_file=config.log_file,
@@ -1503,9 +1580,18 @@ def run_main(
             )
             coordinator.run_forever()
         elif config.strategy_name == "ema_avwap_pullback":
-            args.ema_avwap_account_lock_file = _ema_avwap_account_lock_file(
-                args.exchange, args.api_key or ""
-            )
+            account_lock_files = [_ema_avwap_account_lock_file(args.exchange, args.api_key or "")]
+            if (
+                args.exchange == "bitunix"
+                and "ZECUSDT" in _parse_symbols_csv(str(_arg(args, "symbols", "")))
+            ):
+                account_lock_files.append(
+                    _ema_avwap_account_lock_file(
+                        "weex", str(_arg(args, "weex_api_key", ""))
+                    )
+                )
+            args.ema_avwap_account_lock_file = account_lock_files[0]
+            args.ema_avwap_account_lock_files = tuple(account_lock_files)
             ema_avwap_cfg = build_ema_avwap_pullback_config(args, config)
             coordinator = EmaAvwapPullbackLiveCoordinator(
                 exchange=exchange,
