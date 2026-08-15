@@ -26,11 +26,27 @@ def build_parser() -> argparse.ArgumentParser:
             "default is used (./configs/live_trading.ema_avwap_pullback.env)."
         ),
     )
-    parser.add_argument("--exchange", choices=["binance", "bybit", "bitunix"])
+    parser.add_argument(
+        "--exchange",
+        choices=["binance", "bybit", "bitunix", "weex"],
+        default="bitunix",
+    )
     parser.add_argument("--trading-mode", choices=["spot", "futures"], default="futures")
     parser.add_argument("--api-key")
     parser.add_argument("--api-secret")
     parser.add_argument("--api-passphrase")
+    parser.add_argument(
+        "--weex-api-key",
+        help="Weex API key used only for the Bitunix ZECUSDT fallback route",
+    )
+    parser.add_argument(
+        "--weex-api-secret",
+        help="Weex API secret used only for the Bitunix ZECUSDT fallback route",
+    )
+    parser.add_argument(
+        "--weex-api-passphrase",
+        help="Weex API passphrase used only for the Bitunix ZECUSDT fallback route",
+    )
     parser.add_argument(
         "--live",
         action="store_true",
