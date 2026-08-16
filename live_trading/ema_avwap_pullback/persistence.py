@@ -44,10 +44,14 @@ class EmaAvwapPersistenceMixin(EmaAvwapMixinTyping):
         state_lock_path = self._cfg.state_file.with_name(
             f"{self._cfg.state_file.name}.lock"
         )
-        lock_paths = [state_lock_path]
+        account_lock_paths = set(self._cfg.account_lock_files)
         if self._cfg.account_lock_file is not None:
-            self._cfg.account_lock_file.parent.mkdir(parents=True, exist_ok=True)
-            lock_paths.insert(0, self._cfg.account_lock_file)
+            account_lock_paths.add(self._cfg.account_lock_file)
+        for account_lock_path in account_lock_paths:
+            account_lock_path.parent.mkdir(parents=True, exist_ok=True)
+        # Take account locks in a stable order to avoid a deadlock when two
+        # processes share the Bitunix and Weex accounts in opposite routes.
+        lock_paths = sorted(account_lock_paths, key=str) + [state_lock_path]
 
         handles: list[TextIO] = []
         try:
