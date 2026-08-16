@@ -27,7 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--exchange",
-        choices=["binance", "bybit", "bitunix"],
+        choices=["binance", "bybit", "bitunix", "weex"],
         help="Exchange to use for trading",
     )
     parser.add_argument(
