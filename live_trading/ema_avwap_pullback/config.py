@@ -97,6 +97,7 @@ class EmaAvwapPullbackLiveConfig:
 
     state_file: Path = Path("./data/ema_avwap_pullback_live_trading_state.json")
     account_lock_file: Path | None = None
+    account_lock_files: tuple[Path, ...] = ()
     positions_db: Path = Path("./data/ema_avwap_pullback_live_trading_positions.db")
     klines_db: Path = Path("./configs/live_trading.ema_avwap_pullback.env")
     log_file: Path = Path("./logs/ema_avwap_pullback_live_trading.log")
