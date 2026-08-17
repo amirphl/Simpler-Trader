@@ -356,7 +356,7 @@ class EmaAvwapCalculationMixin(EmaAvwapMixinTyping):
     # ------------------------------------------------------------------
 
     def _compute_position_notional_budget(self, symbol: str) -> float:
-        balance = self._safe_get_balance()
+        balance = self._safe_get_balance(symbol)
         if balance is None:
             return 0.0
         if balance <= self._cfg.minimum_balance_usdt:
@@ -388,10 +388,17 @@ class EmaAvwapCalculationMixin(EmaAvwapMixinTyping):
             )
         return budget
 
-    def _safe_get_balance(self) -> Optional[float]:
+    def _safe_get_balance(self, symbol: str) -> Optional[float]:
         try:
+            venue_balance = getattr(self._exchange, "get_account_balance_for_symbol", None)
+            if callable(venue_balance):
+                def getter() -> float:
+                    return venue_balance(symbol)
+            else:
+                def getter() -> float:
+                    return self._exchange.get_account_balance()
             return float(
-                self._retry(self._exchange.get_account_balance, "get_account_balance")
+                self._retry(getter, f"get_account_balance {symbol}")
             )
         except Exception as exc:
             self._log.warning(
@@ -403,9 +410,8 @@ class EmaAvwapCalculationMixin(EmaAvwapMixinTyping):
     def _safe_fetch_price(self, symbol: str) -> Optional[float]:
         try:
             # EMA/AVWAP signals are calculated from Binance candles, but an
-            # order must be sized and priced from the execution venue. In this
-            # deployment ``_exchange`` is Bitunix, so never substitute a
-            # Binance price here.
+            # order must be sized and priced from its execution venue. Never
+            # substitute a Binance price here.
             price = self._retry(lambda: self._exchange.fetch_price(symbol), "fetch_price")
             if price is None:
                 return None
