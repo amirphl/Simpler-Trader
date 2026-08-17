@@ -56,7 +56,7 @@ class EmaAvwapPullbackLiveCoordinator(
         self._last_closed_candle_time_by_symbol: Dict[str, datetime] = {}
         self._last_snapshot_by_symbol: Dict[str, _SymbolSnapshot] = {}
         # All EMA/AVWAP signal candles come from Binance REST.  Keeping this
-        # distinct from ``_exchange`` prevents a mixed Binance/Bitunix
+        # distinct from ``_exchange`` prevents a mixed Binance/execution-venue
         # indicator history when the two venues trade at different prices.
         self._binance_signal_client = BinanceClient(
             BinanceClientConfig(
@@ -110,17 +110,18 @@ class EmaAvwapPullbackLiveCoordinator(
     def run_forever(self) -> None:
         validator = getattr(self._exchange, "validate_ema_avwap_execution", None)
         if callable(validator):
-            # The strategy owns one net position per symbol.  Bitunix hedge mode
+            # The strategy owns one net position per symbol. A venue hedge mode
             # violates that invariant, so reject it before polling or placing
             # anything rather than attempting to infer a position to manage.
             validator()
         self._running = True
-        # Bitunix's kline WebSocket is intentionally disabled.  Binance REST
+        # Execution-venue kline streams are intentionally disabled. Binance REST
         # is the sole signal-data source for both closed and forming candles;
-        # Bitunix remains the execution venue and price source for orders.
+        # the selected venue supplies
+        # execution prices and orders.
         self._log.info(
             "EmaAvwapPullback started (signal_data=binance_rest "
-            "execution_data=bitunix symbols=%s timeframe=%s "
+            "execution_data=selected_venue symbols=%s timeframe=%s "
             "entry_mode=%s exit_mode=%s exit_band=%s rigid_stop_loss_pct=%.8f)",
             ",".join(self._cfg.symbols),
             self._cfg.timeframe,
