@@ -120,9 +120,9 @@ entry-deviation, notional-cap, marketability, and protective-stop gates as live 
 - `RISK_EQUITY_MARK_SOURCE=close|open|hl2|ohlc4`
 - `POLL_INTERVAL_SECONDS`
 - `TRAILING_CHECK_INTERVAL_SECONDS`
-- `LIVE_KLINE_STALE_SECONDS`: maximum age of the current Bitunix WebSocket kline
-  used for live AVWAP entry/exit calculation. If it is stale, the coordinator
-  skips that live calculation rather than using REST history as a substitute.
+- `LIVE_KLINE_STALE_SECONDS`: retained compatibility setting. EMA + AVWAP uses
+  Binance REST signal candles and the selected execution venue for prices and
+  orders.
 
 Note:
 - PinBar Magic v3 does not rely on symbol scanning in the live coordinator.
@@ -165,9 +165,7 @@ Note:
 - `TRAILING_ACTIVATION_THRESHOLD_PCT`
 - `TRAILING_GAP_PCT`
 - `ENTRY_CANCEL_BARS`
-- `MAX_HISTORY_BARS`
-  - Bitunix kline history is paginated in 200-bar requests, so values above 200
-    are delivered instead of silently truncated.
+- `MAX_HISTORY_BARS`: the Binance signal-candle history retained in memory.
 - `CANDLE_READY_DELAY_SECONDS=0` evaluates a newly closed candle without an
   intentional time delay. If the exchange initially returns the previous bar,
   the coordinator retries within the same candle boundary instead of waiting
@@ -196,6 +194,15 @@ run one coordinator with a comma-separated `SYMBOLS` list instead.
 ### Exchange / Risk / Scheduling
 
 - `EXCHANGE`, `TRADING_MODE`, `API_KEY`, `API_SECRET`, `API_PASSPHRASE`
+  - EMA + AVWAP defaults to `EXCHANGE=bitunix`.
+  - With `EXCHANGE=bitunix`, `ZECUSDT` is routed to Weex while every other
+    symbol stays on Bitunix. Set `WEEX_API_KEY`, `WEEX_API_SECRET`, and
+    `WEEX_API_PASSPHRASE` for that fallback.
+  - With `EXCHANGE=weex`, all configured symbols use Weex. The adapter supports
+    Weex spot and USDT perpetual markets through CCXT. EMA + AVWAP requires
+    `TRADING_MODE=futures` because its fail-closed native-stop policy cannot be
+    fulfilled by Weex spot's CCXT order API. CCXT's Weex sandbox supports swaps
+    only, so direct Weex spot trading requires mainnet.
 - `LEVERAGE`, `TAKE_PROFIT_PCT`
 - `POSITION_SIZE_USDT` (ignored by EMA + AVWAP), `MAX_ENTRY_NOTIONAL_USDT`,
   `MAX_CONCURRENT_POSITIONS`, `MAX_POSITION_SIZE_PCT`
