@@ -799,8 +799,8 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 f"anchor={candidate.anchor_time.isoformat()} "
                 f"trigger={candidate.entry_trigger_mode}"
             ),
-            # Keep this value stable through retries and restarts.  Bitunix uses
-            # ``clientId`` to identify an order independently of its server id.
+            # Keep this value stable through retries and restarts. The execution
+            # venue receives it as a client order id independent of its server id.
             client_id=f"emaavwap-{uuid4().hex}",
         )
         self._state.pending_entries[key] = pending
@@ -1004,8 +1004,8 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
         self._ensure_pending_limit_is_marketable(pending)
         try:
             # Do not wrap a state-changing POST in the generic retry helper.
-            # Bitunix receives the persisted client id and may retry its own
-            # request safely; an ambiguous result is reconciled above.
+            # The execution venue receives the persisted client id and may retry
+            # its own request safely; an ambiguous result is reconciled above.
             return self._exchange.open_limit_position(
                 symbol=pending.symbol,
                 side=pending.side,
@@ -1034,7 +1034,9 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
     def _ensure_pending_limit_is_marketable(self, pending: PendingEntryRecord) -> None:
         current_price = self._safe_fetch_price(pending.symbol)
         if current_price is None or current_price <= 0:
-            raise _EntryNoLongerMarketableError("current Bitunix price is unavailable")
+            raise _EntryNoLongerMarketableError(
+                "current execution-venue price is unavailable"
+            )
         direction: Direction = "long" if pending.side is PositionSide.LONG else "short"
         if not self._entry_price_is_marketable(
             direction=direction,
