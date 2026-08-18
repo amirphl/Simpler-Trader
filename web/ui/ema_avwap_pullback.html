@@ -123,6 +123,12 @@
         background: rgba(255, 247, 237, 0.08);
         backdrop-filter: blur(8px);
       }
+      .hero-actions {
+        display: flex;
+        gap: 0.65rem;
+        flex-wrap: wrap;
+        align-items: center;
+      }
       .hero-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -435,7 +441,12 @@
                 behind every fill and exit.
               </p>
             </div>
-            <a class="home-link" href="/">All Strategies</a>
+            <div class="hero-actions">
+              <button class="button-primary" type="submit" form="backtest-form">
+                Run Backtest
+              </button>
+              <a class="home-link" href="/">All Strategies</a>
+            </div>
           </div>
           <div class="hero-grid">
             <div class="hero-card">
@@ -679,7 +690,7 @@
                       <input
                         name="avwap_multiplier_3"
                         type="number"
-                        value="3"
+                        value="20"
                         step="0.1"
                         min="0.1"
                         required
@@ -812,7 +823,7 @@
                       <input
                         name="max_setup_age_bars"
                         type="number"
-                        value="3"
+                        value="48"
                         step="1"
                         min="1"
                         required
@@ -1334,6 +1345,6 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.min.js"></script>
     <script src="/static/js/app.js"></script>
-    <script src="/static/js/ema_avwap_pullback.js"></script>
+    <script type="module" src="/static/js/ema_avwap_pullback.js"></script>
   </body>
 </html>
