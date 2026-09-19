@@ -16,10 +16,6 @@ huntModeInput = input.string(
      "Hunt mode",
      options = ["wick", "close"]
      )
-includeHuntCandleInChochRange = input.bool(
-     true,
-     "Include BOS hunt candle in initial CHoCH range"
-     )
 minSwingPct = input.float(
      0.0,
      "Minimum swing percent",
@@ -148,6 +144,9 @@ var bool initialized = false
 var int direction = na
 var int directionSinceIndex = na
 
+// First candle eligible to contribute to the current structural section.
+// A BOS confirmation or CHoCH hunt ends a section, so its candle is never an
+// anchor for the section that follows it.
 var int anchorIndex = na
 var int phase = PHASE_WAIT_PULLBACK
 var int formingStartIndex = na
@@ -155,11 +154,23 @@ var float formingLevel = na
 var int formingLevelLastUpdatedIndex = na
 var int formingCompleteIndex = na
 var int bosCounter = 0
+// The BoS currently being constructed. It exists before confirmation so the
+// detector and the liquidity indicators share the same section lifecycle.
+var bool hasPotentialBos = false
+var BosRec potentialBos = BosRec.new(index = -1, direction = na, anchorIndex = na, startIndex = na, level = na, levelLastUpdatedIndex = na, completeIndex = na, huntIndex = na, state = BOS_FORMING, hunted = false)
 
 var bool hasIndependentChoch = false
 var float independentChochLevel = na
 var int independentChochCandleIndex = na
 var int independentChochDirection = na
+// The standalone detector mirrors the iCHoCH section lifecycle used by the
+// liquidity indicators so the purple marker has the same visual range.
+var line activeIndependentChochDrawing = na
+var int activeIndependentChochStartIndex = na
+// A forming BoS may replace its level-origin before it confirms. Keep the
+// preceding iCHoCH drawing so its exclusive endpoint follows that boundary.
+var line independentChochBeforePotentialBosDrawing = na
+var int independentChochBeforePotentialBosStartIndex = na
 
 var float dbgLastBosLevel = na
 var int dbgLastBosStartIndex = na
@@ -251,10 +262,7 @@ f_newChochLevel(int dir, string huntMode) =>
 f_rangeCounterTrendExtreme(int dir, int startIdx, int endIdx) =>
     float outLevel = na
     int outIdx = na
-    if startIdx > endIdx
-        outLevel := dir == DIR_UP ? low : high
-        outIdx := bar_index
-    else
+    if startIdx <= endIdx
         outLevel := dir == DIR_UP ? f_lowAt(startIdx) : f_highAt(startIdx)
         outIdx := startIdx
         // FIX: only loop when there is more than one bar in [startIdx, endIdx].
@@ -278,15 +286,10 @@ f_rangeCounterTrendExtreme(int dir, int startIdx, int endIdx) =>
                         outIdx := j
     [outLevel, outIdx]
 
-// initial CHoCH for a confirmed BOS
-f_initialChoch(int dir, int startIdx, int huntIdx, bool includeHunt) =>
-    int endIdx = includeHunt ? huntIdx : huntIdx - 1
-    int s = startIdx
-    int e = endIdx
-    if s > e
-        s := huntIdx
-        e := huntIdx
-    f_rangeCounterTrendExtreme(dir, s, e)
+// Initial CHoCH for a confirmed BOS. The BOS confirmation candle is a section
+// boundary, not structural input, so the range always stops on the prior bar.
+f_initialChoch(int dir, int startIdx, int huntIdx) =>
+    f_rangeCounterTrendExtreme(dir, startIdx, huntIdx - 1)
 
 //=============================================================================
 // VISUAL HELPERS
@@ -322,8 +325,24 @@ f_drawBosLine(int levelIndex, int huntIndex, float level, color clr) =>
              width = markerWidth
              )
 
-f_drawIndependentChochLine(int absIndex, bool isBullish) =>
-    f_drawMarkerLine(absIndex, independentChochColor, line.style_solid, isBullish)
+f_drawIndependentChochLine(int absIndex, bool isBullish, int endIndex) =>
+    line drawing = na
+    if absIndex >= 0 and absIndex <= endIndex and endIndex <= bar_index
+        int off = f_offsetFromAbsIndex(absIndex)
+        if off >= 0 and off <= bar_index
+            float y = isBullish ? high[off] + syminfo.mintick * markerOffsetTicks : low[off] - syminfo.mintick * markerOffsetTicks
+            drawing := line.new(
+                 x1 = absIndex,
+                 y1 = y,
+                 x2 = endIndex,
+                 y2 = y,
+                 xloc = xloc.bar_index,
+                 extend = extend.none,
+                 color = independentChochColor,
+                 style = line.style_solid,
+                 width = chochMarkerWidth
+                 )
+    drawing
 
 f_clearIntArray(array<int> arr) =>
     while array.size(arr) > 0
@@ -451,13 +470,27 @@ if barstate.isconfirmed and initialized and bar_index >= directionSinceIndex
             // Also note: Pine tuple destructuring does not accept type
             // keywords inside the brackets — types are inferred, so this
             // must be `[indepLevel, indepIdx]`, not `[float indepLevel, ...]`.
-            [indepLevel, indepIdx] = f_rangeCounterTrendExtreme(newDirection, indepStart, bar_index)
+            // The CHoCH-hunt candle closes the old section. Do not let it set
+            // the new independent-CHoCH level.
+            [indepLevel, indepIdx] = f_rangeCounterTrendExtreme(newDirection, indepStart, bar_index - 1)
             independentChochLevel := indepLevel
             independentChochCandleIndex := indepIdx
             independentChochDirection := newDirection
             hasIndependentChoch := true
+            // The old iCHoCH ends at the bar immediately before this one
+            // starts. Its boundary is structural, not the hunt candle.
+            if not na(activeIndependentChochDrawing)
+                if indepIdx - 1 >= activeIndependentChochStartIndex
+                    line.set_x2(activeIndependentChochDrawing, indepIdx - 1)
+                else
+                    line.delete(activeIndependentChochDrawing)
+                activeIndependentChochDrawing := na
+                activeIndependentChochStartIndex := na
+            independentChochBeforePotentialBosDrawing := na
+            independentChochBeforePotentialBosStartIndex := na
             // iCHoCH: UP is drawn below its candle; DOWN is drawn above.
-            f_drawIndependentChochLine(indepIdx, newDirection == DIR_DOWN)
+            activeIndependentChochDrawing := f_drawIndependentChochLine(indepIdx, newDirection == DIR_DOWN, bar_index)
+            activeIndependentChochStartIndex := indepIdx
             direction := newDirection
             directionSinceIndex := bar_index
             dbgDirection := direction
@@ -467,7 +500,10 @@ if barstate.isconfirmed and initialized and bar_index >= directionSinceIndex
             formingLevel := na
             formingLevelLastUpdatedIndex := na
             formingCompleteIndex := na
-            anchorIndex := bar_index
+            hasPotentialBos := false
+            independentChochBeforePotentialBosDrawing := na
+            independentChochBeforePotentialBosStartIndex := na
+            anchorIndex := bar_index + 1
             reversedNow := true
 
     //-------------------------------------------------------------------------
@@ -478,13 +514,26 @@ if barstate.isconfirmed and initialized and bar_index >= directionSinceIndex
             int newDirection = direction == DIR_UP ? DIR_DOWN : DIR_UP
             // FIX: same tuple-reassignment bug as STEP A1, corrected the same way
             // (bare names only — no type keywords inside the brackets).
-            [indepLevel2, indepIdx2] = f_rangeCounterTrendExtreme(newDirection, independentChochCandleIndex, bar_index)
+            // The independent-CHoCH hunt is likewise excluded from the next
+            // independent structural range.
+            [indepLevel2, indepIdx2] = f_rangeCounterTrendExtreme(newDirection, independentChochCandleIndex, bar_index - 1)
             independentChochLevel := indepLevel2
             independentChochCandleIndex := indepIdx2
             independentChochDirection := newDirection
             hasIndependentChoch := true
+            // Consecutive iCHoCHs use the same exclusive boundary rule.
+            if not na(activeIndependentChochDrawing)
+                if indepIdx2 - 1 >= activeIndependentChochStartIndex
+                    line.set_x2(activeIndependentChochDrawing, indepIdx2 - 1)
+                else
+                    line.delete(activeIndependentChochDrawing)
+                activeIndependentChochDrawing := na
+                activeIndependentChochStartIndex := na
+            independentChochBeforePotentialBosDrawing := na
+            independentChochBeforePotentialBosStartIndex := na
             // iCHoCH: UP is drawn below its candle; DOWN is drawn above.
-            f_drawIndependentChochLine(indepIdx2, newDirection == DIR_DOWN)
+            activeIndependentChochDrawing := f_drawIndependentChochLine(indepIdx2, newDirection == DIR_DOWN, bar_index)
+            activeIndependentChochStartIndex := indepIdx2
             direction := newDirection
             directionSinceIndex := bar_index
             dbgDirection := direction
@@ -493,7 +542,10 @@ if barstate.isconfirmed and initialized and bar_index >= directionSinceIndex
             formingLevel := na
             formingLevelLastUpdatedIndex := na
             formingCompleteIndex := na
-            anchorIndex := bar_index
+            hasPotentialBos := false
+            independentChochBeforePotentialBosDrawing := na
+            independentChochBeforePotentialBosStartIndex := na
+            anchorIndex := bar_index + 1
             reversedNow := true
 
     //-------------------------------------------------------------------------
@@ -507,33 +559,47 @@ if barstate.isconfirmed and initialized and bar_index >= directionSinceIndex
             if f_isOpposite(direction, isBull, isBear)
                 int startScan = anchorIndex
                 int endScan = includePullbackInBosLevel ? bar_index : bar_index - 1
-                float lvl = na
-                int lvlIdx = na
+                // With an exclusive section boundary, the first eligible
+                // pullback has no preceding eligible candle when it is
+                // excluded from the scan. Use that pullback as the minimal
+                // seed rather than falling back to the boundary candle.
                 if endScan < startScan
-                    lvl := f_extremeValue(direction, startScan)
-                    lvlIdx := startScan
-                else
-                    lvl := f_extremeValue(direction, startScan)
-                    lvlIdx := startScan
-                    // FIX: guard the loop the same way as f_rangeCounterTrendExtreme —
-                    // otherwise a single-bar scan window (endScan == startScan) makes
-                    // Pine's for-loop run twice (j = startScan+1, then j = startScan)
-                    // instead of zero times.
-                    if endScan > startScan
-                        for j = startScan + 1 to endScan
-                            float candidate = f_extremeValue(direction, j)
-                            if direction == DIR_UP
-                                if candidate > lvl
-                                    lvl := candidate
-                                    lvlIdx := j
-                            else
-                                if candidate < lvl
-                                    lvl := candidate
-                                    lvlIdx := j
+                    startScan := bar_index
+                    endScan := bar_index
+                float lvl = f_extremeValue(direction, startScan)
+                int lvlIdx = startScan
+                // Guard the loop because Pine's `for a to b` also runs when
+                // a > b (in descending order).
+                if endScan > startScan
+                    for j = startScan + 1 to endScan
+                        float candidate = f_extremeValue(direction, j)
+                        if direction == DIR_UP
+                            if candidate > lvl
+                                lvl := candidate
+                                lvlIdx := j
+                        else
+                            if candidate < lvl
+                                lvl := candidate
+                                lvlIdx := j
                 formingStartIndex := bar_index
                 formingLevel := lvl
                 formingLevelLastUpdatedIndex := lvlIdx
                 formingCompleteIndex := na
+                potentialBos := BosRec.new(index = -1, direction = direction, anchorIndex = anchorIndex, startIndex = formingStartIndex, level = formingLevel, levelLastUpdatedIndex = formingLevelLastUpdatedIndex, completeIndex = na, huntIndex = na, state = BOS_FORMING, hunted = false)
+                hasPotentialBos := true
+                // A BoS start is the next iCHoCH section boundary. Retain
+                // the drawing while the potential BoS level-origin can move.
+                if not na(activeIndependentChochDrawing)
+                    if formingLevelLastUpdatedIndex - 1 >= activeIndependentChochStartIndex
+                        line.set_x2(activeIndependentChochDrawing, formingLevelLastUpdatedIndex - 1)
+                        independentChochBeforePotentialBosDrawing := activeIndependentChochDrawing
+                        independentChochBeforePotentialBosStartIndex := activeIndependentChochStartIndex
+                    else
+                        line.delete(activeIndependentChochDrawing)
+                        independentChochBeforePotentialBosDrawing := na
+                        independentChochBeforePotentialBosStartIndex := na
+                    activeIndependentChochDrawing := na
+                    activeIndependentChochStartIndex := na
                 phase := PHASE_FORMING
 
         //=====================================================================
@@ -542,14 +608,16 @@ if barstate.isconfirmed and initialized and bar_index >= directionSinceIndex
         else if phase == PHASE_FORMING
             if f_isResume(direction, isBull, isBear)
                 formingCompleteIndex := bar_index
+                if hasPotentialBos
+                    potentialBos.completeIndex := formingCompleteIndex
+                    potentialBos.state := BOS_COMPLETE
                 phase := PHASE_AWAIT_HUNT
                 if f_bosHunted(direction, formingLevel, huntModeInput)
                     // FIX: bare names in tuple destructuring, no type keywords.
                     [chochLevel, chochIdx] = f_initialChoch(
                          direction,
                          formingLevelLastUpdatedIndex,
-                         bar_index,
-                         includeHuntCandleInChochRange
+                         bar_index
                          )
                     bool passFilter = true
                     if minSwingPct > 0.0
@@ -558,18 +626,19 @@ if barstate.isconfirmed and initialized and bar_index >= directionSinceIndex
                         if mid > 0.0 and swing / mid * 100.0 < minSwingPct
                             passFilter := false
                     if passFilter
-                        BosRec bos = BosRec.new(
-                             index = bosCounter,
-                             direction = direction,
-                             anchorIndex = anchorIndex,
-                             startIndex = formingStartIndex,
-                             level = formingLevel,
-                             levelLastUpdatedIndex = formingLevelLastUpdatedIndex,
-                             completeIndex = formingCompleteIndex,
-                             huntIndex = bar_index,
-                             state = BOS_CONFIRMED,
-                             hunted = true
-                             )
+                        // Promote the live potential section rather than
+                        // creating the record only after confirmation.
+                        BosRec bos = potentialBos
+                        bos.index := bosCounter
+                        bos.direction := direction
+                        bos.anchorIndex := anchorIndex
+                        bos.startIndex := formingStartIndex
+                        bos.level := formingLevel
+                        bos.levelLastUpdatedIndex := formingLevelLastUpdatedIndex
+                        bos.completeIndex := formingCompleteIndex
+                        bos.huntIndex := bar_index
+                        bos.state := BOS_CONFIRMED
+                        bos.hunted := true
                         array.push(bosRecords, bos)
                         ChochTrack ct = ChochTrack.new(
                              bosIndex = bosCounter,
@@ -592,22 +661,37 @@ if barstate.isconfirmed and initialized and bar_index >= directionSinceIndex
                         dbgLastChochCandleIndex := chochIdx
                         bosCounter += 1
                         hasIndependentChoch := false
+                    // The normal reset below invalidates a candidate that
+                    // failed the swing filter as well as a confirmed one.
+                    hasPotentialBos := false
+                    independentChochBeforePotentialBosDrawing := na
+                    independentChochBeforePotentialBosStartIndex := na
                     phase := PHASE_WAIT_PULLBACK
                     formingStartIndex := na
                     formingLevel := na
                     formingLevelLastUpdatedIndex := na
                     formingCompleteIndex := na
-                    anchorIndex := bar_index
+                    anchorIndex := bar_index + 1
             else if f_isOpposite(direction, isBull, isBear)
                 float candidate = direction == DIR_UP ? high : low
                 if direction == DIR_UP
                     if candidate > formingLevel
                         formingLevel := candidate
                         formingLevelLastUpdatedIndex := bar_index
+                        if hasPotentialBos
+                            potentialBos.level := formingLevel
+                            potentialBos.levelLastUpdatedIndex := formingLevelLastUpdatedIndex
+                        if not na(independentChochBeforePotentialBosDrawing) and formingLevelLastUpdatedIndex - 1 >= independentChochBeforePotentialBosStartIndex
+                            line.set_x2(independentChochBeforePotentialBosDrawing, formingLevelLastUpdatedIndex - 1)
                 else
                     if candidate < formingLevel
                         formingLevel := candidate
                         formingLevelLastUpdatedIndex := bar_index
+                        if hasPotentialBos
+                            potentialBos.level := formingLevel
+                            potentialBos.levelLastUpdatedIndex := formingLevelLastUpdatedIndex
+                        if not na(independentChochBeforePotentialBosDrawing) and formingLevelLastUpdatedIndex - 1 >= independentChochBeforePotentialBosStartIndex
+                            line.set_x2(independentChochBeforePotentialBosDrawing, formingLevelLastUpdatedIndex - 1)
 
         //=====================================================================
         // AWAIT_HUNT
@@ -618,8 +702,7 @@ if barstate.isconfirmed and initialized and bar_index >= directionSinceIndex
                 [chochLevel, chochIdx] = f_initialChoch(
                      direction,
                      formingLevelLastUpdatedIndex,
-                     bar_index,
-                     includeHuntCandleInChochRange
+                     bar_index
                      )
                 bool passFilter = true
                 if minSwingPct > 0.0
@@ -628,18 +711,19 @@ if barstate.isconfirmed and initialized and bar_index >= directionSinceIndex
                     if mid > 0.0 and swing / mid * 100.0 < minSwingPct
                         passFilter := false
                 if passFilter
-                    BosRec bos = BosRec.new(
-                         index = bosCounter,
-                         direction = direction,
-                         anchorIndex = anchorIndex,
-                         startIndex = formingStartIndex,
-                         level = formingLevel,
-                         levelLastUpdatedIndex = formingLevelLastUpdatedIndex,
-                         completeIndex = formingCompleteIndex,
-                         huntIndex = bar_index,
-                         state = BOS_CONFIRMED,
-                         hunted = true
-                         )
+                    // Promote the live potential section rather than creating
+                    // the record only after confirmation.
+                    BosRec bos = potentialBos
+                    bos.index := bosCounter
+                    bos.direction := direction
+                    bos.anchorIndex := anchorIndex
+                    bos.startIndex := formingStartIndex
+                    bos.level := formingLevel
+                    bos.levelLastUpdatedIndex := formingLevelLastUpdatedIndex
+                    bos.completeIndex := formingCompleteIndex
+                    bos.huntIndex := bar_index
+                    bos.state := BOS_CONFIRMED
+                    bos.hunted := true
                     array.push(bosRecords, bos)
                     ChochTrack ct = ChochTrack.new(
                              bosIndex = bosCounter,
@@ -662,12 +746,22 @@ if barstate.isconfirmed and initialized and bar_index >= directionSinceIndex
                     dbgLastChochCandleIndex := chochIdx
                     bosCounter += 1
                     hasIndependentChoch := false
+                // The normal reset below invalidates a candidate that failed
+                // the swing filter as well as a confirmed one.
+                hasPotentialBos := false
+                independentChochBeforePotentialBosDrawing := na
+                independentChochBeforePotentialBosStartIndex := na
                 phase := PHASE_WAIT_PULLBACK
                 formingStartIndex := na
                 formingLevel := na
                 formingLevelLastUpdatedIndex := na
                 formingCompleteIndex := na
-                anchorIndex := bar_index
+                anchorIndex := bar_index + 1
+
+// An open iCHoCH visually covers its complete live section. Its endpoint is
+// frozen above when the following BoS or iCHoCH obtains a start candle.
+if barstate.isconfirmed and not na(activeIndependentChochDrawing)
+    line.set_x2(activeIndependentChochDrawing, bar_index)
 
 //=============================================================================
 // MAIN: PIVOT DETECTION
