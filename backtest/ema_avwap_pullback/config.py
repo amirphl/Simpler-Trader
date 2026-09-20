@@ -7,6 +7,7 @@ from enum import Enum
 from typing import Literal
 
 from candle_downloader.binance import interval_to_milliseconds
+from candle_downloader.models import normalize_usdm_perpetual_symbol
 
 Direction = Literal["long", "short"]
 EmaValidationMode = Literal["body", "wick"]
@@ -40,6 +41,13 @@ class ExitBand(str, Enum):
     @property
     def number(self) -> int:
         return 1 if self is ExitBand.BAND_1 else 2
+
+
+class FundingMode(str, Enum):
+    """Whether settled perpetual funding is included in trade PnL."""
+
+    HISTORICAL = "historical"
+    NONE = "none"
 
 
 @dataclass(frozen=True)
@@ -83,6 +91,9 @@ class EmaAvwapPullbackStrategyConfig:
     taker_fee_pct: float = 0.0006
     entry_slippage_pct: float = 0.0
     exit_slippage_pct: float = 0.0
+    # Historical funding is a market datum, not an optimizable daily-rate
+    # assumption.  It uses Binance's settled funding rate and mark price.
+    funding_mode: FundingMode | str = FundingMode.HISTORICAL
     use_gap_cross_detection: bool = True
     max_decision_log_entries: int = 20000
 
@@ -142,6 +153,11 @@ class EmaAvwapPullbackStrategyConfig:
         except ValueError as exc:
             allowed = ", ".join(band.value for band in ExitBand)
             raise ValueError(f"exit_band must be one of: {allowed}") from exc
+        try:
+            funding_mode = FundingMode(self.funding_mode)
+        except ValueError as exc:
+            allowed = ", ".join(mode.value for mode in FundingMode)
+            raise ValueError(f"funding_mode must be one of: {allowed}") from exc
         if (
             min(
                 self.avwap_multiplier_1,
@@ -164,14 +180,17 @@ class EmaAvwapPullbackStrategyConfig:
             raise ValueError("fee values must be non-negative")
         if min(self.entry_slippage_pct, self.exit_slippage_pct) < 0:
             raise ValueError("slippage values must be non-negative")
+        if max(self.entry_slippage_pct, self.exit_slippage_pct) >= 1:
+            raise ValueError("slippage values must be below 1.0 (100%)")
         if self.max_decision_log_entries <= 0:
             raise ValueError("max_decision_log_entries must be positive")
         interval_to_milliseconds(timeframe)
-        object.__setattr__(self, "symbol", symbol)
+        object.__setattr__(self, "symbol", normalize_usdm_perpetual_symbol(symbol))
         object.__setattr__(self, "timeframe", timeframe)
         object.__setattr__(self, "entry_mode", entry_mode)
         object.__setattr__(self, "exit_mode", exit_mode)
         object.__setattr__(self, "exit_band", exit_band)
+        object.__setattr__(self, "funding_mode", funding_mode)
 
 
 __all__ = [
@@ -181,6 +200,7 @@ __all__ = [
     "EntryMode",
     "ExitMode",
     "ExitBand",
+    "FundingMode",
     "PositionSizingMode",
     "SetupWaitingReplacementMode",
 ]
