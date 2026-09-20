@@ -90,3 +90,42 @@ class Candle:
 
 def normalize_symbol(symbol: str) -> str:
     return symbol.upper().strip()
+
+
+def normalize_usdm_perpetual_symbol(symbol: str) -> str:
+    """Return the unambiguous local name for a USDⓈ-M perpetual contract.
+
+    Trading/charting applications commonly write Binance perpetuals with a
+    ``.P`` suffix.  Binance's REST API does *not* accept that suffix: it
+    expects ``BTCUSDT`` while the endpoint itself identifies the product as a
+    perpetual.  We retain the suffix in our store and backtest context so a
+    futures candle can never collide with a previously cached spot candle.
+    """
+    normalized = normalize_symbol(symbol)
+    base_symbol = normalized[:-2] if normalized.endswith(".P") else normalized
+    if not base_symbol or "." in base_symbol:
+        raise ValueError(
+            "USDⓈ-M perpetual symbols must be a Binance pair such as "
+            "BTCUSDT or BTCUSDT.P"
+        )
+    return f"{base_symbol}.P"
+
+
+def binance_usdm_api_symbol(symbol: str) -> str:
+    """Translate a local perpetual symbol into Binance's REST API symbol."""
+    return normalize_usdm_perpetual_symbol(symbol)[:-2]
+
+
+@dataclass(frozen=True, slots=True)
+class FundingRate:
+    """One settled USDⓈ-M perpetual funding rate from Binance history.
+
+    ``rate`` is a decimal fraction (``0.0001`` is 1 bp).  ``mark_price`` is
+    Binance's mark price associated with the funding payment, rather than a
+    candle-price approximation.
+    """
+
+    symbol: str
+    funding_time: datetime
+    rate: float
+    mark_price: float
