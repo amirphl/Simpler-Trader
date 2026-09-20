@@ -127,6 +127,7 @@ class EmaAvwapReportingMixin:
             "taker_fee_pct": cfg.taker_fee_pct,
             "entry_slippage_pct": cfg.entry_slippage_pct,
             "exit_slippage_pct": cfg.exit_slippage_pct,
+            "funding_mode": cfg.funding_mode.value,
             "use_gap_cross_detection": cfg.use_gap_cross_detection,
             "max_decision_log_entries": cfg.max_decision_log_entries,
         }
