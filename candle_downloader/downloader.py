@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Sequence, Set, Tuple
 
 from .binance import BinanceClient, interval_to_milliseconds, MAX_BATCH
-from .models import Candle, normalize_symbol, to_milliseconds
+from .models import Candle, FundingRate, normalize_symbol, to_milliseconds
 from .storage import CandleStore
 
 
@@ -19,12 +19,15 @@ class DownloadRequest:
     end: datetime
     override: bool = False
     max_batch: int = MAX_BATCH
+    market: str = "spot"
 
     def __post_init__(self) -> None:
         if self.start >= self.end:
             raise ValueError("start must be before end")
         if self.max_batch <= 0 or self.max_batch > MAX_BATCH:
             raise ValueError(f"max_batch must be in 1..{MAX_BATCH}")
+        if self.market not in {"spot", "usdm_perpetual"}:
+            raise ValueError("market must be one of: spot, usdm_perpetual")
 
 
 @dataclass
@@ -146,6 +149,27 @@ class CandleDownloader:
 
         return DownloadResult(stats=stats, candles=final_candles)
 
+    def fetch_usdm_perpetual_funding_rates(
+        self,
+        *,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+    ) -> List[FundingRate]:
+        """Return actual settled Binance USDⓈ-M funding payments for a range.
+
+        Funding history is intentionally not synthesized or substituted with a
+        flat daily rate.  A caller that elects to model funding needs the
+        venue's historical settlement data and its associated mark price.
+        """
+        start_ms = to_milliseconds(_ensure_utc(start))
+        end_ms = to_milliseconds(_ensure_utc(end))
+        return self._client.fetch_usdm_perpetual_funding_rates(
+            symbol=symbol,
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+
 
 def _ensure_utc(moment: datetime) -> datetime:
     if moment.tzinfo is None:
@@ -222,6 +246,12 @@ def _fetch_pending_windows(
                     },
                 )
             candles = client.fetch_klines(
+                symbol=symbol,
+                interval=interval,
+                start_ms=cursor,
+                end_ms=chunk_end,
+                limit=limit,
+            ) if request.market == "spot" else client.fetch_usdm_perpetual_klines(
                 symbol=symbol,
                 interval=interval,
                 start_ms=cursor,
