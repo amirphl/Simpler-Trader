@@ -110,6 +110,65 @@ class BinanceClientTests(unittest.TestCase):
         self.assertNotIn("startTime", opener.urls[0])
         self.assertNotIn("endTime", opener.urls[0])
 
+    def test_fetch_usdm_perpetual_uses_futures_endpoint_and_api_symbol(self) -> None:
+        opener = _FakeOpener(
+            [
+                [
+                    [
+                        1_700_000_000_000,
+                        "100.0",
+                        "110.0",
+                        "95.0",
+                        "105.0",
+                        "12.5",
+                        1_700_000_059_999,
+                    ]
+                ]
+            ]
+        )
+        client = BinanceClient(BinanceClientConfig(), opener=opener)
+
+        candles = client.fetch_usdm_perpetual_klines(
+            symbol="fetusdt",
+            interval="1m",
+            start_ms=1_700_000_000_000,
+            end_ms=1_700_000_060_000,
+            limit=1,
+        )
+
+        self.assertEqual(candles[0].symbol, "FETUSDT.P")
+        self.assertIn("https://fapi.binance.com/fapi/v1/klines", opener.urls[0])
+        self.assertIn("symbol=FETUSDT", opener.urls[0])
+        self.assertNotIn("symbol=FETUSDT.P", opener.urls[0])
+
+    def test_fetch_usdm_funding_history_uses_settlement_mark_price(self) -> None:
+        opener = _FakeOpener(
+            [
+                [
+                    {
+                        "symbol": "FETUSDT",
+                        "fundingTime": 1_700_000_000_000,
+                        "fundingRate": "0.00010000",
+                        "markPrice": "1.2345",
+                    }
+                ]
+            ]
+        )
+        client = BinanceClient(BinanceClientConfig(), opener=opener)
+
+        funding = client.fetch_usdm_perpetual_funding_rates(
+            symbol="FETUSDT.P",
+            start_ms=1_700_000_000_000,
+            end_ms=1_700_000_000_000,
+        )
+
+        self.assertEqual(len(funding), 1)
+        self.assertEqual(funding[0].symbol, "FETUSDT.P")
+        self.assertAlmostEqual(funding[0].rate, 0.0001)
+        self.assertAlmostEqual(funding[0].mark_price, 1.2345)
+        self.assertIn("https://fapi.binance.com/fapi/v1/fundingRate", opener.urls[0])
+        self.assertIn("symbol=FETUSDT", opener.urls[0])
+
     def test_config_strips_base_url(self) -> None:
         config = BinanceClientConfig(base_url=" https://api.binance.com/ ")
         client = BinanceClient(config, opener=_FakeOpener([[]]))
