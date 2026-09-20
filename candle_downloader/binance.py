@@ -9,11 +9,21 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import OpenerDirector, ProxyHandler, Request, build_opener
 
-from .models import Candle, normalize_symbol
+from .models import (
+    Candle,
+    FundingRate,
+    binance_usdm_api_symbol,
+    normalize_symbol,
+    normalize_usdm_perpetual_symbol,
+    to_datetime,
+)
 
 BINANCE_BASE_URL = "https://api.binance.com"
+BINANCE_USDM_FUTURES_BASE_URL = "https://fapi.binance.com"
 KLINES_ENDPOINT = "/api/v3/klines"
 TICKER_24H_ENDPOINT = "/api/v3/ticker/24hr"
+USDM_FUTURES_KLINES_ENDPOINT = "/fapi/v1/klines"
+USDM_FUTURES_FUNDING_RATE_ENDPOINT = "/fapi/v1/fundingRate"
 DEFAULT_HEADERS = {
     "Accept": "application/json",
     "User-Agent": "Simpler-Trader/1.0",
@@ -52,6 +62,7 @@ def interval_to_milliseconds(interval: str) -> int:
 @dataclass(frozen=True, slots=True)
 class BinanceClientConfig:
     base_url: str = BINANCE_BASE_URL
+    usdm_futures_base_url: str = BINANCE_USDM_FUTURES_BASE_URL
     timeout: float = 10.0
     proxies: Mapping[str, str] | None = None
     max_retries: int = 5
@@ -64,6 +75,10 @@ class BinanceClientConfig:
         if not base_url:
             raise ValueError("base_url cannot be empty")
         object.__setattr__(self, "base_url", base_url)
+        usdm_futures_base_url = self.usdm_futures_base_url.strip()
+        if not usdm_futures_base_url:
+            raise ValueError("usdm_futures_base_url cannot be empty")
+        object.__setattr__(self, "usdm_futures_base_url", usdm_futures_base_url)
         if self.timeout <= 0:
             raise ValueError("timeout must be positive")
         if self.max_retries <= 0:
@@ -90,6 +105,7 @@ class BinanceClient:
         opener: OpenerDirector | None = None,
     ) -> None:
         self._base_url = config.base_url.rstrip("/")
+        self._usdm_futures_base_url = config.usdm_futures_base_url.rstrip("/")
         self._timeout = config.timeout
         self._max_retries = config.max_retries
         self._initial_retry_delay = config.initial_retry_delay
@@ -157,6 +173,100 @@ class BinanceClient:
             symbol=normalized_symbol,
             interval=normalized_interval,
         )
+
+    def fetch_usdm_perpetual_klines(
+        self,
+        *,
+        symbol: str,
+        interval: str,
+        start_ms: int,
+        end_ms: int,
+        limit: int,
+    ) -> List[Candle]:
+        """Fetch USDⓈ-M perpetual contract candles from Binance Futures.
+
+        The caller may provide either ``BTCUSDT`` or ``BTCUSDT.P``.  Candles
+        retain the latter form locally, but Binance receives its required
+        API symbol without the charting suffix.
+        """
+        normalized_symbol = normalize_usdm_perpetual_symbol(symbol)
+        normalized_interval = self._normalize_interval(interval)
+        validated_limit = self._validate_limit(limit)
+        if end_ms <= start_ms:
+            return []
+
+        params = self._build_klines_params(
+            symbol=binance_usdm_api_symbol(normalized_symbol),
+            interval=normalized_interval,
+            start_ms=start_ms,
+            end_ms=end_ms,
+            limit=validated_limit,
+        )
+        payload = self._get_json(
+            USDM_FUTURES_KLINES_ENDPOINT,
+            params,
+            context=params,
+            base_url=self._usdm_futures_base_url,
+        )
+        rows = self._require_list_payload(payload, endpoint=USDM_FUTURES_KLINES_ENDPOINT)
+        return self._parse_klines(
+            rows,
+            symbol=normalized_symbol,
+            interval=normalized_interval,
+        )
+
+    def fetch_usdm_perpetual_funding_rates(
+        self,
+        *,
+        symbol: str,
+        start_ms: int,
+        end_ms: int,
+        limit: int = MAX_BATCH,
+    ) -> List[FundingRate]:
+        """Fetch settled funding rates and their settlement mark prices.
+
+        Binance returns a maximum of 1,000 rows.  This method paginates by
+        funding timestamp so the result spans arbitrary backtest windows.
+        """
+        normalized_symbol = normalize_usdm_perpetual_symbol(symbol)
+        api_symbol = binance_usdm_api_symbol(normalized_symbol)
+        validated_limit = self._validate_limit(limit)
+        if end_ms < start_ms:
+            return []
+
+        funding_rates: List[FundingRate] = []
+        cursor = start_ms
+        while cursor <= end_ms:
+            params: Dict[str, str | int] = {
+                "symbol": api_symbol,
+                "startTime": cursor,
+                "endTime": end_ms,
+                "limit": validated_limit,
+            }
+            payload = self._get_json(
+                USDM_FUTURES_FUNDING_RATE_ENDPOINT,
+                params,
+                context=params,
+                base_url=self._usdm_futures_base_url,
+            )
+            rows = self._require_list_payload(
+                payload, endpoint=USDM_FUTURES_FUNDING_RATE_ENDPOINT
+            )
+            parsed = self._parse_usdm_funding_rates(
+                rows,
+                symbol=normalized_symbol,
+                start_ms=start_ms,
+                end_ms=end_ms,
+            )
+            if not parsed:
+                break
+            funding_rates.extend(parsed)
+            last_funding_ms = int(parsed[-1].funding_time.timestamp() * 1000)
+            if len(rows) < validated_limit or last_funding_ms >= end_ms:
+                break
+            cursor = last_funding_ms + 1
+
+        return funding_rates
 
     def fetch_top_symbols(self, limit: int = 100) -> List[str]:
         """Return the most liquid USDT symbols based on 24h quote volume."""
@@ -227,6 +337,45 @@ class BinanceClient:
                 ) from exc
         return candles
 
+    def _parse_usdm_funding_rates(
+        self,
+        rows: Sequence[object],
+        *,
+        symbol: str,
+        start_ms: int,
+        end_ms: int,
+    ) -> List[FundingRate]:
+        funding_rates: List[FundingRate] = []
+        for index, row in enumerate(rows):
+            if not isinstance(row, Mapping):
+                raise RuntimeError(
+                    "Binance returned invalid funding-rate row at index "
+                    f"{index}: {row!r}"
+                )
+            try:
+                funding_time_ms = int(row["fundingTime"])
+                rate = float(row["fundingRate"])
+                mark_price = float(row["markPrice"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise RuntimeError(
+                    "Binance funding history must include fundingTime, "
+                    "fundingRate, and settlement markPrice"
+                ) from exc
+            if mark_price <= 0:
+                raise RuntimeError(
+                    "Binance funding history returned a non-positive settlement markPrice"
+                )
+            if start_ms <= funding_time_ms <= end_ms:
+                funding_rates.append(
+                    FundingRate(
+                        symbol=symbol,
+                        funding_time=to_datetime(funding_time_ms),
+                        rate=rate,
+                        mark_price=mark_price,
+                    )
+                )
+        return funding_rates
+
     def _extract_top_symbols(self, rows: Sequence[object], *, limit: int) -> List[str]:
         def parse_volume(item: object) -> float:
             if not isinstance(item, Mapping):
@@ -261,8 +410,9 @@ class BinanceClient:
         params: Mapping[str, str | int] | None = None,
         *,
         context: Mapping[str, Any] | None = None,
+        base_url: str | None = None,
     ) -> object:
-        url = self._build_url(endpoint, params)
+        url = self._build_url(endpoint, params, base_url=base_url)
         delay = self._initial_retry_delay
         last_exception: Exception | None = None
 
@@ -377,10 +527,17 @@ class BinanceClient:
             extra=extra,
         )
 
-    def _build_url(self, endpoint: str, params: Mapping[str, str | int] | None) -> str:
+    def _build_url(
+        self,
+        endpoint: str,
+        params: Mapping[str, str | int] | None,
+        *,
+        base_url: str | None = None,
+    ) -> str:
+        resolved_base_url = (base_url or self._base_url).rstrip("/")
         if params:
-            return f"{self._base_url}{endpoint}?{urlencode(params)}"
-        return f"{self._base_url}{endpoint}"
+            return f"{resolved_base_url}{endpoint}?{urlencode(params)}"
+        return f"{resolved_base_url}{endpoint}"
 
     def _resolve_retry_delay(self, exc: HTTPError, *, fallback: float) -> float:
         retry_after = exc.headers.get("Retry-After") if exc.headers else None
