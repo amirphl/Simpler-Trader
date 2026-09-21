@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 from candle_downloader.binance import MAX_BATCH
 from candle_downloader.downloader import CandleDownloader, DownloadRequest
-from candle_downloader.models import Candle
+from candle_downloader.models import Candle, FundingRate
 from candle_downloader.storage import CandleStore
 
 from .performance import build_performance_statistics
@@ -64,6 +64,7 @@ class BacktestContext:
     config: BacktestRunConfig
     data: CandleMatrix
     ignore_candles: Dict[str, Dict[str, int]] = field(default_factory=dict)
+    funding_rates: Dict[str, List[FundingRate]] = field(default_factory=dict)
 
 
 @dataclass
@@ -154,6 +155,18 @@ class BacktestStrategy(ABC):
     def timeframes(self) -> Sequence[str]:
         """Return the Binance-compatible intervals needed by the strategy."""
 
+    def market_data_market(self) -> str:
+        """Return the market source used for candle retrieval.
+
+        Existing strategies remain spot-based.  Perpetual strategies opt in
+        explicitly so the downloader cannot accidentally reuse spot candles.
+        """
+        return "spot"
+
+    def requires_funding_history(self) -> bool:
+        """Whether this strategy needs actual USDⓈ-M funding settlements."""
+        return False
+
     @abstractmethod
     def run(self, context: BacktestContext) -> StrategyRunResult:
         """Execute backtest logic and return trade outcomes and optional extra stats."""
@@ -186,8 +199,14 @@ class BaseBacktester:
             start=compute_warmup_start(normalized_config),
             end=normalized_config.end,
             config=normalized_config,
+            market=self._strategy.market_data_market(),
         )
-        context = self._build_context(normalized_config, data)
+        funding_rates = self._download_funding_history(
+            symbols=symbols,
+            start=normalized_config.start,
+            end=normalized_config.end,
+        )
+        context = self._build_context(normalized_config, data, funding_rates)
         trades, custom_stats = self._parse_strategy_result(self._strategy.run(context))
         statistics = self._build_statistics(trades, normalized_config)
         if custom_stats:
@@ -200,12 +219,16 @@ class BaseBacktester:
         )
 
     def _build_context(
-        self, config: BacktestRunConfig, data: CandleMatrix
+        self,
+        config: BacktestRunConfig,
+        data: CandleMatrix,
+        funding_rates: Dict[str, List[FundingRate]] | None = None,
     ) -> BacktestContext:
         return BacktestContext(
             config=config,
             data=data,
             ignore_candles=build_ignore_candles(data, config.start),
+            funding_rates=funding_rates or {},
         )
 
     def _parse_strategy_result(
@@ -223,6 +246,7 @@ class BaseBacktester:
         start: datetime,
         end: datetime,
         config: BacktestRunConfig,
+        market: str,
     ) -> CandleMatrix:
         dataset: CandleMatrix = {}
         for symbol in symbols:
@@ -245,12 +269,35 @@ class BaseBacktester:
                     end=end,
                     override=config.override_download,
                     max_batch=config.max_batch,
+                    market=market,
                 )
                 self._downloader.sync(request)
                 dataset[symbol][timeframe] = self._store.load(
                     symbol, timeframe, start, end
                 )
         return dataset
+
+    def _download_funding_history(
+        self,
+        *,
+        symbols: Sequence[str],
+        start: datetime,
+        end: datetime,
+    ) -> Dict[str, List[FundingRate]]:
+        if not self._strategy.requires_funding_history():
+            return {}
+        if self._strategy.market_data_market() != "usdm_perpetual":
+            raise ValueError(
+                "Strategies that use funding history must use usdm_perpetual market data"
+            )
+        return {
+            symbol: self._downloader.fetch_usdm_perpetual_funding_rates(
+                symbol=symbol,
+                start=start,
+                end=end,
+            )
+            for symbol in symbols
+        }
 
     def _build_statistics(
         self,
