@@ -331,11 +331,15 @@ def compute_fee_slippage_summary(
 ) -> Dict[str, float]:
     fee_drag = 0.0
     slippage_drag = 0.0
+    funding_paid = 0.0
+    funding_received = 0.0
 
     for trade in trades:
         metadata = trade.metadata or {}
         fee_drag += _metadata_float(metadata, "entry_fee")
         fee_drag += _metadata_float(metadata, "exit_fee")
+        funding_paid += _metadata_float(metadata, "funding_paid")
+        funding_received += _metadata_float(metadata, "funding_received")
 
         qty = abs(_metadata_float(metadata, "qty"))
         entry_raw = _metadata_float(metadata, "entry_raw_price")
@@ -352,6 +356,10 @@ def compute_fee_slippage_summary(
         "fee_drag_pct": _safe_pct(fee_drag, initial_capital),
         "slippage_drag": slippage_drag,
         "slippage_drag_pct": _safe_pct(slippage_drag, initial_capital),
+        "funding_paid": funding_paid,
+        "funding_received": funding_received,
+        "funding_pnl": funding_received - funding_paid,
+        "funding_pnl_pct": _safe_pct(funding_received - funding_paid, initial_capital),
     }
 
 
