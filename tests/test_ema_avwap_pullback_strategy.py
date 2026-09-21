@@ -3,19 +3,21 @@ from __future__ import annotations
 import unittest
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from unittest.mock import Mock
 
-from backtest.base import BacktestContext, BacktestRunConfig
+from backtest.base import BacktestContext, BacktestRunConfig, BaseBacktester
 from backtest.ema_avwap_pullback_strategy import (
     EmaAvwapPullbackStrategy,
     EmaAvwapPullbackStrategyConfig,
     EntryMode,
     ExitBand,
     ExitMode,
+    FundingMode,
     _AvwapSnapshot,
     _PositionState,
     _SetupState,
 )
-from candle_downloader.models import Candle
+from candle_downloader.models import Candle, FundingRate
 
 
 def _candle(
@@ -177,6 +179,109 @@ class EmaAvwapPullbackStrategyTests(unittest.TestCase):
 
         self.assertIs(config.entry_mode, EntryMode.CLOSE)
         self.assertIs(config.exit_mode, ExitMode.CLOSE)
+        self.assertIs(config.funding_mode, FundingMode.HISTORICAL)
+        self.assertEqual(config.symbol, "ETHUSDT.P")
+
+    def test_ema_backtest_declares_futures_data_and_historical_funding(self) -> None:
+        strategy = EmaAvwapPullbackStrategy(_config(symbol="FETUSDT"))
+
+        self.assertEqual(strategy.symbols(), ["FETUSDT.P"])
+        self.assertEqual(strategy.market_data_market(), "usdm_perpetual")
+        self.assertTrue(strategy.requires_funding_history())
+
+        disabled = EmaAvwapPullbackStrategy(
+            _config(symbol="FETUSDT.P", funding_mode="none")
+        )
+        self.assertFalse(disabled.requires_funding_history())
+
+    def test_base_backtester_requests_futures_candles_and_funding(self) -> None:
+        downloader = Mock()
+        downloader.fetch_usdm_perpetual_funding_rates.return_value = []
+        store = Mock()
+        store.load.return_value = []
+        strategy = EmaAvwapPullbackStrategy(_config(symbol="FETUSDT"))
+        backtester = BaseBacktester(
+            strategy=strategy,
+            downloader=downloader,
+            store=store,
+        )
+        run_config = BacktestRunConfig(
+            start=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            end=datetime(2024, 1, 2, tzinfo=timezone.utc),
+        )
+
+        backtester.run(run_config)
+
+        request = downloader.sync.call_args.args[0]
+        self.assertEqual(request.symbol, "FETUSDT.P")
+        self.assertEqual(request.market, "usdm_perpetual")
+        downloader.fetch_usdm_perpetual_funding_rates.assert_called_once_with(
+            symbol="FETUSDT.P",
+            start=run_config.start,
+            end=run_config.end.replace(
+                hour=23, minute=59, second=59, microsecond=999999
+            ),
+        )
+
+    def test_funding_uses_settled_mark_price_sign_and_position_window(self) -> None:
+        timestamp = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        funding_rates = (
+            FundingRate(
+                symbol="ETHUSDT.P",
+                funding_time=timestamp,
+                rate=0.01,
+                mark_price=100.0,
+            ),
+            FundingRate(
+                symbol="ETHUSDT.P",
+                funding_time=timestamp + timedelta(hours=8),
+                rate=0.01,
+                mark_price=110.0,
+            ),
+            FundingRate(
+                symbol="ETHUSDT.P",
+                funding_time=timestamp + timedelta(hours=16),
+                rate=-0.01,
+                mark_price=120.0,
+            ),
+        )
+        long = _position(direction="long")
+        short = _position(direction="short")
+
+        long_result = EmaAvwapPullbackStrategy._funding_pnl_for_position(  # noqa: SLF001
+            position=long,
+            exit_time=timestamp + timedelta(hours=16),
+            funding_rates=funding_rates,
+        )
+        short_result = EmaAvwapPullbackStrategy._funding_pnl_for_position(  # noqa: SLF001
+            position=short,
+            exit_time=timestamp + timedelta(hours=16),
+            funding_rates=funding_rates,
+        )
+
+        # The entry-boundary settlement is excluded.  The long pays 1.1 at
+        # positive funding and receives 1.2 at negative funding; short is the
+        # exact inverse.
+        self.assertAlmostEqual(long_result[0], 1.1)
+        self.assertAlmostEqual(long_result[1], 1.2)
+        self.assertAlmostEqual(long_result[2], 0.1)
+        self.assertEqual(long_result[3], 2)
+        self.assertAlmostEqual(short_result[0], 1.2)
+        self.assertAlmostEqual(short_result[1], 1.1)
+        self.assertAlmostEqual(short_result[2], -0.1)
+        self.assertEqual(short_result[3], 2)
+
+    def test_market_close_slippage_is_adverse_for_every_direction(self) -> None:
+        strategy = EmaAvwapPullbackStrategy(_config(exit_slippage_pct=0.002))
+
+        self.assertAlmostEqual(
+            strategy._apply_exit_slippage("long", 100.0), 99.8  # noqa: SLF001
+        )
+        self.assertAlmostEqual(
+            strategy._apply_exit_slippage("short", 100.0), 100.2  # noqa: SLF001
+        )
+        with self.assertRaisesRegex(ValueError, "below 1.0"):
+            _config(exit_slippage_pct=1.0)
 
     def test_config_supports_all_independent_live_execution_controls(self) -> None:
         config = _config(
@@ -980,6 +1085,8 @@ class EmaAvwapPullbackStrategyTests(unittest.TestCase):
                 "close",
                 "--exit-band",
                 "band_2",
+                "--funding-mode",
+                "none",
                 "--max-entry-notional-usdt",
                 "25",
                 "--position-notional-pct",
@@ -993,6 +1100,7 @@ class EmaAvwapPullbackStrategyTests(unittest.TestCase):
         self.assertIs(cli_strategy._config.entry_mode, EntryMode.CLOSE)  # noqa: SLF001
         self.assertIs(cli_strategy._config.exit_mode, ExitMode.CLOSE)  # noqa: SLF001
         self.assertIs(cli_strategy._config.exit_band, ExitBand.BAND_2)  # noqa: SLF001
+        self.assertIs(cli_strategy._config.funding_mode, FundingMode.NONE)  # noqa: SLF001
         self.assertEqual(cli_strategy._config.max_entry_notional_usdt, 25.0)  # noqa: SLF001
         self.assertEqual(cli_strategy._config.position_notional_pct, 2.0)  # noqa: SLF001
 
@@ -1007,6 +1115,7 @@ class EmaAvwapPullbackStrategyTests(unittest.TestCase):
         self.assertIs(web_strategy._config.entry_mode, EntryMode.CLOSE)  # noqa: SLF001
         self.assertIs(web_strategy._config.exit_mode, ExitMode.LIVE)  # noqa: SLF001
         self.assertIs(web_strategy._config.exit_band, ExitBand.BAND_2)  # noqa: SLF001
+        self.assertIs(web_strategy._config.funding_mode, FundingMode.HISTORICAL)  # noqa: SLF001
         self.assertEqual(web_strategy._config.max_entry_notional_usdt, 30.0)  # noqa: SLF001
         self.assertEqual(web_strategy._config.max_setup_age_bars, 4)  # noqa: SLF001
 
