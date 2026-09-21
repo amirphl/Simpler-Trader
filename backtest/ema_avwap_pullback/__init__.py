@@ -5,6 +5,7 @@ from .config import (
     EntryMode,
     ExitBand,
     ExitMode,
+    FundingMode,
 )
 
 __all__ = [
@@ -12,4 +13,5 @@ __all__ = [
     "EntryMode",
     "ExitMode",
     "ExitBand",
+    "FundingMode",
 ]
