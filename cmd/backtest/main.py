@@ -33,6 +33,7 @@ from backtest import (
 )
 from candle_downloader.binance import BinanceClient, BinanceClientConfig
 from candle_downloader.downloader import CandleDownloader
+from candle_downloader.models import normalize_usdm_perpetual_symbol
 from candle_downloader.storage import build_store
 
 
@@ -208,6 +209,7 @@ def load_ema_avwap_pullback_env_config() -> Dict[str, str]:
         "taker_fee_pct": os.getenv("STRATEGY_TAKER_FEE_PCT", "0.0006"),
         "entry_slippage_pct": os.getenv("STRATEGY_ENTRY_SLIPPAGE_PCT", "0"),
         "exit_slippage_pct": os.getenv("STRATEGY_EXIT_SLIPPAGE_PCT", "0"),
+        "funding_mode": os.getenv("STRATEGY_FUNDING_MODE", "historical"),
         "use_gap_cross_detection": os.getenv(
             "STRATEGY_USE_GAP_CROSS_DETECTION", "true"
         ),
@@ -1055,7 +1057,10 @@ def build_ema_avwap_pullback_parser() -> argparse.ArgumentParser:
         default="ema_avwap_pullback",
         help="Backtest strategy to run",
     )
-    parser.add_argument("--symbol", help="Trading pair symbol (e.g., BTCUSDT)")
+    parser.add_argument(
+        "--symbol",
+        help="USDⓈ-M perpetual symbol (e.g., BTCUSDT or BTCUSDT.P)",
+    )
     parser.add_argument("--timeframe", help="Binance interval (e.g., 1h, 4h)")
     parser.add_argument("--leverage", type=float, help="Leverage multiplier")
     parser.add_argument(
@@ -1172,7 +1177,12 @@ def build_ema_avwap_pullback_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--exit-slippage-pct",
         type=float,
-        help="Exit slippage as a decimal percentage",
+        help="Adverse market-close slippage as a decimal fraction (0.002 = 0.2%%)",
+    )
+    parser.add_argument(
+        "--funding-mode",
+        choices=("historical", "none"),
+        help="Use actual Binance USDⓈ-M settled funding history, or explicitly disable funding",
     )
     parser.add_argument(
         "--use-gap-cross-detection",
@@ -1701,6 +1711,11 @@ def resolve_ema_avwap_pullback_config(
         args.exit_slippage_pct
         if args.exit_slippage_pct is not None
         else float(env_config.get("exit_slippage_pct", "0"))
+    )
+    config["funding_mode"] = (
+        args.funding_mode
+        or env_config.get("funding_mode")
+        or "historical"
     )
     if args.use_gap_cross_detection is not None:
         config["use_gap_cross_detection"] = args.use_gap_cross_detection
@@ -2369,6 +2384,7 @@ def build_ema_avwap_pullback_strategy(
             taker_fee_pct=float(config["taker_fee_pct"]),
             entry_slippage_pct=float(config["entry_slippage_pct"]),
             exit_slippage_pct=float(config["exit_slippage_pct"]),
+            funding_mode=str(config["funding_mode"]).strip().lower(),
             use_gap_cross_detection=bool(config["use_gap_cross_detection"]),
             max_decision_log_entries=int(config["max_decision_log_entries"]),
         )
@@ -2492,6 +2508,8 @@ def plot_results(
     else:
         symbol = str(config["symbol"])
         timeframe = str(config["timeframe"])
+        if strategy_name == "ema_avwap_pullback":
+            symbol = normalize_usdm_perpetual_symbol(symbol)
 
     try:
         fig = plot_backtest_from_store(
