@@ -14,6 +14,7 @@ from .ema_avwap_pullback_strategy import (
     EntryMode,
     ExitMode,
     ExitBand,
+    FundingMode,
 )
 from .indicators import atr, ema, rsi, sma
 from .performance import (
@@ -83,6 +84,7 @@ __all__ = [
     "EntryMode",
     "ExitMode",
     "ExitBand",
+    "FundingMode",
     "PinbarStrategy",
     "PinbarStrategyConfig",
     "PinBarMagicStrategy",
