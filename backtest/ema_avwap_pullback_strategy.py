@@ -5,7 +5,7 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
-from candle_downloader.models import Candle
+from candle_downloader.models import Candle, FundingRate
 
 from .base import BacktestContext, BacktestStrategy, TradePerformance
 from .ema_avwap_pullback.calculations import EmaAvwapCalculationsMixin
@@ -15,6 +15,7 @@ from .ema_avwap_pullback.config import (
     EntryMode,
     ExitBand,
     ExitMode,
+    FundingMode,
 )
 from .ema_avwap_pullback.models import (
     _AvwapSnapshot,
@@ -33,6 +34,7 @@ __all__ = [
     "EntryMode",
     "ExitMode",
     "ExitBand",
+    "FundingMode",
 ]
 
 
@@ -52,11 +54,31 @@ class EmaAvwapPullbackStrategy(
     def timeframes(self) -> Sequence[str]:
         return [self._config.timeframe]
 
+    def market_data_market(self) -> str:
+        return "usdm_perpetual"
+
+    def requires_funding_history(self) -> bool:
+        return self._config.funding_mode is FundingMode.HISTORICAL
+
     def run(
         self, context: BacktestContext
     ) -> Tuple[Sequence[TradePerformance], Mapping[str, Any] | None]:
         cfg = self._config
         candles = context.data.get(cfg.symbol, {}).get(cfg.timeframe, [])
+        # Direct strategy tests and external callers written before futures
+        # normalization may still provide a legacy bare key.  BaseBacktester
+        # always supplies the canonical ``.P`` key, so this fallback never
+        # permits a production spot download.
+        legacy_symbol = cfg.symbol[:-2]
+        if not candles:
+            candles = context.data.get(legacy_symbol, {}).get(cfg.timeframe, [])
+        funding_rates = (
+            tuple(context.funding_rates.get(cfg.symbol, ()))
+            if cfg.funding_mode is FundingMode.HISTORICAL
+            else ()
+        )
+        if not funding_rates and cfg.funding_mode is FundingMode.HISTORICAL:
+            funding_rates = tuple(context.funding_rates.get(legacy_symbol, ()))
         if not candles:
             return [], {"note": "no_data"}
         if len(candles) < max(cfg.ema_length, cfg.consecutive_count):
@@ -127,6 +149,19 @@ class EmaAvwapPullbackStrategy(
                     "the deterministic OHLC path proxy"
                 ),
                 "protective_stop_model": "rigid_stop_plus_ratcheting_trailing_stop",
+                "market_data": "Binance USDⓈ-M perpetual futures",
+                "local_futures_symbol": cfg.symbol,
+                "binance_api_symbol": cfg.symbol[:-2],
+                "funding_mode": cfg.funding_mode.value,
+                "funding_model": (
+                    "actual_Binance_USDⓈ-M_settled_rate_times_settlement_mark_price"
+                    if cfg.funding_mode is FundingMode.HISTORICAL
+                    else "disabled_by_configuration"
+                ),
+                "funding_timing": (
+                    "a position pays or receives each settlement strictly after "
+                    "entry and at or before exit"
+                ),
             },
             "setups_detected_long": 0,
             "setups_detected_short": 0,
@@ -163,6 +198,12 @@ class EmaAvwapPullbackStrategy(
             "exit_reason_counts": {},
             "total_entry_fees": 0.0,
             "total_exit_fees": 0.0,
+            "total_exit_slippage_cost": 0.0,
+            "funding_events_available": len(funding_rates),
+            "funding_events_applied": 0,
+            "total_funding_paid": 0.0,
+            "total_funding_received": 0.0,
+            "net_funding_pnl": 0.0,
             "max_margin_required": 0.0,
             "decision_log": decision_log,
             "initial_equity": cfg.initial_equity,
@@ -228,6 +269,7 @@ class EmaAvwapPullbackStrategy(
                         activation_level=exit_decision.activation_level,
                         target_level=exit_decision.target_level,
                         avwap=avwap,
+                        funding_rates=funding_rates,
                         trades=trades,
                         stats=stats,
                     )
@@ -312,6 +354,7 @@ class EmaAvwapPullbackStrategy(
                         activation_level=exit_decision.activation_level,
                         target_level=exit_decision.target_level,
                         avwap=avwap,
+                        funding_rates=funding_rates,
                         trades=trades,
                         stats=stats,
                     )
@@ -380,6 +423,7 @@ class EmaAvwapPullbackStrategy(
                     position.direction, avwap, position.exit_band
                 ),
                 avwap=avwap,
+                funding_rates=funding_rates,
                 trades=trades,
                 stats=stats,
             )
@@ -1716,6 +1760,45 @@ class EmaAvwapPullbackStrategy(
             return max(trailing_stop, rigid_stop)
         return min(trailing_stop, rigid_stop)
 
+    @staticmethod
+    def _funding_pnl_for_position(
+        *,
+        position: _PositionState,
+        exit_time: datetime,
+        funding_rates: Sequence[FundingRate],
+    ) -> Tuple[float, float, float, int]:
+        """Calculate settled funding paid/received while the position existed.
+
+        Binance reports the funding rate and its exact settlement mark price.
+        A positive rate transfers value from longs to shorts; a negative rate
+        reverses that transfer.  The entry timestamp is exclusive because a
+        position opened at the settlement instant was not held for that
+        payment.  The exit timestamp is inclusive: an OHLC close execution is
+        modelled after the completed candle, so it was held through a funding
+        settlement at that boundary.
+        """
+        funding_paid = 0.0
+        funding_received = 0.0
+        event_count = 0
+
+        for funding_rate in funding_rates:
+            if not position.entry_time < funding_rate.funding_time <= exit_time:
+                continue
+            payment = position.qty * funding_rate.mark_price * funding_rate.rate
+            funding_pnl = -payment if position.direction == "long" else payment
+            if funding_pnl < 0:
+                funding_paid += abs(funding_pnl)
+            else:
+                funding_received += funding_pnl
+            event_count += 1
+
+        return (
+            funding_paid,
+            funding_received,
+            funding_received - funding_paid,
+            event_count,
+        )
+
     def _close_position(
         self,
         *,
@@ -1729,23 +1812,45 @@ class EmaAvwapPullbackStrategy(
         activation_level: float,
         target_level: float | None,
         avwap: _AvwapSnapshot,
+        funding_rates: Sequence[FundingRate],
         trades: List[TradePerformance],
         stats: Dict[str, Any],
     ) -> float:
         exit_price = self._apply_exit_slippage(position.direction, raw_exit_price)
+        exit_slippage_cost = abs(exit_price - raw_exit_price) * position.qty
         exit_fee = exit_price * position.qty * self._config.taker_fee_pct
         stats["total_exit_fees"] += exit_fee
+        stats["total_exit_slippage_cost"] += exit_slippage_cost
 
         if position.direction == "long":
             gross_pnl = (exit_price - position.entry_price) * position.qty
-            return_pct = ((exit_price - position.entry_price) / position.entry_price) * 100.0
+            price_return_pct = (
+                (exit_price - position.entry_price) / position.entry_price
+            ) * 100.0
         else:
             gross_pnl = (position.entry_price - exit_price) * position.qty
-            return_pct = ((position.entry_price - exit_price) / position.entry_price) * 100.0
+            price_return_pct = (
+                (position.entry_price - exit_price) / position.entry_price
+            ) * 100.0
 
-        net_pnl = gross_pnl - position.entry_fee - exit_fee
+        funding_paid, funding_received, funding_pnl, funding_event_count = (
+            self._funding_pnl_for_position(
+                position=position,
+                exit_time=exit_time,
+                funding_rates=funding_rates,
+            )
+        )
+        stats["funding_events_applied"] += funding_event_count
+        stats["total_funding_paid"] += funding_paid
+        stats["total_funding_received"] += funding_received
+        stats["net_funding_pnl"] += funding_pnl
+
+        net_pnl_before_funding = gross_pnl - position.entry_fee - exit_fee
+        net_pnl = net_pnl_before_funding + funding_pnl
         position_notional = position.entry_price * position.qty
-        position_pnl_pct = (net_pnl / position_notional) * 100.0 if position_notional > 0 else 0.0
+        position_pnl_pct = (
+            (net_pnl / position_notional) * 100.0 if position_notional > 0 else 0.0
+        )
         notional_multiple = (
             net_pnl / position.position_notional_budget
             if position.position_notional_budget > 0
@@ -1772,10 +1877,16 @@ class EmaAvwapPullbackStrategy(
             "position_notional_budget": position.position_notional_budget,
             "entry_fee": position.entry_fee,
             "exit_fee": exit_fee,
+            "exit_slippage_cost": exit_slippage_cost,
             "gross_pnl": gross_pnl,
+            "net_pnl_before_funding": net_pnl_before_funding,
+            "funding_paid": funding_paid,
+            "funding_received": funding_received,
+            "funding_pnl": funding_pnl,
+            "funding_event_count": funding_event_count,
             "net_pnl": net_pnl,
             "position_pnl_pct": position_pnl_pct,
-            "price_return_pct": return_pct,
+            "price_return_pct": price_return_pct,
             "notional_multiple": notional_multiple,
             "holding_bars": holding_bars,
             "stop_level_at_entry": position.stop_level_at_entry,
@@ -1795,7 +1906,7 @@ class EmaAvwapPullbackStrategy(
                 entry_time=position.entry_time,
                 exit_time=exit_time,
                 pnl=net_pnl,
-                return_pct=return_pct,
+                return_pct=position_pnl_pct,
                 notes=exit_reason,
                 metadata=metadata,
             )
@@ -1832,10 +1943,15 @@ class EmaAvwapPullbackStrategy(
                 "raw_exit_price": raw_exit_price,
                 "position_pnl": net_pnl,
                 "position_pnl_pct": position_pnl_pct,
-                "price_return_pct": return_pct,
+                "price_return_pct": price_return_pct,
                 "gross_pnl": gross_pnl,
                 "entry_fee": position.entry_fee,
                 "exit_fee": exit_fee,
+                "exit_slippage_cost": exit_slippage_cost,
+                "funding_paid": funding_paid,
+                "funding_received": funding_received,
+                "funding_pnl": funding_pnl,
+                "funding_event_count": funding_event_count,
                 "position_notional_budget": position.position_notional_budget,
                 "position_sizing_mode": position.position_sizing_mode,
                 "trailing_stop": position.trailing_stop,
