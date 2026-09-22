@@ -2,7 +2,7 @@ export const STORAGE_KEY = "ema_avwap_pullback_form_v1";
 
 export const PRESETS = Object.freeze({
   baseline: {
-    symbol: "ETHUSDT",
+    symbol: "ETHUSDT.P",
     timeframe: "1h",
     start: "2025-01-01T00:00",
     leverage: "1",
@@ -30,6 +30,7 @@ export const PRESETS = Object.freeze({
     taker_fee_pct: "0.0006",
     entry_slippage_pct: "0",
     exit_slippage_pct: "0",
+    funding_mode: "historical",
     use_gap_cross_detection: "true",
     max_decision_log_entries: "20000",
     risk_free_rate: "0",
