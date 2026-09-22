@@ -220,7 +220,7 @@ class EmaAvwapPullbackParams(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    symbol: str = Field(default="ETHUSDT")
+    symbol: str = Field(default="ETHUSDT.P")
     timeframe: str = Field(default="1h")
     leverage: float = Field(default=10.0, gt=0.0)
     max_entry_notional_usdt: float = Field(default=15.0, gt=0.0)
@@ -249,8 +249,9 @@ class EmaAvwapPullbackParams(BaseModel):
     trailing_gap_pct: float = Field(default=1.0, ge=0.0)
     maker_fee_pct: float = Field(default=0.0002, ge=0.0)
     taker_fee_pct: float = Field(default=0.0006, ge=0.0)
-    entry_slippage_pct: float = Field(default=0.0, ge=0.0)
-    exit_slippage_pct: float = Field(default=0.0, ge=0.0)
+    entry_slippage_pct: float = Field(default=0.0, ge=0.0, lt=1.0)
+    exit_slippage_pct: float = Field(default=0.0, ge=0.0, lt=1.0)
+    funding_mode: Literal["historical", "none"] = "historical"
     use_gap_cross_detection: bool = True
     max_decision_log_entries: int = Field(default=20000, ge=1)
 
@@ -275,6 +276,7 @@ class EmaAvwapPullbackParams(BaseModel):
         "entry_mode",
         "exit_mode",
         "exit_band",
+        "funding_mode",
         mode="before",
     )
     @classmethod
