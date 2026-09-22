@@ -115,7 +115,7 @@ function getAnalysis(data) {
 
 function getStrategyParams(data) {
   return {
-    symbol: requiredText(data.get("symbol"), "ETHUSDT"),
+    symbol: requiredText(data.get("symbol"), "ETHUSDT.P"),
     timeframe: requiredText(data.get("timeframe"), "1h"),
     leverage: numberValue(data.get("leverage"), 10),
     max_entry_notional_usdt: numberValue(
@@ -154,6 +154,7 @@ function getStrategyParams(data) {
     taker_fee_pct: numberValue(data.get("taker_fee_pct"), 0.0006),
     entry_slippage_pct: numberValue(data.get("entry_slippage_pct"), 0),
     exit_slippage_pct: numberValue(data.get("exit_slippage_pct"), 0),
+    funding_mode: requiredText(data.get("funding_mode"), "historical"),
     use_gap_cross_detection: booleanValue(
       data.get("use_gap_cross_detection"),
       true,
