@@ -41,6 +41,7 @@ from backtest.stochastic_fsm_strategy import (
 )
 from candle_downloader.binance import BinanceClient, BinanceClientConfig
 from candle_downloader.downloader import CandleDownloader
+from candle_downloader.models import normalize_usdm_perpetual_symbol
 from candle_downloader.storage import build_store
 
 from .models import (
@@ -300,6 +301,7 @@ def _build_ema_avwap_pullback_strategy(
             taker_fee_pct=float(values["taker_fee_pct"]),
             entry_slippage_pct=float(values["entry_slippage_pct"]),
             exit_slippage_pct=float(values["exit_slippage_pct"]),
+            funding_mode=str(values["funding_mode"]),
             use_gap_cross_detection=bool(values["use_gap_cross_detection"]),
             max_decision_log_entries=int(values["max_decision_log_entries"]),
         )
@@ -357,7 +359,7 @@ def _run_ema_avwap_robust_analysis(
         trade_regimes = None
         try:
             candles = store.load(
-                params.symbol,
+                normalize_usdm_perpetual_symbol(params.symbol),
                 params.timeframe,
                 run_config.start,
                 run_config.end,
