@@ -543,7 +543,17 @@
                   <div class="field-grid">
                     <label>
                       Symbol
-                      <input name="symbol" value="ETHUSDT" required />
+                      <input
+                        name="symbol"
+                        value="ETHUSDT.P"
+                        placeholder="FETUSDT or FETUSDT.P"
+                        required
+                      />
+                      <span class="hint"
+                        >USDⓈ-M perpetual. Plain Binance pairs are normalized
+                        to the local <code>.P</code> futures form before
+                        download.</span
+                      >
                     </label>
                     <label>
                       Timeframe
@@ -929,15 +939,36 @@
                       />
                     </label>
                     <label>
-                      Exit Slippage %
+                      Market-Close Exit Slippage
                       <input
                         name="exit_slippage_pct"
                         type="number"
                         value="0"
                         step="0.0001"
                         min="0"
+                        max="0.9999"
                         required
                       />
+                      <span class="hint"
+                        >Adverse fill fraction for every close order. For
+                        example, <code>0.002</code> models 0.2% worse than the
+                        trigger price (2.8% → roughly 2.6% before fees on a
+                        long).</span
+                      >
+                    </label>
+                    <label>
+                      Funding
+                      <select name="funding_mode">
+                        <option value="historical" selected>
+                          Historical Binance USDⓈ-M
+                        </option>
+                        <option value="none">Disabled</option>
+                      </select>
+                      <span class="hint"
+                        >Uses every actual settlement rate and Binance’s
+                        settlement mark price. This is a data source, not a
+                        manually optimized daily rate.</span
+                      >
                     </label>
                     <label>
                       Gap Cross Detection
