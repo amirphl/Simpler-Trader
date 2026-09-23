@@ -139,6 +139,9 @@ Note:
 - `SETUP_WAITING_REPLACEMENT_MODE=keep_waiting|replace_waiting`
 - `MAX_SETUP_AGE_BARS`: discard an unfilled setup after this many completed bars.
 - `MAX_ENTRY_DEVIATION_PCT`: reject an observed price that is too far from AVWAP.
+- `MAX_ENTRY_REPRICE_PCT`: when a queued limit is no longer marketable, submit
+  it at the current execution-venue price only if the move from the original
+  limit is within this percentage. Set `0` to retain the strict drop behavior.
 - `MAX_POSITION_SIZE_PCT` and `MAX_ENTRY_NOTIONAL_USDT`: percentage and
   absolute caps on the entry-notional budget.
 - `MAX_CONCURRENT_POSITIONS=1`: EMA + AVWAP allows one active or pending entry
