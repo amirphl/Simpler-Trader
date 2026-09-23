@@ -1038,11 +1038,52 @@ class EmaAvwapSignalMixin(EmaAvwapMixinTyping):
                 "current execution-venue price is unavailable"
             )
         direction: Direction = "long" if pending.side is PositionSide.LONG else "short"
-        if not self._entry_price_is_marketable(
+        if self._entry_price_is_marketable(
             direction=direction,
             current_price=current_price,
             entry_price=pending.entry_price,
         ):
+            return
+
+        previous_limit = pending.entry_price
+        meta = self._pending_meta_by_key.get(pending.order_key)
+        signal_limit = (
+            meta.candidate.order_price if meta is not None else previous_limit
+        )
+        if signal_limit <= 0:
             raise _EntryNoLongerMarketableError(
-                f"current={current_price:.8f} limit={pending.entry_price:.8f}"
+                f"invalid queued limit={signal_limit:.8f}"
             )
+        reprice_distance_pct = (
+            abs(current_price - signal_limit) / signal_limit * 100.0
+        )
+        if reprice_distance_pct > self._cfg.max_entry_reprice_pct:
+            raise _EntryNoLongerMarketableError(
+                f"current={current_price:.8f} limit={previous_limit:.8f} "
+                f"signal_limit={signal_limit:.8f} move={reprice_distance_pct:.4f}% "
+                f"max_reprice={self._cfg.max_entry_reprice_pct:.4f}%"
+            )
+
+        # A marketable limit at the current venue price is intentionally used
+        # instead of leaving the original price resting after a small, normal
+        # move between signal evaluation and submission.  Always compare with
+        # the original candidate price above, so repeated attempts cannot chase
+        # the market beyond the configured bound.
+        pending.entry_price = current_price
+        pending.notes = (
+            f"{pending.notes}; repriced marketable limit from "
+            f"{previous_limit:.8f} to {current_price:.8f} "
+            f"({reprice_distance_pct:.4f}% from signal limit)"
+        ).strip("; ")
+        self._save_state()
+        self._log.info(
+            "EmaAvwapPullback: repriced %s %s entry limit from %.8f to %.8f "
+            "(signal_limit=%.8f move=%.4f%% max_reprice=%.4f%%)",
+            pending.symbol,
+            pending.side.value,
+            previous_limit,
+            current_price,
+            signal_limit,
+            reprice_distance_pct,
+            self._cfg.max_entry_reprice_pct,
+        )
