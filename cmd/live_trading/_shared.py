@@ -299,6 +299,9 @@ def _load_ema_avwap_pullback_env_config(read_env: Callable[..., str]) -> Dict[st
         "max_entry_deviation_pct": read_env(
             "MAX_ENTRY_DEVIATION_PCT", "STRATEGY_MAX_ENTRY_DEVIATION_PCT"
         ),
+        "max_entry_reprice_pct": read_env(
+            "MAX_ENTRY_REPRICE_PCT", "STRATEGY_MAX_ENTRY_REPRICE_PCT"
+        ),
         "position_sizing_mode": read_env(
             "POSITION_SIZING_MODE", "STRATEGY_POSITION_SIZING_MODE"
         ),
@@ -843,6 +846,10 @@ def _apply_ema_avwap_pullback_env_defaults(
         args.max_entry_deviation_pct = _parse_float(
             config["max_entry_deviation_pct"], "MAX_ENTRY_DEVIATION_PCT"
         )
+    if config.get("max_entry_reprice_pct"):
+        args.max_entry_reprice_pct = _parse_float(
+            config["max_entry_reprice_pct"], "MAX_ENTRY_REPRICE_PCT"
+        )
     if config.get("position_sizing_mode"):
         args.position_sizing_mode = config["position_sizing_mode"].strip().lower()
     if config.get("removed_entry_exit_mode"):
@@ -1333,6 +1340,7 @@ def build_ema_avwap_pullback_config(
         ),
         max_setup_age_bars=int(_arg(args, "max_setup_age_bars", 3)),
         max_entry_deviation_pct=float(_arg(args, "max_entry_deviation_pct", 1.0)),
+        max_entry_reprice_pct=float(_arg(args, "max_entry_reprice_pct", 0.5)),
         position_sizing_mode=str(
             _arg(args, "position_sizing_mode", "risk_amount_per_price")
         ),
