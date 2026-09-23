@@ -84,6 +84,7 @@ export function renderPerformance(result) {
     ["Turnover", formatNumber(performance.turnover, 2)],
     ["Fee Drag", formatNumber(performance.fee_drag, 2)],
     ["Slippage Drag", formatNumber(performance.slippage_drag, 2)],
+    ["Funding PnL", formatNumber(performance.funding_pnl, 2)],
     ["Deflated Sharpe", formatNumber(performance.deflated_sharpe_ratio, 3)],
   ]);
 
