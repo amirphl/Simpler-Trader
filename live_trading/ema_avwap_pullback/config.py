@@ -64,6 +64,10 @@ class EmaAvwapPullbackLiveConfig:
     setup_waiting_replacement_mode: SetupWaitingReplacementMode = "keep_waiting"
     max_setup_age_bars: int = 3
     max_entry_deviation_pct: float = 1.0
+    # A just-generated limit can lose marketability while the bot validates
+    # account settings. Reprice only a small move to the execution-venue
+    # price; a larger move is a materially different trade and remains blocked.
+    max_entry_reprice_pct: float = 0.5
     position_sizing_mode: PositionSizingMode = "risk_amount_per_price"
     entry_mode: EntryMode = EntryMode.LIVE
     exit_mode: ExitMode = ExitMode.LIVE
@@ -136,6 +140,8 @@ class EmaAvwapPullbackLiveConfig:
             raise ValueError("max_setup_age_bars must be positive")
         if self.max_entry_deviation_pct < 0:
             raise ValueError("max_entry_deviation_pct must be non-negative")
+        if self.max_entry_reprice_pct < 0:
+            raise ValueError("max_entry_reprice_pct must be non-negative")
         if self.ema_validation_mode not in {"body", "wick"}:
             raise ValueError("ema_validation_mode must be one of: body, wick")
         if self.setup_waiting_replacement_mode not in {
