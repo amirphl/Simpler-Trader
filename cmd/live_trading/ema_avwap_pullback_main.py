@@ -106,6 +106,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-setup-age-bars", type=int, default=3)
     parser.add_argument("--max-entry-deviation-pct", type=float, default=1.0)
     parser.add_argument(
+        "--max-entry-reprice-pct",
+        type=float,
+        default=0.5,
+        help="Reprice a queued limit to the current venue price only within this move",
+    )
+    parser.add_argument(
         "--position-sizing-mode",
         choices=["risk_amount_per_price"],
         default="risk_amount_per_price",
