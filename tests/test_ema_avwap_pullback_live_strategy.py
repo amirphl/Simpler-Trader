@@ -58,6 +58,8 @@ class _FakeExchange:
         self.stop_update_ok = True
         self.stop_updates: list[float] = []
         self.close_calls: list[tuple[str, PositionSide | None]] = []
+        self.close_error: Exception | None = None
+        self.close_error_removes_position = False
         self.open_orders: list[tuple[str, PositionSide, float, float, float | None]] = []
         self.open_order_client_ids: list[str | None] = []
         self.validated_quantities: list[tuple[str, float]] = []
@@ -156,6 +158,14 @@ class _FakeExchange:
         self, symbol: str, side: PositionSide | None = None
     ) -> OrderResult:
         self.close_calls.append((symbol, side))
+        if self.close_error is not None:
+            if self.close_error_removes_position:
+                self.positions = [
+                    position
+                    for position in self.positions
+                    if position.symbol != symbol
+                ]
+            raise self.close_error
         self.positions = [
             position for position in self.positions if position.symbol != symbol
         ]
@@ -935,6 +945,7 @@ class EmaAvwapPullbackLiveCoordinatorTests(unittest.TestCase):
             position_notional_pct=3.0,
             rigid_stop_loss_pct=3.0,
             ema_avwap_account_lock_file=account_lock_file,
+            max_entry_reprice_pct=0.25,
             entry_mode="close",
             exit_mode="live",
             exit_band="band_2",
@@ -946,6 +957,7 @@ class EmaAvwapPullbackLiveCoordinatorTests(unittest.TestCase):
 
         self.assertEqual(config.max_position_size_pct, 7.5)
         self.assertEqual(config.position_notional_pct, 3.0)
+        self.assertEqual(config.max_entry_reprice_pct, 0.25)
         self.assertEqual(config.account_lock_file, account_lock_file)
         self.assertIs(config.entry_mode, EntryMode.CLOSE)
         self.assertIs(config.exit_mode, ExitMode.LIVE)
@@ -1103,6 +1115,70 @@ class EmaAvwapPullbackLiveCoordinatorTests(unittest.TestCase):
 
             self.assertIsNone(candidate)
 
+    def test_small_non_marketable_move_is_repriced_and_submitted(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            exchange = _FakeExchange()
+            coordinator = EmaAvwapPullbackLiveCoordinator(
+                exchange=exchange,
+                config=self._persistent_config(tmpdir, max_entry_reprice_pct=0.5),
+            )
+            candidate = _candidate()
+            now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+
+            activate_due_entries = coordinator._activate_due_entries  # noqa: SLF001
+            coordinator._activate_due_entries = lambda _now: None  # type: ignore[method-assign]  # noqa: SLF001,E501
+            self.assertTrue(
+                coordinator._queue_entry_candidate(candidate, now)  # noqa: SLF001
+            )
+            coordinator._activate_due_entries = activate_due_entries  # type: ignore[method-assign]  # noqa: SLF001,E501
+
+            exchange.price = 100.25
+            activate_due_entries(now)
+
+            pending = coordinator._state.pending_entries["ETHUSDT:LONG"]  # noqa: SLF001
+            self.assertEqual(len(exchange.open_orders), 1)
+            self.assertEqual(exchange.open_orders[0][3], 100.25)
+            self.assertEqual(pending.entry_price, 100.25)
+            self.assertEqual(pending.status, "PLACED")
+            self.assertIn("repriced marketable limit", pending.notes)
+            coordinator.stop()
+
+    def test_large_non_marketable_move_is_not_repriced(self) -> None:
+        with TemporaryDirectory() as tmpdir:
+            exchange = _FakeExchange()
+            exchange.price = 100.51
+            coordinator = EmaAvwapPullbackLiveCoordinator(
+                exchange=exchange,
+                config=self._persistent_config(tmpdir, max_entry_reprice_pct=0.5),
+            )
+            now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+            pending = PendingEntryRecord(
+                order_key="ETHUSDT:LONG",
+                symbol="ETHUSDT",
+                side=PositionSide.LONG,
+                entry_price=100.25,
+                quantity=1.0,
+                leverage=2,
+                margin_mode=MarginMode.ISOLATED,
+                risk_amount=5.0,
+                stop_for_risk=97.5,
+                created_time=now,
+                signal_time=now,
+                activate_time=now,
+                client_id="emaavwap-test-id",
+            )
+            coordinator._pending_meta_by_key[pending.order_key] = _PendingEntryMeta(  # noqa: SLF001
+                candidate=_candidate()
+            )
+
+            with self.assertRaisesRegex(
+                RuntimeError, "max_reprice=0.5000%"
+            ):
+                coordinator._ensure_pending_limit_is_marketable(pending)  # noqa: SLF001
+
+            self.assertEqual(pending.entry_price, 100.25)
+            coordinator.stop()
+
     def test_filled_position_confirms_initial_rigid_stop(self) -> None:
         with TemporaryDirectory() as tmpdir:
             exchange = _FakeExchange()
@@ -1155,6 +1231,56 @@ class EmaAvwapPullbackLiveCoordinatorTests(unittest.TestCase):
                 coordinator._state.active_positions["ETHUSDT"].stop_loss,  # noqa: SLF001
                 97.5,
             )
+
+    def test_close_error_marks_position_closed_when_exchange_confirms_it_is_flat(
+        self,
+    ) -> None:
+        with TemporaryDirectory() as tmpdir:
+            exchange = _FakeExchange()
+            exchange.price = 97.0
+            exchange.positions = [
+                Position(
+                    symbol="ETHUSDT",
+                    side=PositionSide.LONG,
+                    size=1.0,
+                    entry_price=100.0,
+                    leverage=2,
+                    margin_mode=MarginMode.ISOLATED,
+                    unrealized_pnl=0.0,
+                    position_id="pos-1",
+                )
+            ]
+            exchange.close_error = RuntimeError(
+                "Bitunix error code 20008: Insufficient amount"
+            )
+            exchange.close_error_removes_position = True
+            coordinator = EmaAvwapPullbackLiveCoordinator(
+                exchange=exchange,
+                config=self._persistent_config(tmpdir),
+            )
+            now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+            position = PositionRecord(
+                position_id="pos-1",
+                symbol="ETHUSDT",
+                side=PositionSide.LONG,
+                entry_time=now,
+                entry_price=100.0,
+                quantity=1.0,
+                leverage=2,
+                margin_mode=MarginMode.ISOLATED,
+                take_profit=None,
+                stop_loss=97.5,
+                strategy="ema_avwap_pullback",
+            )
+            coordinator._state.active_positions[position.symbol] = position  # noqa: SLF001
+
+            coordinator._close_position(position, now, "Rigid stop loss")  # noqa: SLF001
+
+            self.assertEqual(exchange.close_calls, [("ETHUSDT", PositionSide.LONG)])
+            self.assertEqual(position.status, "CLOSED")
+            self.assertEqual(position.exit_price, 97.0)
+            self.assertNotIn("ETHUSDT", coordinator._state.active_positions)  # noqa: SLF001
+            self.assertIn("position confirmed absent", position.notes)
 
     def test_filled_position_without_confirmed_stop_is_emergency_closed(self) -> None:
         with TemporaryDirectory() as tmpdir:
