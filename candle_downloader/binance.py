@@ -24,12 +24,16 @@ KLINES_ENDPOINT = "/api/v3/klines"
 TICKER_24H_ENDPOINT = "/api/v3/ticker/24hr"
 USDM_FUTURES_KLINES_ENDPOINT = "/fapi/v1/klines"
 USDM_FUTURES_FUNDING_RATE_ENDPOINT = "/fapi/v1/fundingRate"
+USDM_FUTURES_MARK_PRICE_KLINES_ENDPOINT = "/fapi/v1/markPriceKlines"
 DEFAULT_HEADERS = {
     "Accept": "application/json",
     "User-Agent": "Simpler-Trader/1.0",
 }
 # Binance's /api/v3/klines endpoint accepts up to 1,000 rows per request.
 MAX_BATCH = 1_000
+MAX_MARK_PRICE_KLINES_BATCH = 1_500
+_MARK_PRICE_FALLBACK_INTERVAL = "1h"
+_MARK_PRICE_FALLBACK_INTERVAL_MS = 3_600_000
 
 _INTERVAL_TO_MILLISECONDS = {
     "1m": 60_000,
@@ -252,11 +256,18 @@ class BinanceClient:
             rows = self._require_list_payload(
                 payload, endpoint=USDM_FUTURES_FUNDING_RATE_ENDPOINT
             )
+            fallback_mark_prices = self._fetch_missing_funding_mark_prices(
+                rows,
+                api_symbol=api_symbol,
+                start_ms=start_ms,
+                end_ms=end_ms,
+            )
             parsed = self._parse_usdm_funding_rates(
                 rows,
                 symbol=normalized_symbol,
                 start_ms=start_ms,
                 end_ms=end_ms,
+                fallback_mark_prices=fallback_mark_prices,
             )
             if not parsed:
                 break
@@ -344,6 +355,7 @@ class BinanceClient:
         symbol: str,
         start_ms: int,
         end_ms: int,
+        fallback_mark_prices: Mapping[int, float] | None = None,
     ) -> List[FundingRate]:
         funding_rates: List[FundingRate] = []
         for index, row in enumerate(rows):
@@ -355,12 +367,26 @@ class BinanceClient:
             try:
                 funding_time_ms = int(row["fundingTime"])
                 rate = float(row["fundingRate"])
-                mark_price = float(row["markPrice"])
             except (KeyError, TypeError, ValueError) as exc:
                 raise RuntimeError(
                     "Binance funding history must include fundingTime, "
-                    "fundingRate, and settlement markPrice"
+                    "and fundingRate"
                 ) from exc
+            raw_mark_price = row.get("markPrice")
+            if raw_mark_price in (None, ""):
+                mark_price = (fallback_mark_prices or {}).get(funding_time_ms)
+                if mark_price is None:
+                    raise RuntimeError(
+                        "Binance funding history omitted settlement markPrice and "
+                        "no matching historical mark-price candle was available"
+                    )
+            else:
+                try:
+                    mark_price = float(raw_mark_price)
+                except (TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        "Binance funding history returned an invalid settlement markPrice"
+                    ) from exc
             if mark_price <= 0:
                 raise RuntimeError(
                     "Binance funding history returned a non-positive settlement markPrice"
@@ -375,6 +401,127 @@ class BinanceClient:
                     )
                 )
         return funding_rates
+
+    def _fetch_missing_funding_mark_prices(
+        self,
+        rows: Sequence[object],
+        *,
+        api_symbol: str,
+        start_ms: int,
+        end_ms: int,
+    ) -> Dict[int, float]:
+        """Recover mark prices omitted from historical funding responses.
+
+        Older Binance funding-history records can omit ``markPrice``.  The
+        mark-price kline immediately preceding the funding timestamp is the
+        closest public historical mark-price observation and avoids dropping
+        the entire backtest solely because that optional response field is
+        absent.
+        """
+        missing_times: set[int] = set()
+        for row in rows:
+            if not isinstance(row, Mapping) or row.get("markPrice") not in (None, ""):
+                continue
+            try:
+                funding_time_ms = int(row["fundingTime"])
+            except (KeyError, TypeError, ValueError):
+                # _parse_usdm_funding_rates provides the user-facing validation
+                # error for malformed funding rows.
+                continue
+            if start_ms <= funding_time_ms <= end_ms:
+                missing_times.add(funding_time_ms)
+        sorted_missing_times = sorted(missing_times)
+        if not sorted_missing_times:
+            return {}
+
+        first_open_ms = (
+            (sorted_missing_times[0] // _MARK_PRICE_FALLBACK_INTERVAL_MS)
+            * _MARK_PRICE_FALLBACK_INTERVAL_MS
+            - _MARK_PRICE_FALLBACK_INTERVAL_MS
+        )
+        last_funding_ms = sorted_missing_times[-1]
+        mark_candles = self._fetch_usdm_mark_price_klines(
+            api_symbol=api_symbol,
+            start_ms=first_open_ms,
+            end_ms=last_funding_ms,
+        )
+        mark_prices: Dict[int, float] = {}
+        candle_index = 0
+        for funding_time_ms in sorted_missing_times:
+            while (
+                candle_index + 1 < len(mark_candles)
+                and mark_candles[candle_index + 1][1] < funding_time_ms
+            ):
+                candle_index += 1
+            if candle_index >= len(mark_candles):
+                break
+            open_time_ms, close_time_ms, close_price = mark_candles[candle_index]
+            if (
+                open_time_ms < funding_time_ms
+                and close_time_ms < funding_time_ms
+                and close_price > 0
+            ):
+                mark_prices[funding_time_ms] = close_price
+        return mark_prices
+
+    def _fetch_usdm_mark_price_klines(
+        self,
+        *,
+        api_symbol: str,
+        start_ms: int,
+        end_ms: int,
+    ) -> List[tuple[int, int, float]]:
+        """Fetch hourly mark-price candles covering a funding-history window."""
+        candles: List[tuple[int, int, float]] = []
+        cursor = start_ms
+        while cursor < end_ms:
+            params = self._build_klines_params(
+                symbol=api_symbol,
+                interval=_MARK_PRICE_FALLBACK_INTERVAL,
+                start_ms=cursor,
+                end_ms=end_ms,
+                limit=MAX_MARK_PRICE_KLINES_BATCH,
+            )
+            payload = self._get_json(
+                USDM_FUTURES_MARK_PRICE_KLINES_ENDPOINT,
+                params,
+                context=params,
+                base_url=self._usdm_futures_base_url,
+            )
+            rows = self._require_list_payload(
+                payload, endpoint=USDM_FUTURES_MARK_PRICE_KLINES_ENDPOINT
+            )
+            if not rows:
+                break
+
+            last_open_ms: int | None = None
+            for index, row in enumerate(rows):
+                if not isinstance(row, Sequence) or isinstance(
+                    row, (str, bytes, bytearray)
+                ):
+                    raise RuntimeError(
+                        "Binance returned invalid mark-price kline row at index "
+                        f"{index}: {row!r}"
+                    )
+                try:
+                    open_time_ms = int(row[0])
+                    close_time_ms = int(row[6])
+                    close_price = float(row[4])
+                except (IndexError, TypeError, ValueError) as exc:
+                    raise RuntimeError(
+                        "Failed to parse Binance mark-price kline row at index "
+                        f"{index}: {row!r}"
+                    ) from exc
+                candles.append((open_time_ms, close_time_ms, close_price))
+                last_open_ms = open_time_ms
+
+            if last_open_ms is None or len(rows) < MAX_MARK_PRICE_KLINES_BATCH:
+                break
+            next_cursor = last_open_ms + _MARK_PRICE_FALLBACK_INTERVAL_MS
+            if next_cursor <= cursor:
+                break
+            cursor = next_cursor
+        return candles
 
     def _extract_top_symbols(self, rows: Sequence[object], *, limit: int) -> List[str]:
         def parse_volume(item: object) -> float:
