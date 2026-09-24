@@ -11,6 +11,7 @@ This repository is a Python workspace for testing trading ideas against Binance 
 - A local web control panel for submitting and monitoring backtests.
 - Live trading coordinators for `heiken_ashi`, `ema_avwap_pullback`, `pinbar_magic_v3`, and `strong_trend_stair`.
 - Bitunix futures adapter code plus helper scripts for positions, orders, and TP/SL management.
+- CCXT-backed Weex spot and USDT-perpetual adapter support.
 - Telegram signal notification for live engulfing-pattern scans.
 - Experimental market-structure tools for pivots, BOS/CHOCH, and liquidity zones.
 
@@ -279,6 +280,14 @@ Use `--help` on a specific module before changing live settings:
 python -m cmd.live_trading.ema_avwap_pullback_main --help
 python -m cmd.live_trading.pinbar_magic_v3_main --help
 ```
+
+EMA + AVWAP defaults to `EXCHANGE=bitunix`. In that mode all symbols except
+`ZECUSDT` execute on Bitunix; `ZECUSDT` is automatically routed to Weex because
+Bitunix does not list it. Configure `WEEX_API_KEY`, `WEEX_API_SECRET`, and
+`WEEX_API_PASSPHRASE` for this fallback. Set `EXCHANGE=weex` to execute every
+configured symbol on Weex. EMA + AVWAP requires `TRADING_MODE=futures` so its
+native protective-stop safety policy can be enforced. CCXT's Weex sandbox
+supports swap markets only; direct Weex spot trading requires mainnet.
 
 ## Signal Notifier
 
