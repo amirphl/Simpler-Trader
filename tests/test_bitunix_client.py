@@ -47,6 +47,19 @@ class BitunixClientTests(unittest.TestCase):
             ],
         )
 
+    def test_request_fails_fast_for_parameter_error(self) -> None:
+        client = BitunixClient(ExchangeConfig(api_key="key", api_secret="secret"))
+        response = Mock(
+            raise_for_status=Mock(),
+            json=Mock(return_value={"code": 10002, "msg": "Parameter error"}),
+        )
+        client._session.request = Mock(return_value=response)  # noqa: SLF001
+
+        with self.assertRaisesRegex(ValueError, "error code 10002"):
+            client._request("GET", "/parameter-error")  # noqa: SLF001
+
+        self.assertEqual(client._session.request.call_count, 1)  # noqa: SLF001
+
     def test_one_way_order_omits_hedge_trade_side(self) -> None:
         client = BitunixClient(ExchangeConfig(api_key="key", api_secret="secret"))
         client._request = Mock(  # noqa: SLF001
@@ -68,6 +81,33 @@ class BitunixClientTests(unittest.TestCase):
         body = client._request.call_args.kwargs["body"]  # noqa: SLF001
         self.assertNotIn("tradeSide", body)
         self.assertEqual(body["clientId"], "emaavwap-test-id")
+
+    def test_order_retries_mark_trigger_with_legacy_spelling_after_10002(self) -> None:
+        client = BitunixClient(ExchangeConfig(api_key="key", api_secret="secret"))
+        client._request = Mock(  # noqa: SLF001
+            side_effect=[
+                ValueError("Bitunix error code 10002: Parameter error"),
+                {"code": 0, "data": {"orderId": "order-1"}},
+            ]
+        )
+
+        result = client.place_order(
+            symbol="ETHUSDT",
+            side="BUY",
+            qty=1.0,
+            order_type="LIMIT",
+            price=100.0,
+            effect="GTC",
+            sl_price=97.0,
+            sl_stop_type="MARK_PRICE",
+            sl_order_type="MARKET",
+        )
+
+        self.assertEqual(result, {"orderId": "order-1"})
+        first_body = client._request.call_args_list[0].kwargs["body"]  # noqa: SLF001
+        retry_body = client._request.call_args_list[1].kwargs["body"]  # noqa: SLF001
+        self.assertEqual(first_body["slStopType"], "MARK_PRICE")
+        self.assertEqual(retry_body["slStopType"], "MARK")
 
     def test_order_detail_treats_bitunix_order_not_found_as_absent(self) -> None:
         logger = logging.getLogger("tests.bitunix_client.order_not_found")
