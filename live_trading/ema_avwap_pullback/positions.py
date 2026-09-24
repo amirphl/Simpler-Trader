@@ -1079,13 +1079,70 @@ class EmaAvwapPositionMixin(EmaAvwapMixinTyping):
             reason,
         )
         try:
-            result = self._retry(
-                lambda: self._exchange.close_position(
-                    position.symbol, side=position.side
-                ),
-                f"close_position {position.symbol}",
-            )
+            # A close submission is state-changing.  Retrying it blindly can
+            # duplicate a market order when the first request filled but the
+            # response raced a native stop or was otherwise lost.
+            result = self._exchange.close_position(position.symbol, side=position.side)
         except Exception as exc:
+            try:
+                positions = self._exchange.get_current_positions()
+            except Exception:
+                positions = None
+                self._log.warning(
+                    "EmaAvwapPullback: close of %s failed and position "
+                    "reconciliation also failed; retaining local state",
+                    position.symbol,
+                    exc_info=True,
+                )
+            if positions is not None and not any(
+                exchange_position.symbol == position.symbol
+                and exchange_position.side == position.side
+                for exchange_position in positions
+            ):
+                # The order error may mean a native stop won the race, or a
+                # partially filled position was completely reduced before the
+                # manual close reached the matching engine.  The authoritative
+                # position query says the exposure is flat, so finish the exit
+                # once rather than emitting another signal and close attempt.
+                exit_price = self._safe_fetch_price(position.symbol)
+                position.status = "CLOSED"
+                position.exit_time = now
+                position.exit_price = exit_price
+                if exit_price is not None:
+                    if position.side == PositionSide.LONG:
+                        position.pnl = (
+                            exit_price - position.entry_price
+                        ) * position.quantity
+                    else:
+                        position.pnl = (
+                            position.entry_price - exit_price
+                        ) * position.quantity
+                position.notes = (
+                    f"{position.notes}; {reason}; close error but position "
+                    "confirmed absent"
+                ).strip("; ")
+                self._state.active_positions.pop(position.symbol, None)
+                self._position_runtime_by_symbol.pop(position.symbol, None)
+                self._position_miss_count_by_symbol.pop(position.symbol, None)
+                self._state.disable_symbol(
+                    position.symbol, now, self._cfg.disable_symbol_hours
+                )
+                self._notify_trade_closed(
+                    position,
+                    reason=f"{reason} (position confirmed absent after close error)",
+                    exit_price=exit_price,
+                    runtime=runtime,
+                )
+                self._save_position_to_db(position)
+                self._save_state()
+                self._log.warning(
+                    "EmaAvwapPullback: close of %s %s returned %s, but the "
+                    "position is confirmed absent; marked closed",
+                    position.symbol,
+                    position.side.value,
+                    exc,
+                )
+                return
             self._log.error(
                 "EmaAvwapPullback: failed to close %s %s for %s: %s",
                 position.symbol,
