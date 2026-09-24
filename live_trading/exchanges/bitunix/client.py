@@ -22,6 +22,12 @@ class BitunixClient:
     TESTNET_BASE_URL = "https://testnet-openapi.bitunix.com"
     _NON_RETRYABLE_ERROR_CODE_MIN = 20000
     _NON_RETRYABLE_ERROR_CODE_MAX = 50000
+    _DETERMINISTIC_VALIDATION_ERROR_CODES = frozenset({10002})
+    # The schema names the mark-price trigger ``MARK_PRICE`` while the vendor's
+    # request examples still use ``MARK``.  Production has returned 10002 for
+    # otherwise valid composite entry orders using the schema spelling, so keep
+    # a tightly-scoped compatibility retry for that documented inconsistency.
+    _LEGACY_MARK_TRIGGER_TYPE = "MARK"
 
     def __init__(
         self,
@@ -137,9 +143,9 @@ class BitunixClient:
                             path,
                         )
                         return {"code": code, "msg": msg, "data": None}
-                    if (
-                        isinstance(code, int)
-                        and self._NON_RETRYABLE_ERROR_CODE_MIN
+                    if isinstance(code, int) and (
+                        code in self._DETERMINISTIC_VALIDATION_ERROR_CODES
+                        or self._NON_RETRYABLE_ERROR_CODE_MIN
                         <= code
                         < self._NON_RETRYABLE_ERROR_CODE_MAX
                     ):
@@ -1770,9 +1776,36 @@ class BitunixClient:
         self._log.info(
             "Bitunix: placing order %s", json.dumps(body, separators=(",", ":"))
         )
-        data = self._request(
-            "POST", "/api/v1/futures/trade/place_order", body=body, auth=True
-        )
+        try:
+            data = self._request(
+                "POST", "/api/v1/futures/trade/place_order", body=body, auth=True
+            )
+        except ValueError as exc:
+            # Bitunix documents MARK_PRICE but its own order examples and some
+            # production deployments expect MARK instead.  A 10002 response is
+            # a deterministic rejection, so this one alternate serialization
+            # cannot create a duplicate order.  Do not retry any other error or
+            # alter an order that does not contain an attached TP/SL trigger.
+            has_mark_price_trigger = any(
+                body.get(field) == "MARK_PRICE"
+                for field in ("tpStopType", "slStopType")
+            )
+            if "bitunix error code 10002" not in str(exc).lower() or not has_mark_price_trigger:
+                raise
+            legacy_body = dict(body)
+            for field in ("tpStopType", "slStopType"):
+                if legacy_body.get(field) == "MARK_PRICE":
+                    legacy_body[field] = self._LEGACY_MARK_TRIGGER_TYPE
+            self._log.warning(
+                "Bitunix: order rejected with MARK_PRICE trigger; retrying once "
+                "with legacy MARK trigger"
+            )
+            data = self._request(
+                "POST",
+                "/api/v1/futures/trade/place_order",
+                body=legacy_body,
+                auth=True,
+            )
         if data.get("code", 0) != 0:
             self._log.warning(
                 "Bitunix order rejected code=%s msg=%s",
